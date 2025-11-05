@@ -70,7 +70,6 @@ const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 const MAX_FUNCTION_NESTING: isize = 50;
 
-
 struct State<T: EvalexprNumericTypes> {
 	entries:     Vec<Entry<T>>,
 	ctx:         Arc<RwLock<evalexpr::HashMapContext<T>>>,
@@ -159,9 +158,11 @@ struct AppConfig {
 	dark_mode:  bool,
 	use_f32:    bool,
 	resolution: usize,
+
+	ui_scale: f32,
 }
 impl Default for AppConfig {
-	fn default() -> Self { Self { dark_mode: true, use_f32: false, resolution: 500 } }
+	fn default() -> Self { Self { dark_mode: true, use_f32: false, resolution: 500, ui_scale: 1.5 } }
 }
 
 struct UiState {
@@ -704,7 +705,10 @@ impl Application {
 					ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
 
 					ui.separator();
-					ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=1000).text("Resolution"));
+					ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=1000).text("Point Resolution"));
+
+					ui.separator();
+					ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
 				});
 
 				ui.separator();
@@ -1479,7 +1483,7 @@ impl App for Application {
 		} else {
 			ctx.set_visuals(Visuals::light());
 		}
-		ctx.set_pixels_per_point(1.5);
+		ctx.set_pixels_per_point(self.ui.conf.ui_scale);
 
 		let use_f32 = self.ui.conf.use_f32;
 		if use_f32 {
