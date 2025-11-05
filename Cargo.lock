@@ -1043,7 +1043,7 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "evalexpr"
 version = "13.0.0"
-source = "git+https://github.com/vdrn/evalexpr#e31a23ecca7eec29b62d81817f01899ac12ba592"
+source = "git+https://github.com/vdrn/evalexpr#6b708deb763baee1a3afe801c4aa08c67c73f9c0"
 dependencies = [
  "arrayvec",
  "rustc-hash 2.1.1",

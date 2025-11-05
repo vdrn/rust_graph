@@ -1,6 +1,5 @@
 use core::ops::RangeInclusive;
 use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::collections::hash_map;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -9,7 +8,7 @@ use std::{env, fs};
 use ahash::AHashMap;
 use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{
-	self, Align, Button, CollapsingHeader, DragValue, Grid, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Visuals, Widget
+	self, Align, Button, CollapsingHeader, DragValue, Grid, Id, Modal, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Visuals, Widget
 };
 use eframe::epaint::Color32;
 use eframe::{App, Storage};
@@ -17,14 +16,17 @@ use egui_plot::{
 	HLine, Legend, Line, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotPoints, Points, Polygon, VLine
 };
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, Node, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Function, Node, Value
 };
 use serde::{Deserialize, Serialize};
 
-mod f32_numeric_type;
+mod entry;
+mod persistence;
 
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
+
+use crate::entry::{COLORS, ConstantType, Entry, EntryData, EntryPoint};
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn wasm_main() -> () {
@@ -67,95 +69,21 @@ pub fn wasm_main() -> () {
 const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 const MAX_FUNCTION_NESTING: isize = 50;
-pub trait NumericTypesExt: EvalexprNumericTypes + Send + Sync
-where
-	<Self as EvalexprNumericTypes>::Float: Send + Sync, {
-	const ZERO: Self::Float;
-	const HALF: Self::Float;
-	const EPSILON: f64;
-	fn float_to_f64(v: Self::Float) -> f64;
-	fn f64_to_float(v: f64) -> Self::Float;
-	fn float_add(v1: Self::Float, v2: Self::Float) -> Self::Float;
-	fn float_mul(v1: Self::Float, v2: Self::Float) -> Self::Float;
-	fn float_sub(v1: Self::Float, v2: Self::Float) -> Self::Float;
-}
-impl NumericTypesExt for DefaultNumericTypes {
-	const ZERO: Self::Float = 0.0;
-	const HALF: Self::Float = 0.5;
-	const EPSILON: f64 = f64::EPSILON;
 
-	fn float_to_f64(v: Self::Float) -> f64 { v }
-	fn f64_to_float(v: f64) -> Self::Float { v }
-	fn float_add(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 + v2 }
-	fn float_mul(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 * v2 }
-	fn float_sub(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 - v2 }
-}
-impl NumericTypesExt for F32NumericType {
-	const ZERO: Self::Float = 0.0;
-	const HALF: Self::Float = 0.5;
-	const EPSILON: f64 = f32::EPSILON as f64;
 
-	fn float_to_f64(v: Self::Float) -> f64 { v as f64 }
-	fn f64_to_float(v: f64) -> Self::Float { v as Self::Float }
-	fn float_add(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 + v2 }
-	fn float_mul(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 * v2 }
-	fn float_sub(v1: Self::Float, v2: Self::Float) -> Self::Float { v1 - v2 }
-}
-
-use crate::f32_numeric_type::F32NumericType;
-
-const COLORS: &'static [Color32; 20] = &[
-	Color32::from_rgb(255, 107, 107), // Bright coral red
-	Color32::from_rgb(78, 205, 196),  // Turquoise
-	Color32::from_rgb(69, 183, 209),  // Sky blue
-	Color32::from_rgb(255, 160, 122), // Light salmon
-	Color32::from_rgb(152, 216, 200), // Mint green
-	Color32::from_rgb(255, 217, 61),  // Golden yellow
-	Color32::from_rgb(107, 207, 127), // Fresh green
-	Color32::from_rgb(199, 125, 255), // Bright purple
-	Color32::from_rgb(255, 133, 161), // Pink
-	Color32::from_rgb(93, 173, 226),  // Bright blue
-	Color32::from_rgb(248, 183, 57),  // Orange
-	Color32::from_rgb(127, 219, 255), // Aqua
-	Color32::from_rgb(57, 255, 20),   // Neon green
-	Color32::from_rgb(255, 20, 147),  // Deep pink
-	Color32::from_rgb(0, 217, 255),   // Cyan
-	Color32::from_rgb(255, 179, 71),  // Peach
-	Color32::from_rgb(139, 92, 246),  // Violet
-	Color32::from_rgb(52, 211, 153),  // Emerald
-	Color32::from_rgb(244, 114, 182), // Hot pink
-	Color32::from_rgb(251, 191, 36),  // Amber
-];
-const NUM_COLORS: usize = COLORS.len();
-
-#[derive(PartialEq, Clone)]
-struct CacheKey(f64);
-impl core::hash::Hash for CacheKey {
-	fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.0.to_bits().hash(state); }
-}
-impl Eq for CacheKey {}
-
-type PointsCache = ahash::AHashMap<String, ahash::AHashMap<CacheKey, f64>>;
-
-struct State<T: NumericTypesExt>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
-	entries:      Vec<Entry<T>>,
-	ctx:          &'static std::sync::RwLock<evalexpr::HashMapContext<T>>,
+struct State<T: EvalexprNumericTypes> {
+	entries:     Vec<Entry<T>>,
+	ctx:         Arc<RwLock<evalexpr::HashMapContext<T>>>,
 	// context_stash: &'static Mutex<Vec<evalexpr::HashMapContext<T>>>,
-	name:         String,
+	name:        String,
 	// points_cache: PointsCache,
-	clear_cache:  bool,
+	clear_cache: bool,
 }
-fn init_consts<T: NumericTypesExt>(ctx: &mut evalexpr::HashMapContext<T>)
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
+fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
 		($ident:ident, $uppercase:expr, $lowercase:expr) => {
-			ctx.set_value($lowercase, Value::Float(T::f64_to_float(std::f64::consts::$ident))).unwrap();
-			ctx.set_value($uppercase, Value::Float(T::f64_to_float(std::f64::consts::$ident))).unwrap();
+			ctx.set_value($lowercase, Value::Float(T::Float::f64_to_float(std::f64::consts::$ident))).unwrap();
+			ctx.set_value($uppercase, Value::Float(T::Float::f64_to_float(std::f64::consts::$ident))).unwrap();
 		};
 	}
 
@@ -163,10 +91,7 @@ where
 	add_const!(PI, "PI", "pi");
 	add_const!(TAU, "TAU", "tau");
 }
-fn init_functions<T: NumericTypesExt>(ctx: &mut evalexpr::HashMapContext<T>)
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
+fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_function {
 		($ident:ident) => {
 			ctx.set_function(
@@ -259,11 +184,12 @@ struct UiState {
 	scheduled_url_update: bool,
 	last_url_update:      f64,
 	animating:            Arc<AtomicBool>,
+	file_to_remove:       Option<String>,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
 	d:      State<DefaultNumericTypes>,
-	s:      State<F32NumericType>,
+	s:      State<F32NumericTypes>,
 	ui:     UiState,
 	#[cfg(not(target_arch = "wasm32"))]
 	puffin: puffin_http::Server,
@@ -304,7 +230,7 @@ impl Application {
 
 			}
 
-		match deserialize_from_url::<F32NumericType>() {
+		match persistence::deserialize_from_url::<F32NumericTypes>() {
 		  Ok(data)=>{
 			entries_s = data;
 		  },
@@ -312,7 +238,7 @@ impl Application {
 			serialization_error = Some(e);
 		  }
 		}
-		match deserialize_from_url::<DefaultNumericTypes>() {
+		match persistence::deserialize_from_url::<DefaultNumericTypes>() {
 		  Ok(data)=>{
 			entries_d = data;
 		  },
@@ -326,7 +252,7 @@ impl Application {
 			let cur_dir = env::home_dir()
 				.and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
 				.unwrap_or_default();
-			Self::load_file_entries(&cur_dir, &mut web_storage);
+			persistence::load_file_entries(&cur_dir, &mut web_storage);
 			  }
 			}
 
@@ -335,30 +261,30 @@ impl Application {
 			next_color = 1;
 			entries_s.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
-		let ctx_s = Box::leak(Box::new(RwLock::new(evalexpr::HashMapContext::new())));
+		let ctx_s = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
 
 		if entries_d.is_empty() {
 			next_color = 1;
 			entries_d.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
-		let ctx_d = Box::leak(Box::new(RwLock::new(evalexpr::HashMapContext::new())));
+		let ctx_d = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
 
 		Self {
 			#[cfg(not(target_arch = "wasm32"))]
 			puffin:                                     run_puffin_server(),
 			s:                                          State {
-				entries:      entries_s,
-				ctx:          ctx_s,
-				name:         String::new(),
+				entries:     entries_s,
+				ctx:         ctx_s,
+				name:        String::new(),
 				// points_cache: PointsCache::default(),
-				clear_cache:  true,
+				clear_cache: true,
 			},
 			d:                                          State {
-				entries:      entries_d,
-				ctx:          ctx_d,
-				name:         String::new(),
+				entries:     entries_d,
+				ctx:         ctx_d,
+				name:        String::new(),
 				// points_cache: PointsCache::default(),
-				clear_cache:  true,
+				clear_cache: true,
 			},
 			ui:                                         UiState {
 				animating: Arc::new(AtomicBool::new(true)),
@@ -375,18 +301,17 @@ impl Application {
 				stack_overflow_guard: Box::leak(Box::new(AtomicIsize::new(0))),
 				eval_errors: AHashMap::default(),
 				selected_plot_item: None,
-				f32_epsilon: F32NumericType::EPSILON,
-				f64_epsilon: DefaultNumericTypes::EPSILON,
+				f32_epsilon: f32::EPSILON as f64,
+				f64_epsilon: f64::EPSILON,
 				permalink_string: String::new(),
+				file_to_remove: None,
 			},
 		}
 	}
 
-	fn side_panel<T: NumericTypesExt>(
+	fn side_panel<T: EvalexprNumericTypes>(
 		state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
-	) where
-		T::Float: Send + Sync + Copy,
-		T::Int: Send + Sync, {
+	) {
 		puffin::GlobalProfiler::lock().new_frame();
 
 		puffin::profile_scope!("side_panel");
@@ -445,18 +370,6 @@ impl Application {
 						(Color32::LIGHT_GRAY, egui::Color32::TRANSPARENT)
 					};
 
-					let txt = match &entry.value {
-						EntryData::Function { .. } => "λ",
-						EntryData::Constant { .. } => {
-							if entry.visible {
-								"⏸"
-							} else {
-								"⏵"
-							}
-						},
-						EntryData::Points(_) => "●",
-						EntryData::Integral { .. } => "∫",
-					};
 					ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
 						if ui.button("X").clicked() {
 							remove = Some(n);
@@ -465,7 +378,7 @@ impl Application {
 						let mut color_picker = MenuButton::new(RichText::new("🎨").color(Color32::BLACK));
 						color_picker.button = color_picker.button.fill(entry.color());
 						color_picker.ui(ui, |ui| {
-							for i in 0..NUM_COLORS {
+							for i in 0..COLORS.len() {
 								if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
 									entry.color = i;
 								}
@@ -475,9 +388,11 @@ impl Application {
 							let prev_visible = entry.visible;
 							if ui
 								.add(
-									Button::new(RichText::new(txt).strong().monospace().color(text_col))
-										.fill(col)
-										.rounding(10),
+									Button::new(
+										RichText::new(entry.symbol()).strong().monospace().color(text_col),
+									)
+									.fill(col)
+									.rounding(10),
 								)
 								.clicked()
 							{
@@ -637,7 +552,8 @@ impl Application {
 								},
 
 								EntryData::Constant { value, step, ty } => {
-									let mut v = T::float_to_f64(*value);
+									let mut v = value.to_f64();
+									let step_f = T::Float::f64_to_float(*step);
 									let range = ty.range();
 									let start = *range.start();
 									let end = *range.end();
@@ -692,9 +608,9 @@ impl Application {
 											DragValue::new(step).prefix("Step:").speed(0.00001).ui(ui);
 
 											if !prev_visible && entry.visible {
-												if T::float_to_f64(*value) >= end {
-													*value = T::f64_to_float(start);
-                          animating = true;
+												if value.to_f64() >= end {
+													*value = T::Float::f64_to_float(start);
+													animating = true;
 												}
 											}
 
@@ -706,30 +622,28 @@ impl Application {
 													ConstantType::LoopForwardAndBackward {
 														forward, ..
 													} => {
-														if T::float_to_f64(*value) > end {
+														if value.to_f64() > end {
 															*forward = false;
 														}
-														if T::float_to_f64(*value) < start {
+														if value.to_f64() < start {
 															*forward = true;
 														}
 														if *forward {
-															*value =
-																T::float_add(*value, T::f64_to_float(*step));
+															*value = *value + step_f;
 														} else {
-															*value =
-																T::float_sub(*value, T::f64_to_float(*step));
+															*value = *value - step_f;
 														}
 													},
 													ConstantType::LoopForward { .. } => {
-														*value = T::float_add(*value, T::f64_to_float(*step));
-														if T::float_to_f64(*value) >= end {
-															*value = T::f64_to_float(start);
+														*value = *value + step_f;
+														if value.to_f64() >= end {
+															*value = T::Float::f64_to_float(start);
 														}
 													},
 													ConstantType::PlayOnce { .. }
 													| ConstantType::PlayIndefinitely { .. } => {
-														*value = T::float_add(*value, T::f64_to_float(*step));
-														if T::float_to_f64(*value) >= end {
+														*value = *value + step_f;
+														if value.to_f64() >= end {
 															entry.visible = false;
 														}
 													},
@@ -744,7 +658,7 @@ impl Application {
 											)
 											.changed() || state.clear_cache
 										{
-											*value = T::f64_to_float(v);
+											*value = T::Float::f64_to_float(v);
 											animating = true;
 										}
 									});
@@ -762,6 +676,13 @@ impl Application {
 				}
 				ui_state.animating.store(animating, Ordering::Relaxed);
 
+				#[cfg(not(target_arch = "wasm32"))]
+				ui.hyperlink_to("View Online", {
+					let mut base_url = "https://vdrn.github.io/rust_graph/".to_string();
+					base_url.push_str(ui_state.permalink_string.as_str());
+
+					base_url
+				});
 				ui.separator();
 
 				CollapsingHeader::new("Settings").default_open(true).show(ui, |ui| {
@@ -799,7 +720,7 @@ impl Application {
 					puffin::profile_scope!("clear_cache");
 					// state.points_cache.clear();
 					let mut output = Vec::new();
-					if serialize_to(&mut output, &state.entries).is_ok() {
+					if persistence::serialize_to(&mut output, &state.entries).is_ok() {
 						// let mut data_str = String::with_capacity(output.len() + 1);
 						let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
 						let mut permalink_string = String::with_capacity(url_encoded.len() + 1);
@@ -814,7 +735,6 @@ impl Application {
 					init_functions::<T>(&mut *(state.ctx.write().unwrap()));
 					init_consts::<T>(&mut *(state.ctx.write().unwrap()));
 
-					let main_context = state.ctx;
 					let stack_overflow_guard = ui_state.stack_overflow_guard;
 					// state.context_stash.lock().unwrap().clear();
 
@@ -826,7 +746,8 @@ impl Application {
 								EntryData::Integral { .. } => {},
 								EntryData::Constant { value, .. } => {
 									if !entry.name.is_empty() {
-										main_context
+										state
+											.ctx
 											.write()
 											.unwrap()
 											.set_value(
@@ -852,7 +773,8 @@ impl Application {
 										// let local_cache: LocalCache = LocalCache(Mutex::new(
 										// 	AHashMap::with_capacity(ui_state.conf.resolution),
 										// ));
-										let animating = ui_state.animating.clone();
+										// let animating = ui_state.animating.clone();
+										let main_context = state.ctx.clone();
 										let fun = Function::new(move |v| {
 											// puffin::profile_scope!("eval_function");
 											if stack_overflow_guard
@@ -866,18 +788,18 @@ impl Application {
 
 											let v = match v {
 												Value::Float(x) => *x,
-												Value::Boolean(x) => T::f64_to_float(*x as i64 as f64),
-												Value::String(_) => T::ZERO,
+												Value::Boolean(x) => T::Float::f64_to_float(*x as i64 as f64),
+												Value::String(_) => T::Float::ZERO,
 												// Value::Int(x) => T::int_as_float(x),
 												Value::Tuple(values) => values[0]
 													.as_float()
 													.or_else(|_| {
 														values[0]
 															.as_boolean()
-															.map(|x| T::f64_to_float(x as i64 as f64))
+															.map(|x| T::Float::f64_to_float(x as i64 as f64))
 													})
-													.unwrap_or(T::ZERO),
-												Value::Empty => T::ZERO,
+													.unwrap_or(T::Float::ZERO),
+												Value::Empty => T::Float::ZERO,
 											};
 											// let animating = animating.load(Ordering::Relaxed);
 											// if !animating {
@@ -913,21 +835,21 @@ impl Application {
 											entry.name.clone()
 										};
 
-										main_context.write().unwrap().set_function(name, fun).unwrap();
+										state.ctx.write().unwrap().set_function(name, fun).unwrap();
 									}
 								},
 							}
 						}
 					}
 				} else if animating {
-					let main_context = state.ctx;
 					for entry in state.entries.iter_mut() {
 						puffin::profile_scope!("entry_process");
 						if entry.name != "x" {
 							match &mut entry.value {
 								EntryData::Constant { value, .. } => {
 									if !entry.name.is_empty() {
-										main_context
+										state
+											.ctx
 											.write()
 											.unwrap()
 											.set_value(
@@ -970,114 +892,19 @@ impl Application {
 
 				ui.separator();
 				ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
-				#[cfg(not(target_arch = "wasm32"))]
-				ui.hyperlink_to("View Online", {
-					let mut base_url = "https://vdrn.github.io/rust_graph/".to_string();
-					base_url.push_str(ui_state.permalink_string.as_str());
-
-					base_url
-				});
 			});
 		});
 
 		ui_state.eval_errors.clear();
 	}
-	fn save_file<T: NumericTypesExt>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame)
-	where
-		T::Float: Send + Sync + Copy,
-		T::Int: Send + Sync, {
-		#[cfg(target_arch = "wasm32")]
-		{
-			let file = format!("{}.json", state.name);
-			let mut output = Vec::new();
-			if let Err(e) = serialize_to(&mut output, &state.entries) {
-				ui_state.serialization_error = Some(e.to_string());
-			} else {
-				ui_state.serialization_error = None;
-				ui_state.web_storage.insert(file, String::from_utf8(output).unwrap());
-				if let Some(storage) = frame.storage_mut() {
-					storage.flush();
-				}
-			}
-		}
-		#[cfg(not(target_arch = "wasm32"))]
-		{
-			let save_path = PathBuf::from(&ui_state.cur_dir).join(format!("{}.json", state.name));
-			if let Some(parent) = save_path.parent() {
-				// Recursively create all parent directories if they don't exist
-				fs::create_dir_all(parent).ok();
-			}
-			let Ok(mut file) = std::fs::File::create(&save_path) else {
-				ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
-				return;
-			};
-			if let Err(e) = serialize_to(&mut file, &state.entries) {
-				ui_state.serialization_error = Some(e.to_string());
-			} else {
-				ui_state.serialization_error = None;
-				Self::load_file_entries(&ui_state.cur_dir, &mut ui_state.web_storage);
-			}
-		}
-	}
-	fn load_file_entries(cur_dir: &str, web_st: &mut AHashMap<String, String>) {
-		web_st.clear();
-		let Ok(entries) = std::fs::read_dir(PathBuf::from(cur_dir)) else {
-			// ui.label("No entries found");
-			return;
-		};
-		for entry in entries {
-			let Ok(entry) = entry else {
-				continue;
-			};
-			let file_name = entry.file_name();
-			let Some(file_name) = file_name.to_str() else {
-				continue;
-			};
-			if !file_name.ends_with(".json") {
-				continue;
-			}
-
-			web_st.insert(file_name.to_string(), String::new());
-		}
-	}
-	fn load_file<T: NumericTypesExt>(
-		cur_dir: &str, web_st: &AHashMap<String, String>, file_name: &str, state: &mut State<T>,
-	) -> Result<(), String>
-	where
-		T::Float: Send + Sync + Copy,
-		T::Int: Send + Sync, {
-		#[cfg(target_arch = "wasm32")]
-		{
-			if let Some(file) = web_st.get(file_name) {
-				let entries = deserialize_from::<T>(file.as_bytes()).unwrap();
-				state.entries = entries;
-				state.name = file_name.strip_suffix(".json").unwrap().to_string();
-			}
-		}
-
-		#[cfg(not(target_arch = "wasm32"))]
-		{
-			let Ok(mut file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
-				return Err(format!("Could not open file: {}", file_name));
-			};
-			let entries = deserialize_from::<T>(&mut file).map_err(|e| format!("Could not deserialize file: {}", e))?;
-			state.entries = entries;
-			state.name = file_name.strip_suffix(".json").unwrap().to_string();
-		}
-
-		state.clear_cache = true;
-		Ok(())
-	}
-	fn persisence<T: NumericTypesExt>(
+	fn persisence<T: EvalexprNumericTypes>(
 		state: &mut State<T>, ui_state: &mut UiState, ui: &mut egui::Ui, frame: &mut eframe::Frame,
-	) where
-		T::Float: Send + Sync + Copy,
-		T::Int: Send + Sync, {
+	) {
 		ui.horizontal_top(|ui| {
 			ui.label("Name:");
 			ui.text_edit_singleline(&mut state.name);
 			if !state.name.trim().is_empty() && ui.button("Save").clicked() {
-				Self::save_file(ui_state, state, frame);
+				persistence::save_file(ui_state, state, frame);
 			}
 		});
 
@@ -1089,7 +916,7 @@ impl Application {
 				let changed = ui.text_edit_singleline(&mut ui_state.cur_dir).changed();
 
 				if ui.button("⟳").clicked() || changed {
-					Self::load_file_entries(&ui_state.cur_dir, &mut ui_state.web_storage);
+					persistence::load_file_entries(&ui_state.cur_dir, &mut ui_state.web_storage);
 				}
 			});
 		}
@@ -1098,32 +925,35 @@ impl Application {
 			ui.separator();
 		}
 		ui.horizontal(|ui| {
-			Grid::new("files").num_columns(2).striped(true).show(ui, |ui| {
+			Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
 				for file_name in ui_state.web_storage.keys() {
 					ui.label(file_name);
 					if ui.button("Load").clicked() {
 						if let Err(e) =
-							Self::load_file(&ui_state.cur_dir, &ui_state.web_storage, &file_name, state)
+							persistence::load_file(&ui_state.cur_dir, &ui_state.web_storage, &file_name, state)
 						{
 							ui_state.serialization_error = Some(format!("Could not open file: {}", e));
 							return;
 						};
 					}
+					if ui.button("Delete").clicked() {
+						ui_state.file_to_remove = Some(file_name.clone());
+					}
 					ui.end_row();
 				}
+				confirm_remove_dialog(ui, frame, ui_state);
 			});
 		});
 	}
 
-	fn graph_panel<T: NumericTypesExt>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context)
-	where
-		T::Float: Send + Sync + Copy,
-		T::Int: Send + Sync + Copy, {
+	fn graph_panel<T: EvalexprNumericTypes>(
+		state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context,
+	) {
 		let main_context = &*state.ctx.read().unwrap();
 		let stack_overflow_guard = ui_state.stack_overflow_guard;
 		let first_x = ui_state.plot_bounds.min()[0];
 		let last_x = ui_state.plot_bounds.max()[0];
-		let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
+		// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
 		let plot_width = last_x - first_x;
 		let mut points_to_draw = ui_state.conf.resolution.max(1);
 		let mut step_size = plot_width / points_to_draw as f64;
@@ -1132,7 +962,7 @@ impl Application {
 			step_size = plot_width / points_to_draw as f64;
 		}
 
-		let animating = ui_state.animating.load(Ordering::Relaxed);
+		// let animating = ui_state.animating.load(Ordering::Relaxed);
 		puffin::profile_scope!("graph");
 
 		let eps = if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon };
@@ -1157,7 +987,7 @@ impl Application {
 					match (lower, upper, func) {
 						(Some(lower), Some(upper), Some(func)) => {
 							let lower = match lower.eval_float_with_context(main_context) {
-								Ok(lower) => T::float_to_f64(lower),
+								Ok(lower) => lower.to_f64(),
 								Err(e) => {
 									ui_state
 										.eval_errors
@@ -1166,7 +996,7 @@ impl Application {
 								},
 							};
 							let upper = match upper.eval_float_with_context(main_context) {
-								Ok(upper) => T::float_to_f64(upper),
+								Ok(upper) => upper.to_f64(),
 								Err(e) => {
 									ui_state
 										.eval_errors
@@ -1185,8 +1015,9 @@ impl Application {
 							}
 							let resolution = *resolution;
 							let step = (range / resolution as f64);
+							let step_f = T::Float::f64_to_float(step);
 							if lower + step == lower {
-								*calculated = Some(T::ZERO);
+								*calculated = Some(T::Float::ZERO);
 								continue 'next_entry;
 							}
 							*calculated = None;
@@ -1207,12 +1038,12 @@ impl Application {
 							);
 
 							let mut x = lower;
-							let mut result: T::Float = T::ZERO;
-							let mut prev_y = None;
+							let mut result: T::Float = T::Float::ZERO;
+							let mut prev_y: Option<T::Float> = None;
 							for i in 0..(resolution + 1) {
 								let x = lower + step * i as f64;
 
-								let xx = evalexpr::Value::<T>::Float(T::f64_to_float(x));
+								let xx = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
 
 								let y_f64 =
                   // if let Some(cache) = &mut cache {
@@ -1240,7 +1071,7 @@ impl Application {
 									match func
 										.eval_float_with_context_and_x(main_context, &xx)
 									{
-										Ok(y) => T::float_to_f64(y),
+										Ok(y) => y.to_f64(),
 										Err(e) => {
 											ui_state.eval_errors.insert(ei, e.to_string());
 											continue 'next_entry;
@@ -1248,10 +1079,10 @@ impl Application {
 									// }
 								};
 
-								let y = T::f64_to_float(y_f64);
+								let y = T::Float::f64_to_float(y_f64);
 								if let Some(prev_y) = prev_y {
 									let eps = 0.0;
-									let prev_y_f64 = T::float_to_f64(prev_y);
+									let prev_y_f64 = prev_y.to_f64();
 
 									if prev_y_f64.signum() != y_f64.signum() {
 										//2 triangles
@@ -1283,16 +1114,15 @@ impl Application {
 											polys.push(triangle2);
 										}
 
-										let t = T::f64_to_float(t);
-										let step = T::f64_to_float(step);
+										let t = T::Float::f64_to_float(t);
 
-										let step1 = T::float_mul(step, t);
-										let step2 = T::float_sub(step, step1);
+										let step1 = step_f * t;
+										let step2 = step_f - step1;
 
-										let b1 = T::float_mul(prev_y, step1);
-										let b2 = T::float_mul(y, step2);
-										result = T::float_add(result, T::float_mul(b1, T::HALF));
-										result = T::float_add(result, T::float_mul(b2, T::HALF));
+										let b1 = prev_y * step1;
+										let b2 = y * step2;
+										result = result + b1 * T::Float::HALF;
+										result = result + b2 * T::Float::HALF;
 									} else {
 										if visible {
 											let poly = Polygon::new(
@@ -1317,20 +1147,20 @@ impl Application {
 											.stroke(Stroke::new(eps, fill_color));
 											polys.push(poly);
 										}
-										let dy = T::float_sub(y, prev_y);
-										let step = T::f64_to_float(step);
-										let d = T::float_mul(dy, step);
-										result = T::float_add(result, T::float_mul(prev_y, step));
-										result = T::float_add(result, T::float_mul(d, T::HALF));
+										let dy = y - prev_y;
+										let step = T::Float::f64_to_float(step);
+										let d = dy * step;
+										result = result + prev_y * step;
+										result = result + d * T::Float::HALF;
 									}
 								}
-								if T::float_to_f64(result).is_nan() {
+								if result.is_nan() {
 									ui_state.eval_errors.insert(ei, "Integral is undefined".to_string());
 									continue 'next_entry;
 								}
 
 								if visible {
-									int_lines.push(PlotPoint::new(x, T::float_to_f64(result)));
+									int_lines.push(PlotPoint::new(x, result.to_f64()));
 									fun_lines.push(PlotPoint::new(x, y_f64));
 								}
 								prev_y = Some(y);
@@ -1437,9 +1267,9 @@ impl Application {
 								// }
 							// } else
                 {
-								let x = evalexpr::Value::<T>::Float(T::f64_to_float(x));
+								let x = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
 								match func.eval_float_with_context_and_x(main_context, &x) {
-									Ok(y) => T::float_to_f64(y),
+									Ok(y) => y.to_f64(),
 									Err(e) => {
 										ui_state.eval_errors.insert(ei, e.to_string());
 
@@ -1576,13 +1406,10 @@ impl Application {
 		});
 	}
 }
-fn edit_expr<T: NumericTypesExt>(
+fn edit_expr<T: EvalexprNumericTypes>(
 	ui: &mut egui::Ui, text: &mut String, expr: &mut Option<Node<T>>, hint_text: &str,
 	desired_width: Option<f32>, force_update: bool,
-) -> Result<bool, String>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
+) -> Result<bool, String> {
 	let mut text_edit = TextEdit::singleline(text).hint_text(hint_text);
 	if let Some(width) = desired_width {
 		text_edit = text_edit.desired_width(width);
@@ -1603,17 +1430,18 @@ where
 	}
 	Ok(false)
 }
-fn eval_point<T: NumericTypesExt>(
+fn eval_point<T: EvalexprNumericTypes>(
 	ctx: &evalexpr::HashMapContext<T>, p: &EntryPoint<T>,
-) -> Result<Option<(f64, f64)>, String>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
+) -> Result<Option<(f64, f64)>, String> {
 	match (&p.x, &p.y) {
 		(Some(x), Some(y)) => {
-			let x = x.eval_float_with_context_and_x(ctx,&Value::Float(T::ZERO)).map_err(|e| e.to_string())?;
-			let y = y.eval_float_with_context_and_x(ctx,&Value::Float(T::ZERO)).map_err(|e| e.to_string())?;
-			return Ok(Some((T::float_to_f64(x), T::float_to_f64(y))));
+			let x = x
+				.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO))
+				.map_err(|e| e.to_string())?;
+			let y = y
+				.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO))
+				.map_err(|e| e.to_string())?;
+			return Ok(Some((x.to_f64(), y.to_f64())));
 		},
 		_ => {},
 	}
@@ -1664,15 +1492,15 @@ impl App for Application {
 		if use_f32 != self.ui.conf.use_f32 {
 			if use_f32 {
 				let mut output = Vec::with_capacity(1024);
-				if serialize_to(&mut output, &self.s.entries).is_ok() {
-					self.d.entries = deserialize_from(&output).unwrap();
+				if persistence::serialize_to(&mut output, &self.s.entries).is_ok() {
+					self.d.entries = persistence::deserialize_from(&output).unwrap();
 					self.d.clear_cache = true;
 					self.d.name = self.s.name.clone();
 				}
 			} else {
 				let mut output = Vec::with_capacity(1024);
-				if serialize_to(&mut output, &self.d.entries).is_ok() {
-					self.s.entries = deserialize_from(&output).unwrap();
+				if persistence::serialize_to(&mut output, &self.d.entries).is_ok() {
+					self.s.entries = persistence::deserialize_from(&output).unwrap();
 					self.s.clear_cache = true;
 					self.s.name = self.d.name.clone();
 				}
@@ -1700,348 +1528,85 @@ impl App for Application {
 
 	fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
 }
+fn confirm_remove_dialog(ui: &mut egui::Ui, frame: &mut eframe::Frame, ui_state: &mut UiState) {
+	if let Some(file) = &ui_state.file_to_remove {
+		let modal = Modal::new(Id::new("Confirm remove file")).show(ui.ctx(), |ui| {
+			ui.set_width(400.0);
+			ui.heading(format!("Are you sure you want to delete '{file}'?"));
 
-#[derive(Clone, Debug)]
-pub struct Entry<T: NumericTypesExt>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
-	name:    String,
-	visible: bool,
-	color:   usize,
-	value:   EntryData<T>,
-}
-#[derive(Clone, Debug)]
-struct EntryPoint<T: NumericTypesExt>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
-	text_x: String,
-	x:      Option<Node<T>>,
-	text_y: String,
-	y:      Option<Node<T>>,
-}
+			ui.add_space(32.0);
 
-impl<T: NumericTypesExt> Default for EntryPoint<T>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync,
-{
-	fn default() -> Self {
-		Self {
-			text_x: Default::default(),
-			x:      Default::default(),
-			text_y: Default::default(),
-			y:      Default::default(),
-		}
-	}
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ConstantType {
-	LoopForwardAndBackward { start: f64, end: f64, forward: bool },
-	LoopForward { start: f64, end: f64 },
-	PlayOnce { start: f64, end: f64 },
-	PlayIndefinitely { start: f64 },
-}
-impl ConstantType {
-	fn range(&self) -> RangeInclusive<f64> {
-		match self {
-			ConstantType::LoopForwardAndBackward { start, end, .. } => (*start..=*end).into(),
-			ConstantType::LoopForward { start, end } => (*start..=*end).into(),
-			ConstantType::PlayOnce { start, end } => (*start..=*end).into(),
-			ConstantType::PlayIndefinitely { start } => (*start..=f64::INFINITY).into(),
-		}
-	}
-	fn symbol(&self) -> &'static str {
-		match self {
-			ConstantType::LoopForwardAndBackward { .. } => "🔁",
-			ConstantType::LoopForward { .. } => "🔂",
-			ConstantType::PlayOnce { .. } => "⏯",
-			ConstantType::PlayIndefinitely { .. } => "🔀",
-		}
-	}
-	fn name(&self) -> &'static str {
-		match self {
-			ConstantType::LoopForwardAndBackward { .. } => "🔁 Loop forward and Backward",
-			ConstantType::LoopForward { .. } => "🔂 Loop forward",
-			ConstantType::PlayOnce { .. } => "⏯ Play once",
-			ConstantType::PlayIndefinitely { .. } => "🔀 Play indefinitely",
-		}
-	}
-}
-#[derive(Clone, Debug)]
-enum EntryData<T: NumericTypesExt>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync, {
-	Function {
-		text: String,
-		func: Option<Node<T>>,
-	},
-	Constant {
-		value: T::Float,
-		step:  f64,
-		ty:    ConstantType,
-	},
-	Points(Vec<EntryPoint<T>>),
-	Integral {
-		func_text:  String,
-		func:       Option<Node<T>>,
-		lower_text: String,
-		lower:      Option<Node<T>>,
-		upper_text: String,
-		upper:      Option<Node<T>>,
-		calculated: Option<T::Float>,
-		resolution: usize,
-	},
-}
-#[derive(Clone, Debug, PartialEq, Copy)]
-pub enum EntryType {
-	Function,
-	Constant,
-	Points,
-	Integral,
-}
-
-impl<T: NumericTypesExt> Entry<T>
-where
-	T::Float: Send + Sync,
-	T::Int: Send + Sync,
-{
-	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
-	pub fn new_function(color: usize, text: String) -> Self {
-		Self {
-			color:   color % NUM_COLORS,
-			visible: true,
-			name:    String::new(),
-			value:   EntryData::Function { text, func: None },
-		}
-	}
-	pub fn new_constant(color: usize) -> Self {
-		Self {
-			color:   color % NUM_COLORS,
-			visible: false,
-			name:    String::new(),
-			value:   EntryData::Constant {
-				value: T::ZERO,
-				step:  0.01,
-				ty:    ConstantType::LoopForwardAndBackward { start: 0.0, end: 2.0, forward: true },
-			},
-		}
-	}
-	pub fn new_points(color: usize) -> Self {
-		Self {
-			color:   color % NUM_COLORS,
-			visible: true,
-			name:    String::new(),
-			value:   EntryData::Points(vec![EntryPoint::default()]),
-		}
-	}
-	pub fn new_integral(color: usize) -> Self {
-		Self {
-			color:   color % NUM_COLORS,
-			visible: true,
-			name:    String::new(),
-			value:   EntryData::Integral {
-				func_text:  String::new(),
-				func:       None,
-				lower_text: String::new(),
-				lower:      None,
-				upper_text: String::new(),
-				upper:      None,
-				calculated: None,
-				resolution: 500,
-			},
-		}
-	}
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct EntrySerialized {
-	name:    String,
-	visible: bool,
-	color:   usize,
-	value:   EntryValueSerialized,
-}
-#[derive(Serialize, Deserialize)]
-pub enum EntryValueSerialized {
-	Function(String),
-	Constant {
-		value: f64,
-		step:  f64,
-		ty:    ConstantType,
-	},
-	Points(Vec<EntryPointSerialized>),
-	Integral {
-		func_text:  String,
-		lower_text: String,
-		upper_text: String,
-
-		#[serde(default)]
-		resolution: usize,
-	},
-}
-#[derive(Serialize, Deserialize)]
-pub struct EntryPointSerialized {
-	x: String,
-	y: String,
-}
-
-pub fn serialize_to<T: NumericTypesExt>(writer: impl Write, entries: &[Entry<T>]) -> std::io::Result<()>
-where
-	T::Float: Send + Sync + Copy,
-	T::Int: Send + Sync, {
-	let mut result = Vec::new();
-	for entry in entries {
-		let entry_serialized = EntrySerialized {
-			name:    entry.name.clone(),
-			visible: entry.visible,
-			color:   entry.color,
-			value:   match &entry.value {
-				EntryData::Function { text, .. } => EntryValueSerialized::Function(text.clone()),
-				EntryData::Constant { value, step, ty } => EntryValueSerialized::Constant {
-					value: T::float_to_f64(*value),
-					step:  *step,
-					ty:    ty.clone(),
-				},
-				EntryData::Points(points) => {
-					let mut points_serialized = Vec::new();
-					for point in points {
-						let point_serialized =
-							EntryPointSerialized { x: point.text_x.clone(), y: point.text_y.clone() };
-						points_serialized.push(point_serialized);
+			egui::Sides::new().show(
+				ui,
+				|_ui| {},
+				|ui| {
+					if ui.button("Yes").clicked() {
+						#[cfg(target_arch = "wasm32")]
+						{
+							if let Some(storage) = frame.storage_mut() {
+								storage.flush();
+							}
+							ui_state.web_storage.remove(file);
+						}
+						#[cfg(not(target_arch = "wasm32"))]
+						{
+							if let Ok(()) = std::fs::remove_file(PathBuf::from(&ui_state.cur_dir).join(file)) {
+								ui_state.web_storage.remove(file);
+							}
+						}
+						ui.close();
 					}
-					EntryValueSerialized::Points(points_serialized)
-				},
-				EntryData::Integral { func_text, lower_text, upper_text, resolution, .. } => {
-					EntryValueSerialized::Integral {
-						func_text:  func_text.clone(),
-						lower_text: lower_text.clone(),
-						upper_text: upper_text.clone(),
-						resolution: *resolution,
+
+					if ui.button("No").clicked() {
+						ui.close();
 					}
 				},
-			},
-		};
-		result.push(entry_serialized);
+			);
+		});
+
+		if modal.should_close() {
+			ui_state.file_to_remove = None;
+		}
 	}
-	serde_json::to_writer(writer, &result)?;
-	Ok(())
 }
+// pub fn snap_range_to_grid(start: f64, end: f64, expand_percent: f64) -> (f64, f64) {
+// 	let range = end - start;
+// 	let expansion = range * (expand_percent / 100.0);
 
-#[cfg(target_arch = "wasm32")]
-pub fn deserialize_from_url<T: NumericTypesExt>() -> Result<Vec<Entry<T>>, String>
-where
-	T::Float: Send + Sync + Copy,
-	T::Int: Send + Sync, {
-	let href = web_sys::window()
-		.expect("Couldn't get window")
-		.document()
-		.expect("Couldn't get document")
-		.location()
-		.expect("Couldn't get location")
-		.href()
-		.expect("Couldn't get href");
+// 	// Expand the range
+// 	let expanded_start = start - expansion;
+// 	let expanded_end = end + expansion;
+// 	let expanded_range = expanded_end - expanded_start;
 
-	if !href.contains('#') {
-		return Ok(Vec::new());
-	}
-	let Some(without_prefix) = href.split('#').last() else {
-		return Ok(Vec::new());
-	};
+// 	let grid_size = calculate_grid_size_dynamic(expanded_range);
 
-	let decoded = urlencoding::decode(without_prefix).map_err(|e| e.to_string())?;
-	deserialize_from(decoded.as_bytes())
-}
+// 	// snap to boundaries
+// 	let snapped_start = (expanded_start / grid_size).floor() * grid_size;
+// 	let snapped_end = (expanded_end / grid_size).ceil() * grid_size;
 
-pub fn deserialize_from<T: NumericTypesExt>(reader: &[u8]) -> Result<Vec<Entry<T>>, String>
-where
-	T::Float: Send + Sync + Copy,
-	T::Int: Send + Sync, {
-	let entries: Vec<EntrySerialized> = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
-	let mut result = Vec::new();
-	for entry in entries {
-		let entry_deserialized = Entry {
-			name:    entry.name,
-			visible: entry.visible,
-			color:   entry.color,
-			value:   match entry.value {
-				EntryValueSerialized::Function(text) => {
-					EntryData::Function { func: evalexpr::build_operator_tree::<T>(&text).ok(), text }
-				},
-				EntryValueSerialized::Constant { value, step, ty } => {
-					EntryData::Constant { value: T::f64_to_float(value), step, ty }
-				},
-				EntryValueSerialized::Points(points) => {
-					let mut points_deserialized = Vec::new();
-					for point in points {
-						let point_deserialized = EntryPoint {
-							x:      evalexpr::build_operator_tree::<T>(&point.x).ok(),
-							y:      evalexpr::build_operator_tree::<T>(&point.y).ok(),
-							text_x: point.x,
-							text_y: point.y,
-						};
-						points_deserialized.push(point_deserialized);
-					}
-					EntryData::Points(points_deserialized)
-				},
-				EntryValueSerialized::Integral { func_text, lower_text, upper_text, resolution } => {
-					EntryData::Integral {
-						func: evalexpr::build_operator_tree::<T>(&func_text).ok(),
-						lower: evalexpr::build_operator_tree::<T>(&lower_text).ok(),
-						upper: evalexpr::build_operator_tree::<T>(&upper_text).ok(),
-						func_text,
-						lower_text,
-						upper_text,
-						calculated: None,
-						resolution: resolution.max(10),
-					}
-				},
-			},
-		};
-		result.push(entry_deserialized);
-	}
-	Ok(result)
-}
+// 	(snapped_start, snapped_end)
+// }
 
-pub fn snap_range_to_grid(start: f64, end: f64, expand_percent: f64) -> (f64, f64) {
-	let range = end - start;
-	let expansion = range * (expand_percent / 100.0);
+// /// Calculate grid size dynamically with hysteresis
+// fn calculate_grid_size_dynamic(range: f64) -> f64 {
+// 	let range = range.abs();
+// 	if range == 0.0 {
+// 		return 1.0;
+// 	}
 
-	// Expand the range
-	let expanded_start = start - expansion;
-	let expanded_end = end + expansion;
-	let expanded_range = expanded_end - expanded_start;
+// 	let exp = range.log10().floor();
+// 	let power = 10_f64.powf(exp);
+// 	let normalized = range / power;
 
-	let grid_size = calculate_grid_size_dynamic(expanded_range);
-
-	// snap to boundaries
-	let snapped_start = (expanded_start / grid_size).floor() * grid_size;
-	let snapped_end = (expanded_end / grid_size).ceil() * grid_size;
-
-	(snapped_start, snapped_end)
-}
-
-/// Calculate grid size dynamically with hysteresis
-fn calculate_grid_size_dynamic(range: f64) -> f64 {
-	let range = range.abs();
-	if range == 0.0 {
-		return 1.0;
-	}
-
-	let exp = range.log10().floor();
-	let power = 10_f64.powf(exp);
-	let normalized = range / power;
-
-	// Use wider buckets to reduce threshold sensitivity
-	let multiplier = if normalized < 2.5 {
-		0.5
-	} else if normalized < 5.0 {
-		1.0
-	} else if normalized < 7.5 {
-		2.0
-	} else {
-		5.0
-	};
-	multiplier * power
-}
+// 	// Use wider buckets to reduce threshold sensitivity
+// 	let multiplier = if normalized < 2.5 {
+// 		0.5
+// 	} else if normalized < 5.0 {
+// 		1.0
+// 	} else if normalized < 7.5 {
+// 		2.0
+// 	} else {
+// 		5.0
+// 	};
+// 	multiplier * power
+// }

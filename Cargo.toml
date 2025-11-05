@@ -2,7 +2,7 @@
 [package]
 name = "rust_graph"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
 license = "MIT"
