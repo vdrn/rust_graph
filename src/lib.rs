@@ -145,7 +145,7 @@ where
 	ctx:          &'static std::sync::RwLock<evalexpr::HashMapContext<T>>,
 	// context_stash: &'static Mutex<Vec<evalexpr::HashMapContext<T>>>,
 	name:         String,
-	points_cache: PointsCache,
+	// points_cache: PointsCache,
 	clear_cache:  bool,
 }
 fn init_consts<T: NumericTypesExt>(ctx: &mut evalexpr::HashMapContext<T>)
@@ -172,7 +172,7 @@ where
 			ctx.set_function(
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |v| {
-					let v: T::Float = v.as_number()?;
+					let v: T::Float = v.as_float()?;
 					Ok(Value::Float(v.$ident()))
 				}),
 			)
@@ -213,8 +213,8 @@ where
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |v| {
 					let mut v = v.as_fixed_len_tuple(2)?;
-					let v2: T::Float = v.pop().unwrap().as_number()?;
-					let v1: T::Float = v.pop().unwrap().as_number()?;
+					let v2: T::Float = v.pop().unwrap().as_float()?;
+					let v1: T::Float = v.pop().unwrap().as_float()?;
 
 					Ok(Value::Float(v1.$ident(&v2)))
 				}),
@@ -275,7 +275,7 @@ pub fn run_puffin_server() -> puffin_http::Server {
 	let puffin_server = puffin_http::Server::new(&server_addr).unwrap();
 	println!("Run this to view profiling data:  puffin_viewer {server_addr}");
 
-	puffin::set_scopes_on(true);
+	puffin::set_scopes_on(false);
 
 	puffin_server
 }
@@ -350,14 +350,14 @@ impl Application {
 				entries:      entries_s,
 				ctx:          ctx_s,
 				name:         String::new(),
-				points_cache: PointsCache::default(),
+				// points_cache: PointsCache::default(),
 				clear_cache:  true,
 			},
 			d:                                          State {
 				entries:      entries_d,
 				ctx:          ctx_d,
 				name:         String::new(),
-				points_cache: PointsCache::default(),
+				// points_cache: PointsCache::default(),
 				clear_cache:  true,
 			},
 			ui:                                         UiState {
@@ -765,19 +765,19 @@ impl Application {
 				ui.separator();
 
 				CollapsingHeader::new("Settings").default_open(true).show(ui, |ui| {
-					ui.horizontal_top(|ui| {
-						let mut total_bytes = 0;
-						for entry in state.points_cache.iter() {
-							total_bytes += 16 * entry.1.capacity()
-						}
-						ui.label(format!(
-							"Points Cache is at least: {}MB",
-							total_bytes as f64 / (1024.0 * 1024.0)
-						));
-						if ui.button("Clear points cache").clicked() {
-							state.clear_cache = true;
-						}
-					});
+					// ui.horizontal_top(|ui| {
+					// 	let mut total_bytes = 0;
+					// 	for entry in state.points_cache.iter() {
+					// 		total_bytes += 16 * entry.1.capacity()
+					// 	}
+					// 	ui.label(format!(
+					// 		"Points Cache is at least: {}MB",
+					// 		total_bytes as f64 / (1024.0 * 1024.0)
+					// 	));
+					// 	if ui.button("Clear points cache").clicked() {
+					// 		state.clear_cache = true;
+					// 	}
+					// });
 
 					ui.separator();
 					ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
@@ -797,7 +797,7 @@ impl Application {
 
 				if needs_recompilation || state.clear_cache {
 					puffin::profile_scope!("clear_cache");
-					state.points_cache.clear();
+					// state.points_cache.clear();
 					let mut output = Vec::new();
 					if serialize_to(&mut output, &state.entries).is_ok() {
 						// let mut data_str = String::with_capacity(output.len() + 1);
@@ -838,20 +838,20 @@ impl Application {
 								},
 								EntryData::Function { text, func } => {
 									if let Some(func) = func.clone() {
-										struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
-										impl Clone for LocalCache {
-											fn clone(&self) -> Self {
-												Self(Mutex::new(self.0.lock().unwrap().clone()))
-											}
-										}
-										impl LocalCache {
-											fn lock(&self) -> MutexGuard<'_, AHashMap<CacheKey, f64>> {
-												self.0.lock().unwrap()
-											}
-										}
-										let local_cache: LocalCache = LocalCache(Mutex::new(
-											AHashMap::with_capacity(ui_state.conf.resolution),
-										));
+										// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
+										// impl Clone for LocalCache {
+										// 	fn clone(&self) -> Self {
+										// 		Self(Mutex::new(self.0.lock().unwrap().clone()))
+										// 	}
+										// }
+										// impl LocalCache {
+										// 	fn lock(&self) -> MutexGuard<'_, AHashMap<CacheKey, f64>> {
+										// 		self.0.lock().unwrap()
+										// 	}
+										// }
+										// let local_cache: LocalCache = LocalCache(Mutex::new(
+										// 	AHashMap::with_capacity(ui_state.conf.resolution),
+										// ));
 										let animating = ui_state.animating.clone();
 										let fun = Function::new(move |v| {
 											// puffin::profile_scope!("eval_function");
@@ -868,9 +868,9 @@ impl Application {
 												Value::Float(x) => *x,
 												Value::Boolean(x) => T::f64_to_float(*x as i64 as f64),
 												Value::String(_) => T::ZERO,
-												Value::Int(x) => T::int_as_float(x),
+												// Value::Int(x) => T::int_as_float(x),
 												Value::Tuple(values) => values[0]
-													.as_number()
+													.as_float()
 													.or_else(|_| {
 														values[0]
 															.as_boolean()
@@ -879,30 +879,30 @@ impl Application {
 													.unwrap_or(T::ZERO),
 												Value::Empty => T::ZERO,
 											};
-											let animating = animating.load(Ordering::Relaxed);
-											if !animating {
-												if let Some(cached) =
-													local_cache.lock().get(&CacheKey(T::float_to_f64(v)))
-												{
-													stack_overflow_guard
-														.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-													return Ok(Value::Float(T::f64_to_float(*cached)));
-												}
-											}
+											// let animating = animating.load(Ordering::Relaxed);
+											// if !animating {
+											// 	if let Some(cached) =
+											// 		local_cache.lock().get(&CacheKey(T::float_to_f64(v)))
+											// 	{
+											// 		stack_overflow_guard
+											// 			.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+											// 		return Ok(Value::Float(T::f64_to_float(*cached)));
+											// 	}
+											// }
 											let vv = Value::<T>::Float(v);
 
 											let context = main_context.read().unwrap();
 
-											let res = { func.eval_number_with_context_and_x(&*context, &vv) };
+											let res = { func.eval_float_with_context_and_x(&*context, &vv) };
 											stack_overflow_guard
 												.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 											res.map(|res| {
-												if !animating {
-													local_cache.lock().insert(
-														CacheKey(T::float_to_f64(v)),
-														T::float_to_f64(res),
-													);
-												}
+												// if !animating {
+												// 	local_cache.lock().insert(
+												// 		CacheKey(T::float_to_f64(v)),
+												// 		T::float_to_f64(res),
+												// 	);
+												// }
 												Value::Float(res)
 											})
 										});
@@ -1060,7 +1060,7 @@ impl Application {
 			let Ok(mut file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 				return Err(format!("Could not open file: {}", file_name));
 			};
-			let entries = deserialize_from::<T>(&mut file).unwrap();
+			let entries = deserialize_from::<T>(&mut file).map_err(|e| format!("Could not deserialize file: {}", e))?;
 			state.entries = entries;
 			state.name = file_name.strip_suffix(".json").unwrap().to_string();
 		}
@@ -1119,7 +1119,7 @@ impl Application {
 	where
 		T::Float: Send + Sync + Copy,
 		T::Int: Send + Sync + Copy, {
-		let main_context = state.ctx;
+		let main_context = &*state.ctx.read().unwrap();
 		let stack_overflow_guard = ui_state.stack_overflow_guard;
 		let first_x = ui_state.plot_bounds.min()[0];
 		let last_x = ui_state.plot_bounds.max()[0];
@@ -1156,7 +1156,7 @@ impl Application {
 				EntryData::Integral { func, func_text, lower, upper, calculated, resolution, .. } => {
 					match (lower, upper, func) {
 						(Some(lower), Some(upper), Some(func)) => {
-							let lower = match lower.eval_number_with_context(&*main_context.read().unwrap()) {
+							let lower = match lower.eval_float_with_context(main_context) {
 								Ok(lower) => T::float_to_f64(lower),
 								Err(e) => {
 									ui_state
@@ -1165,7 +1165,7 @@ impl Application {
 									continue 'next_entry;
 								},
 							};
-							let upper = match upper.eval_number_with_context(&*main_context.read().unwrap()) {
+							let upper = match upper.eval_float_with_context(main_context) {
 								Ok(upper) => T::float_to_f64(upper),
 								Err(e) => {
 									ui_state
@@ -1191,12 +1191,12 @@ impl Application {
 							}
 							*calculated = None;
 
-							let mut cache = (!animating).then(|| {
-								state
-									.points_cache
-									.entry(func_text.clone())
-									.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
-							});
+							// let mut cache = (!animating).then(|| {
+							// 	state
+							// 		.points_cache
+							// 		.entry(func_text.clone())
+							// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
+							// });
 
 							let mut int_lines = vec![];
 							let mut fun_lines = vec![];
@@ -1214,37 +1214,38 @@ impl Application {
 
 								let xx = evalexpr::Value::<T>::Float(T::f64_to_float(x));
 
-								let y_f64 = if let Some(cache) = &mut cache {
-									let val = cache.entry(CacheKey(x));
-									match val {
-										hash_map::Entry::Occupied(entry) => entry.get().clone(),
-										hash_map::Entry::Vacant(entry) => {
-											match func.eval_number_with_context_and_x(
-												&*main_context.read().unwrap(),
-												&xx,
-											) {
-												Ok(y) => {
-													let y = T::float_to_f64(y);
-													entry.insert(y);
-													y
-												},
-												Err(e) => {
-													ui_state.eval_errors.insert(ei, e.to_string());
-													continue 'next_entry;
-												},
-											}
-										},
-									}
-								} else {
+								let y_f64 =
+                  // if let Some(cache) = &mut cache {
+									// let val = cache.entry(CacheKey(x));
+									// match val {
+										// hash_map::Entry::Occupied(entry) => entry.get().clone(),
+										// hash_map::Entry::Vacant(entry) => {
+											// match func.eval_number_with_context_and_x(
+												// &*main_context.read().unwrap(),
+												// &xx,
+											// ) {
+												// Ok(y) => {
+													// let y = T::float_to_f64(y);
+													// entry.insert(y);
+													// y
+												// },
+												// Err(e) => {
+													// ui_state.eval_errors.insert(ei, e.to_string());
+													// continue 'next_entry;
+												// },
+											// }
+										// },
+									// }
+								// } else {
 									match func
-										.eval_number_with_context_and_x(&*main_context.read().unwrap(), &xx)
+										.eval_float_with_context_and_x(main_context, &xx)
 									{
 										Ok(y) => T::float_to_f64(y),
 										Err(e) => {
 											ui_state.eval_errors.insert(ei, e.to_string());
 											continue 'next_entry;
 										},
-									}
+									// }
 								};
 
 								let y = T::f64_to_float(y_f64);
@@ -1357,14 +1358,14 @@ impl Application {
 					}
 				},
 				EntryData::Points(ps) => {
-					main_context
-						.write()
-						.unwrap()
-						.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
-						.unwrap();
+					// main_context
+					// 	.write()
+					// 	.unwrap()
+					// 	.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
+					// 	.unwrap();
 					let mut line_buffer = vec![];
 					for p in ps {
-						match eval_point(&*main_context.read().unwrap(), p) {
+						match eval_point(main_context, p) {
 							Ok(Some((x, y))) => line_buffer.push([x, y]),
 							Err(e) => {
 								ui_state.eval_errors.insert(ei, e);
@@ -1395,12 +1396,12 @@ impl Application {
 						} else {
 							format!("{}(x) = {}", entry.name, text)
 						};
-						let mut cache = (!animating).then(|| {
-							state
-								.points_cache
-								.entry(text.clone())
-								.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
-						});
+						// let mut cache = (!animating).then(|| {
+						// 	state
+						// 		.points_cache
+						// 		.entry(text.clone())
+						// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
+						// });
 
 						let mut local_optima_buffer = vec![];
 						let mut pp_buffer = vec![];
@@ -1411,31 +1412,33 @@ impl Application {
 							let cur_x = x;
 							puffin::profile_scope!("graph_step");
 
-							let cur_y = if let Some(cache) = &mut cache {
-								let value = cache.entry(CacheKey(x));
+							let cur_y =
+                // if let Some(cache) = &mut cache {
+								// let value = cache.entry(CacheKey(x));
 
-								match value {
-									hash_map::Entry::Occupied(entry) => entry.get().clone(),
-									hash_map::Entry::Vacant(entry) => {
-										let x = evalexpr::Value::<T>::Float(T::f64_to_float(x));
-										match func
-											.eval_number_with_context_and_x(&*main_context.read().unwrap(), &x)
-										{
-											Ok(y) => {
-												entry.insert(T::float_to_f64(y));
-												T::float_to_f64(y)
-											},
-											Err(e) => {
-												ui_state.eval_errors.insert(ei, e.to_string());
+								// match value {
+									// hash_map::Entry::Occupied(entry) => entry.get().clone(),
+									// hash_map::Entry::Vacant(entry) => {
+										// let x = evalexpr::Value::<T>::Float(T::f64_to_float(x));
+										// match func
+											// .eval_number_with_context_and_x(&*main_context.read().unwrap(), &x)
+										// {
+											// Ok(y) => {
+												// entry.insert(T::float_to_f64(y));
+												// T::float_to_f64(y)
+											// },
+											// Err(e) => {
+												// ui_state.eval_errors.insert(ei, e.to_string());
 
-												continue 'next_entry;
-											},
-										}
-									},
-								}
-							} else {
+												// continue 'next_entry;
+											// },
+										// }
+									// },
+								// }
+							// } else
+                {
 								let x = evalexpr::Value::<T>::Float(T::f64_to_float(x));
-								match func.eval_number_with_context_and_x(&*main_context.read().unwrap(), &x) {
+								match func.eval_float_with_context_and_x(main_context, &x) {
 									Ok(y) => T::float_to_f64(y),
 									Err(e) => {
 										ui_state.eval_errors.insert(ei, e.to_string());
@@ -1608,8 +1611,8 @@ where
 	T::Int: Send + Sync, {
 	match (&p.x, &p.y) {
 		(Some(x), Some(y)) => {
-			let x = x.eval_number_with_context(ctx).map_err(|e| e.to_string())?;
-			let y = y.eval_number_with_context(ctx).map_err(|e| e.to_string())?;
+			let x = x.eval_float_with_context_and_x(ctx,&Value::Float(T::ZERO)).map_err(|e| e.to_string())?;
+			let y = y.eval_float_with_context_and_x(ctx,&Value::Float(T::ZERO)).map_err(|e| e.to_string())?;
 			return Ok(Some((T::float_to_f64(x), T::float_to_f64(y))));
 		},
 		_ => {},

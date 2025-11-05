@@ -25,8 +25,7 @@ eframe = {version="0.33", features=["persistence"]}
 cfg-if = "1"
 egui_plot="*"
 wasm-bindgen-futures = "0.4"
-# evalexpr={version="13", fetures=["serde"]}
-# evalexpr={path ="../../contrib/evalexpr", features=["serde"]}
+# evalexpr={path ="../../contrib/evalexpr"}
 evalexpr={git="https://github.com/vdrn/evalexpr"}
 
 smallvec="*"
