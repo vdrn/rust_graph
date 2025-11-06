@@ -7,7 +7,7 @@ use std::sync::RwLock;
 use ahash::AHashMap;
 use eframe::egui::{self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals};
 use eframe::epaint::Color32;
-use eframe::{App, Storage};
+use eframe::{App, CreationContext};
 use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, Points, VLine};
 use evalexpr::{
 	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Value
@@ -26,8 +26,7 @@ macro_rules! scope {
 }
 #[cfg(not(all(feature = "puffin", not(target_arch = "wasm32"))))]
 macro_rules! scope {
-  ($($tt:tt)*) => {
-  }
+	($($tt:tt)*) => {};
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -52,7 +51,7 @@ pub fn wasm_main() -> () {
 			.expect("the_canvas_id was not a HtmlCanvasElement");
 
 		let start_result = eframe::WebRunner::new()
-			.start(canvas, web_options, Box::new(|cc| Ok(Box::new(Application::new(cc.storage)))))
+			.start(canvas, web_options, Box::new(|cc| Ok(Box::new(Application::new(cc)))))
 			.await;
 
 		// Remove the loading text and spinner:
@@ -166,11 +165,14 @@ struct AppConfig {
 	dark_mode:  bool,
 	use_f32:    bool,
 	resolution: usize,
+	fullscreen: bool,
 
 	ui_scale: f32,
 }
 impl Default for AppConfig {
-	fn default() -> Self { Self { dark_mode: true, use_f32: false, resolution: 500, ui_scale: 1.5 } }
+	fn default() -> Self {
+		Self { fullscreen: true, dark_mode: true, use_f32: false, resolution: 500, ui_scale: 1.5 }
+	}
 }
 
 struct UiState {
@@ -219,7 +221,7 @@ pub fn run_puffin_server() -> puffin_http::Server {
 	puffin_server
 }
 impl Application {
-	pub fn new(storage: Option<&dyn Storage>) -> Self {
+	pub fn new(cc: &CreationContext) -> Self {
 		let mut entries_s = Vec::new();
 		let mut entries_d = Vec::new();
 
@@ -229,47 +231,49 @@ impl Application {
 		#[allow(unused_mut)]
 		let mut serialization_error = None;
 
-		let conf = storage
+		let conf: AppConfig = cc
+			.storage
 			.and_then(|s| s.get_string(CONF_KEY).and_then(|d| serde_json::from_str(&d).ok()))
 			.unwrap_or_default();
 
+		if !conf.fullscreen {
+			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+		}
+
+		#[rustfmt::skip]
 		cfg_if::cfg_if! {
-			  if #[cfg(target_arch = "wasm32")] {
-			let cur_dir = String::new();
-			// 	let error: Option<String> = web::get_data_from_url(&mut data);
-			if let Some(storage) = storage{
-			  if let Some(data) = storage.get_string(DATA_KEY) {
-				web_storage = serde_json::from_str(&data).unwrap();
+      if #[cfg(target_arch = "wasm32")] {
+        let cur_dir = String::new();
+        // 	let error: Option<String> = web::get_data_from_url(&mut data);
+        if let Some(storage) = cc.storage{
+          if let Some(data) = storage.get_string(DATA_KEY) {
+            web_storage = serde_json::from_str(&data).unwrap();
+          }
+        }
 
-			  }
-
-			}
-
-		match persistence::deserialize_from_url::<F32NumericTypes>() {
-		  Ok(data)=>{
-			entries_s = data;
-		  },
-		  Err(e)=>{
-			serialization_error = Some(e);
-		  }
+        match persistence::deserialize_from_url::<F32NumericTypes>() {
+          Ok(data)=>{
+            entries_s = data;
+          },
+          Err(e)=>{
+            serialization_error = Some(e);
+          }
+        }
+        match persistence::deserialize_from_url::<DefaultNumericTypes>() {
+          Ok(data)=>{
+            entries_d = data;
+          },
+          Err(e)=>{
+            serialization_error = Some(e);
+          }
+        }
+      } else {
+        let cur_dir = env::home_dir()
+          .and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
+          .unwrap_or_default();
+        persistence::load_file_entries(&cur_dir, &mut web_storage);
+      }
 		}
-		match persistence::deserialize_from_url::<DefaultNumericTypes>() {
-		  Ok(data)=>{
-			entries_d = data;
-		  },
-		  Err(e)=>{
-			serialization_error = Some(e);
-		  }
-		}
-
-
-			  } else {
-			let cur_dir = env::home_dir()
-				.and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
-				.unwrap_or_default();
-			persistence::load_file_entries(&cur_dir, &mut web_storage);
-			  }
-			}
 
 		let mut next_color = 0;
 		if entries_s.is_empty() {
@@ -435,13 +439,13 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 			ui.add_space(4.5);
 
-			// let mut remove = None;
+			let mut remove = None;
 			let mut animating = false;
-			for n in (0..state.entries.len()).rev() {
+			for n in 0..state.entries.len() {
 				let entry = &mut state.entries[n];
 				let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
 				if result.remove {
-					state.entries.remove(n);
+					remove = Some(n);
 				}
 				animating |= result.animating;
 				needs_recompilation |= result.needs_recompilation;
@@ -455,6 +459,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 				ui.separator();
 			}
 
+			if let Some(n) = remove {
+				state.entries.remove(n);
+			}
 			// ui_state.animating.store(animating, Ordering::Relaxed);
 
 			#[cfg(not(target_arch = "wasm32"))]
@@ -489,6 +496,16 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 				ui.separator();
 				ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
+
+				ui.separator();
+				#[cfg(not(target_arch = "wasm32"))]
+				if ui.button("Toggle Fullscreen").clicked()
+					|| ui.input(|i| i.key_pressed(egui::Key::F11))
+					|| ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter))
+				{
+					ui_state.conf.fullscreen = !ui_state.conf.fullscreen;
+					ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(ui_state.conf.fullscreen));
+				}
 			});
 
 			ui.separator();
