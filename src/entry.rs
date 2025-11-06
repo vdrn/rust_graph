@@ -260,7 +260,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.label("Lower:");
-							match edit_expr(ui, lower_text, lower, "lower", Some(30.0), clear_cache) {
+							match edit_expr(ui, lower_text, lower, "lower", Some(50.0), clear_cache) {
 								Ok(_changed) => {
 									// needs_recompilation |= changed;
 								},
@@ -269,7 +269,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								},
 							}
 							ui.label("Upper:");
-							match edit_expr(ui, upper_text, upper, "upper", Some(30.0), clear_cache) {
+							match edit_expr(ui, upper_text, upper, "upper", Some(50.0), clear_cache) {
 								Ok(_changed) => {
 									// needs_recompilation |= changed;
 								},
@@ -465,7 +465,7 @@ fn edit_expr<T: EvalexprNumericTypes>(
 	ui: &mut egui::Ui, text: &mut String, expr: &mut Option<Node<T>>, hint_text: &str,
 	desired_width: Option<f32>, force_update: bool,
 ) -> Result<bool, String> {
-	let mut text_edit = TextEdit::singleline(text).hint_text(hint_text);
+	let mut text_edit = TextEdit::singleline(text).hint_text(hint_text).code_editor();
 	if let Some(width) = desired_width {
 		text_edit = text_edit.desired_width(width);
 	}

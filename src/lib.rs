@@ -5,12 +5,14 @@ use std::env;
 use std::sync::RwLock;
 
 use ahash::AHashMap;
-use eframe::egui::{self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals};
+use eframe::egui::{
+	self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Window
+};
 use eframe::epaint::Color32;
 use eframe::{App, CreationContext};
 use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, Points, VLine};
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Value
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +99,12 @@ fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	add_const!(PI, "PI", "pi");
 	add_const!(TAU, "TAU", "tau");
 }
+#[rustfmt::skip]
+const BUILTIN_CONSTS: &[(&str, &str)] = &[
+  ("e","2.718281828459045"),
+  ("pi","3.141592653589793"),
+  ("tau","6.283185307179586"),
+];
 fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_function {
 		($ident:ident) => {
@@ -134,8 +142,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 
 	add_function!(sqrt);
 	add_function!(cbrt);
-	add_function!(asin);
 
+	add_function!(signum);
 	add_function!(abs);
 
 	macro_rules! add_function_2 {
@@ -143,9 +151,19 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 			ctx.set_function(
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |v| {
-					let mut v = v.as_fixed_len_tuple(2)?;
-					let v2: T::Float = v.pop().unwrap().as_float()?;
-					let v1: T::Float = v.pop().unwrap().as_float()?;
+					let v = v.as_tuple_ref()?;
+					let v1: T::Float = v
+						.first()
+						.ok_or_else(|| {
+							EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
+						})?
+						.as_float()?;
+					let v2: T::Float = v
+						.get(1)
+						.ok_or_else(|| {
+							EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
+						})?
+						.as_float()?;
 
 					Ok(Value::Float(v1.$ident(&v2)))
 				}),
@@ -158,7 +176,106 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	add_function_2!(log);
 	add_function_2!(atan2);
 	add_function_2!(hypot);
+
+	ctx.set_function(
+		"normaldist".to_string(),
+		evalexpr::Function::new(move |v| {
+			let zero = T::Float::f64_to_float(0.0);
+			let one = T::Float::f64_to_float(1.0);
+
+			let (x, mean, std_dev) = if let Ok(x) = v.as_float() {
+				(x, zero, one)
+			} else {
+				let v = v.as_tuple_ref()?;
+				let x = v
+					.first()
+					.ok_or_else(|| {
+						EvalexprError::CustomMessage("normaldist requires at least 1 argument".to_string())
+					})?
+					.as_float()?;
+				let mean: T::Float =
+					v.get(1).unwrap_or(&Value::Float(T::Float::f64_to_float(0.0))).as_float()?;
+				let std_dev: T::Float =
+					v.get(2).unwrap_or(&Value::Float(T::Float::f64_to_float(1.0))).as_float()?;
+				(x, mean, std_dev)
+			};
+
+			let two = T::Float::f64_to_float(2.0);
+			let coefficient = T::Float::f64_to_float(1.0)
+				/ (std_dev * T::Float::f64_to_float(2.0 * core::f64::consts::PI).sqrt());
+			let diff: T::Float = x - mean;
+			let exponent = -(diff.pow(&two)) / (T::Float::f64_to_float(2.0) * std_dev.pow(&two));
+			Ok(Value::Float(coefficient * exponent.exp()))
+		}),
+	)
+	.unwrap();
+	// };
 }
+#[rustfmt::skip]
+const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
+	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
+	("", ""),
+	("max(a, b)", " Returns the maximum of the two numbers."),
+	("min(a, b)", " Returns the minimum of the two numbers."),
+	("floor(a)", " Returns the largest integer less than or equal to a."),
+	("round(a)", " Returns the nearest integer to a. If a value is half-way between two integers, round away from 0.0.",),
+	("ceil(a)", "Returns the smallesst integer greater than or equal to a."),
+	("singnum(a)", " Returns the sign of a."),
+	("abs(a)", " Returns the absolute value of a."),
+	("", ""),
+	("ln(a)", " Compute the natural logarithm."),
+	("ln2(a)", " Compute the logarithm base 2."),
+	("ln10(a)", " Compute the logarithm base 10."),
+	("log(a,base)", " Compute the logarithm to a certain base."),
+	("exp(a)", " Exponentiate with base e."),
+	("exp2(a)", " Exponentiate with base 2."),
+	("pow(a,b)", " Compute the power of a to the exponent b."),
+	("sqrt(a)", " Compute the square root."),
+	("cbrt(a)", " Compute the cubic root."),
+	("", ""),
+	("cos(a)", " Compute the cosine."),
+	("cosh(a)", " Compute the hyperbolic cosine."),
+	("acos(a)", " Compute the arccosine."),
+	("acosh(a)", " Compute the hyperbolic arccosine."),
+	("sin(a)", " Compute the sine."),
+	("sinh(a)", " Compute the hyperbolic sine."),
+	("asin(a)", " Compute the arcsine."),
+	("asinh(a)", " Compute the hyperbolic arcsine."),
+	("tan(a)", " Compute the tangent."),
+	("tanh(a)", " Compute the hyperbolic tangent."),
+	("atan(a)", " Compute the arctangent."),
+	("atanh(a)", " Compute the hyperbolic arctangent."),
+	("atan2(a,b)", " Compute the four quadrant arctangent."),
+	("", ""),
+	("hypot(a,b)", " Compute the distance between the origin and a point (a,b) on the Euclidean plane."),
+
+	("", ""),
+  ("normaldist(a, mean, std_dev)", " Compute the probability density of normal distribution at a with mean(default 0) and standard deviation (default 1)."),
+
+];
+const OPERATORS: &[(&str, &str)] = &[
+	("(...)", "Parentheses grouping"),
+	("a + b", "Addition"),
+	("a - b", "Subtraction"),
+	("a * b", "Multiplication"),
+	("a / b", "Division"),
+	("a % b", "Modulo"),
+	("a ^ b", "Power"),
+	("-a", "Negation"),
+	("f(param)", "Function call"),
+	("f param", "Also a function call"),
+];
+const BOOLEAN_OPERATORS: &[(&str, &str)] = &[
+	("a == b", "Equal to"),
+	("a != b", "Not equal to"),
+	("a < b", "Less than"),
+	("a <= b", "Less than or equal to"),
+	("a > b", "Greater than"),
+	("a >= b", "Greater than or equal to"),
+	("a && b", "Logical AND"),
+	("a || b", "Logical OR"),
+	("!a", "Logical NOT"),
+];
 
 #[derive(Serialize, Deserialize)]
 struct AppConfig {
@@ -197,9 +314,10 @@ struct UiState {
 	// animating:            Arc<AtomicBool>,
 	file_to_remove:       Option<String>,
 
-	lines:    Vec<(bool, Id, egui_plot::Line<'static>)>,
-	points:   Vec<egui_plot::Points<'static>>,
-	polygons: Vec<egui_plot::Polygon<'static>>,
+	lines:        Vec<(bool, Id, egui_plot::Line<'static>)>,
+	points:       Vec<egui_plot::Points<'static>>,
+	polygons:     Vec<egui_plot::Polygon<'static>>,
+	showing_help: bool,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -327,6 +445,7 @@ impl Application {
 				lines: Vec::with_capacity(512),
 				points: Vec::with_capacity(512),
 				polygons: Vec::with_capacity(512),
+				showing_help: false,
 			},
 		}
 	}
@@ -505,6 +624,52 @@ fn side_panel<T: EvalexprNumericTypes>(
 				{
 					ui_state.conf.fullscreen = !ui_state.conf.fullscreen;
 					ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(ui_state.conf.fullscreen));
+				}
+
+				if ui.button("Toggle Help").clicked() {
+					ui_state.showing_help = !ui_state.showing_help;
+				}
+				if ui_state.showing_help {
+					Window::new("Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
+						ScrollArea::vertical().show(ui, |ui| {
+							ui.columns_const::<3, _>(|columns| {
+								columns[0].heading("Operators");
+								for &(name, value) in OPERATORS {
+									columns[0].horizontal_wrapped(|ui| {
+										ui.label(RichText::new(name).monospace().strong());
+										ui.label(value);
+									});
+								}
+								columns[1].heading("Boolean Operators");
+								for &(name, value) in BOOLEAN_OPERATORS {
+									columns[1].horizontal_wrapped(|ui| {
+										ui.label(RichText::new(name).monospace().strong());
+										ui.label(value);
+									});
+								}
+								columns[2].heading("Builtin Constants");
+								for &(name, value) in BUILTIN_CONSTS {
+									columns[2].horizontal_wrapped(|ui| {
+										ui.label(RichText::new(name).monospace().strong());
+										ui.label(value);
+									});
+								}
+							});
+
+							ui.separator();
+							ui.heading("Builtin Functions");
+							for &(name, value) in BUILTIN_FUNCTIONS {
+								if name.is_empty() {
+									ui.separator();
+								} else {
+									ui.horizontal_wrapped(|ui| {
+										ui.label(RichText::new(name).monospace().strong());
+										ui.label(value);
+									});
+								}
+							}
+						});
+					});
 				}
 			});
 
