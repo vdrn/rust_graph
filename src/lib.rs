@@ -492,7 +492,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 				ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
 
 				ui.separator();
-				ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=1000).text("Point Resolution"));
+				ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=2000).text("Point Resolution"));
 
 				ui.separator();
 				ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
