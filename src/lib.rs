@@ -18,6 +18,18 @@ mod entry;
 mod persistence;
 use crate::entry::{ConstantType, Entry, EntryType, PointEntry};
 
+#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+macro_rules! scope {
+  ($($tt:tt)*) => {
+      puffin::profile_scope!($($tt)*)
+  }
+}
+#[cfg(not(all(feature = "puffin", not(target_arch = "wasm32"))))]
+macro_rules! scope {
+  ($($tt:tt)*) => {
+  }
+}
+
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
 
@@ -192,11 +204,11 @@ pub struct Application {
 	state_f64: State<DefaultNumericTypes>,
 	state_f32: State<F32NumericTypes>,
 	ui:        UiState,
-	#[cfg(not(target_arch = "wasm32"))]
+	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	_puffin:   puffin_http::Server,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 pub fn run_puffin_server() -> puffin_http::Server {
 	let server_addr = format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT);
 	let puffin_server = puffin_http::Server::new(&server_addr).unwrap();
@@ -273,23 +285,23 @@ impl Application {
 		let ctx_d = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
 
 		Self {
-			#[cfg(not(target_arch = "wasm32"))]
-			_puffin:                                     run_puffin_server(),
-			state_f32:                                   State {
+			#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+			_puffin: run_puffin_server(),
+			state_f32: State {
 				entries:     entries_s,
 				ctx:         ctx_s,
 				name:        String::new(),
 				// points_cache: PointsCache::default(),
 				clear_cache: true,
 			},
-			state_f64:                                   State {
+			state_f64: State {
 				entries:     entries_d,
 				ctx:         ctx_d,
 				name:        String::new(),
 				// points_cache: PointsCache::default(),
 				clear_cache: true,
 			},
-			ui:                                          UiState {
+			ui: UiState {
 				// animating: Arc::new(AtomicBool::new(true)),
 				conf,
 				scheduled_url_update: false,
@@ -374,9 +386,10 @@ impl App for Application {
 fn side_panel<T: EvalexprNumericTypes>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) {
+	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	puffin::GlobalProfiler::lock().new_frame();
 
-	puffin::profile_scope!("side_panel");
+	scope!("side_panel");
 	SidePanel::left("left_panel").default_width(200.0).show(ctx, |ui| {
 		ScrollArea::vertical().show(ui, |ui| {
 			ui.add_space(10.0);
@@ -497,7 +510,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 			ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
 
 			if needs_recompilation || state.clear_cache {
-				puffin::profile_scope!("clear_cache");
+				scope!("clear_cache");
 				// state.points_cache.clear();
 				let mut output = Vec::new();
 				if persistence::serialize_to(&mut output, &state.entries).is_ok() {
@@ -518,11 +531,12 @@ fn side_panel<T: EvalexprNumericTypes>(
 				// state.context_stash.lock().unwrap().clear();
 
 				for entry in state.entries.iter_mut() {
+					scope!("entry_recompile");
 					entry::recompile_entry(entry, &state.ctx, &ui_state.stack_overflow_guard);
 				}
 			} else if animating {
 				for entry in state.entries.iter_mut() {
-					puffin::profile_scope!("entry_process");
+					scope!("entry_process");
 					if entry.name != "x" {
 						if let EntryType::Constant { value, .. } = &mut entry.ty {
 							if !entry.name.is_empty() {
@@ -587,9 +601,10 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	};
 
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
-	puffin::profile_scope!("graph");
+	scope!("graph");
 
 	for (ei, entry) in state.entries.iter_mut().enumerate() {
+		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.store(0, Ordering::Relaxed);
 		let id = Id::new(ei);
 		if let Err(error) = entry::create_entry_plot_elements(
@@ -656,10 +671,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		let plot_res = plot.show(ui, |plot_ui| {
-			puffin::profile_scope!("graph_show");
+			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
-			puffin::profile_scope!("graph_lines");
 			for poly in ui_state.polygons.drain(..) {
 				plot_ui.polygon(poly);
 			}

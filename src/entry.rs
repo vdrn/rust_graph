@@ -490,7 +490,6 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &Arc<std::sync::RwLock<evalexpr::HashMapContext<T>>>,
 	stack_overflow_guard: &Arc<AtomicIsize>,
 ) {
-	puffin::profile_scope!("entry_recompile");
 	if entry.name != "x" {
 		match &mut entry.ty {
 			EntryType::Points(_) => {},
@@ -594,7 +593,6 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
 		return Ok(());
 	}
-	puffin::profile_scope!("entry_draw", entry.name.clone());
 	let color = entry.color();
 
 	match &mut entry.ty {
@@ -798,7 +796,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
 				while x < plot_params.last_x {
 					let cur_x = x;
-					puffin::profile_scope!("graph_step");
+					// puffin::profile_scope!("graph_step");
 
 					let cur_y =
                 // if let Some(cache) = &mut cache {
