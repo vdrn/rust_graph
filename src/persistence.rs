@@ -17,7 +17,15 @@ pub struct EntrySerialized {
 }
 #[derive(Serialize, Deserialize)]
 pub enum EntryValueSerialized {
-	Function(String),
+	Function {
+		text:             String,
+		#[serde(default)]
+		ranged:       bool,
+		#[serde(default)]
+		range_start_text: String,
+		#[serde(default)]
+		range_end_text:   String,
+	},
 	Constant {
 		value: f64,
 		step:  f64,
@@ -31,6 +39,12 @@ pub enum EntryValueSerialized {
 
 		#[serde(default)]
 		resolution: usize,
+	},
+	Label {
+		text_x:    String,
+		text_y:    String,
+		text_size: String,
+		underline: bool,
 	},
 }
 #[derive(Serialize, Deserialize)]
@@ -47,7 +61,14 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 			visible: entry.visible,
 			color:   entry.color,
 			value:   match &entry.ty {
-				EntryType::Function { text, .. } => EntryValueSerialized::Function(text.clone()),
+				EntryType::Function { text, ranged, range_start_text, range_end_text, .. } => {
+					EntryValueSerialized::Function {
+						text:             text.clone(),
+						ranged:       *ranged,
+						range_start_text: range_start_text.clone(),
+						range_end_text:   range_end_text.clone(),
+					}
+				},
 				EntryType::Constant { value, step, ty } => {
 					EntryValueSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
 				},
@@ -67,6 +88,12 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 						upper_text: upper_text.clone(),
 						resolution: *resolution,
 					}
+				},
+				EntryType::Label { text_x, text_y, text_size, underline, .. } => EntryValueSerialized::Label {
+					text_x:    text_x.clone(),
+					text_y:    text_y.clone(),
+					text_size: text_size.clone(),
+					underline: *underline,
 				},
 			},
 		};
@@ -106,9 +133,18 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 			name:    entry.name,
 			visible: entry.visible,
 			color:   entry.color,
-			ty:   match entry.value {
-				EntryValueSerialized::Function(text) => {
-					EntryType::Function { func: evalexpr::build_operator_tree::<T>(&text).ok(), text }
+			ty:      match entry.value {
+				EntryValueSerialized::Function { text, ranged, range_start_text, range_end_text } => {
+					EntryType::Function {
+						func: evalexpr::build_operator_tree::<T>(&text).ok(),
+						text,
+						ranged,
+						range_start: evalexpr::build_operator_tree::<T>(&range_start_text).ok(),
+						range_end: evalexpr::build_operator_tree::<T>(&range_end_text).ok(),
+
+						range_start_text,
+						range_end_text,
+					}
 				},
 				EntryValueSerialized::Constant { value, step, ty } => {
 					EntryType::Constant { value: T::Float::f64_to_float(value), step, ty }
@@ -137,6 +173,15 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 						calculated: None,
 						resolution: resolution.max(10),
 					}
+				},
+				EntryValueSerialized::Label { text_x, text_y, text_size, underline } => EntryType::Label {
+					x: evalexpr::build_operator_tree::<T>(&text_x).ok(),
+					text_x,
+					y: evalexpr::build_operator_tree::<T>(&text_y).ok(),
+					text_y,
+					size: evalexpr::build_operator_tree::<T>(&text_size).ok(),
+					text_size,
+					underline,
 				},
 			},
 		};
@@ -226,8 +271,7 @@ pub fn load_file<T: EvalexprNumericTypes>(
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
 	};
-	let entries =
-		deserialize_from::<T>(&file).map_err(|e| format!("Could not deserialize file: {}", e))?;
+	let entries = deserialize_from::<T>(&file).map_err(|e| format!("Could not deserialize file: {}", e))?;
 	state.entries = entries;
 	state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 	state.clear_cache = true;

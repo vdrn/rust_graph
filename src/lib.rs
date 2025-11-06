@@ -209,11 +209,30 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 		}),
 	)
 	.unwrap();
+
+	let tuple_getter = |v: &Value<T>| {
+		let v = v.as_fixed_len_tuple_ref(2)?;
+		let tuple = v[0].as_tuple_ref()?;
+		let index: T::Float = v[1].as_float()?;
+
+		let index = index.to_f64() as usize;
+
+		let value = tuple.get(index).ok_or_else(|| {
+			EvalexprError::CustomMessage(format!(
+				"Index out of bounds: index = {index} but the length was {}",
+				tuple.len()
+			))
+		})?;
+		Ok(value.clone())
+	};
+	ctx.set_function("get".to_string(), evalexpr::Function::new(tuple_getter)).unwrap();
+	ctx.set_function("g".to_string(), evalexpr::Function::new(tuple_getter)).unwrap();
 	// };
 }
 #[rustfmt::skip]
 const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
 	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
+  ("g(tuple, index) or get(tuple,index)", " Get the value at the index from the tuple."),
 	("", ""),
 	("max(a, b)", " Returns the maximum of the two numbers."),
 	("min(a, b)", " Returns the minimum of the two numbers."),
@@ -317,6 +336,7 @@ struct UiState {
 	lines:        Vec<(bool, Id, egui_plot::Line<'static>)>,
 	points:       Vec<egui_plot::Points<'static>>,
 	polygons:     Vec<egui_plot::Polygon<'static>>,
+	texts:        Vec<egui_plot::Text>,
 	showing_help: bool,
 }
 // #[derive(Clone, Debug)]
@@ -445,6 +465,7 @@ impl Application {
 				lines: Vec::with_capacity(512),
 				points: Vec::with_capacity(512),
 				polygons: Vec::with_capacity(512),
+				texts: Vec::with_capacity(8),
 				showing_help: false,
 			},
 		}
@@ -546,6 +567,10 @@ fn side_panel<T: EvalexprNumericTypes>(
 					}
 					if ui.button("Integral").clicked() {
 						state.entries.push(Entry::new_integral(ui_state.next_color));
+						ui_state.next_color += 1;
+					}
+					if ui.button("Label").clicked() {
+						state.entries.push(Entry::new_label(ui_state.next_color));
 						ui_state.next_color += 1;
 					}
 				});
@@ -763,6 +788,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	ui_state.lines.clear();
 	ui_state.points.clear();
 	ui_state.polygons.clear();
+	ui_state.texts.clear();
 
 	let main_context = &*state.ctx.read().unwrap();
 	let first_x = ui_state.plot_bounds.min()[0];
@@ -780,6 +806,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		first_x,
 		last_x,
 		step_size,
+		resolution: ui_state.conf.resolution,
 	};
 
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
@@ -798,6 +825,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			&mut ui_state.polygons,
 			&mut ui_state.lines,
 			&mut ui_state.points,
+			&mut ui_state.texts,
 		) {
 			ui_state.eval_errors.insert(ei, error);
 		}
@@ -864,6 +892,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			}
 			for point in ui_state.points.drain(..) {
 				plot_ui.points(point);
+			}
+			for text in ui_state.texts.drain(..) {
+				plot_ui.text(text);
 			}
 		});
 

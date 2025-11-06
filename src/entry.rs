@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicIsize, Ordering};
 
 use eframe::egui::containers::menu::MenuButton;
 use eframe::egui::{self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget};
-use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon};
+use egui_plot::{Line, PlotItem, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
 	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, Node, Value
 };
@@ -46,8 +46,13 @@ pub struct Entry<T: EvalexprNumericTypes> {
 #[derive(Clone, Debug)]
 pub enum EntryType<T: EvalexprNumericTypes> {
 	Function {
-		text: String,
-		func: Option<Node<T>>,
+		text:             String,
+		func:             Option<Node<T>>,
+		ranged:       bool,
+		range_start_text: String,
+		range_end_text:   String,
+		range_start:      Option<Node<T>>,
+		range_end:        Option<Node<T>>,
 	},
 	Constant {
 		value: T::Float,
@@ -65,6 +70,15 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		calculated: Option<T::Float>,
 		resolution: usize,
 	},
+	Label {
+		text_x:    String,
+		x:         Option<Node<T>>,
+		text_y:    String,
+		y:         Option<Node<T>>,
+		text_size: String,
+		size:      Option<Node<T>>,
+		underline: bool,
+	},
 }
 
 impl<T: EvalexprNumericTypes> Entry<T> {
@@ -80,6 +94,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			},
 			EntryType::Points(_) => "●",
 			EntryType::Integral { .. } => "∫",
+			EntryType::Label { .. } => "📃",
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
@@ -88,7 +103,15 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			color:   color % NUM_COLORS,
 			visible: true,
 			name:    String::new(),
-			ty:      EntryType::Function { text, func: None },
+			ty:      EntryType::Function {
+				text,
+				func: None,
+				ranged: false,
+				range_start_text: String::new(),
+				range_end_text: String::new(),
+				range_start: None,
+				range_end: None,
+			},
 		}
 	}
 	pub fn new_constant(color: usize) -> Self {
@@ -125,6 +148,22 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 				upper:      None,
 				calculated: None,
 				resolution: 500,
+			},
+		}
+	}
+	pub fn new_label(color: usize) -> Self {
+		Self {
+			color:   color % NUM_COLORS,
+			visible: true,
+			name:    String::new(),
+			ty:      EntryType::Label {
+				text_x:    String::new(),
+				x:         None,
+				text_y:    String::new(),
+				y:         None,
+				text_size: String::new(),
+				size:      None,
+				underline: false,
 			},
 		}
 	}
@@ -177,7 +216,7 @@ impl ConstantType {
 		match self {
 			ConstantType::LoopForwardAndBackward { .. } => "🔁 Loop forward and Backward",
 			ConstantType::LoopForward { .. } => "🔂 Loop forward",
-			ConstantType::PlayOnce { .. } => "⏯ Play once",
+			ConstantType::PlayOnce { .. } => "⏭ Play once",
 			ConstantType::PlayIndefinitely { .. } => "🔀 Play indefinitely",
 		}
 	}
@@ -237,15 +276,53 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			}
 			let color = entry.color();
 			match &mut entry.ty {
-				EntryType::Function { text, func } => {
-					match edit_expr(ui, text, func, "sin(x)", None, clear_cache) {
-						Ok(changed) => {
-							result.needs_recompilation |= changed;
-						},
-						Err(e) => {
-							result.error = Some(format!("Parsing error: {e}"));
-						},
-					}
+				EntryType::Function {
+					text,
+					func,
+					ranged,
+					range_start_text,
+					range_end_text,
+					range_start,
+					range_end,
+				} => {
+					ui.vertical(|ui| {
+						match edit_expr(ui, text, func, "sin(x)", None, clear_cache) {
+							Ok(changed) => {
+								result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+
+						ui.horizontal(|ui| {
+							ui.checkbox(ranged, "Ranged");
+							if *ranged {
+								ui.label("Start:");
+								match edit_expr(ui, range_start_text, range_start, "", Some(30.0), clear_cache)
+								{
+									Ok(changed) => {
+										result.needs_recompilation |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+								ui.label("End:");
+								match edit_expr(ui, range_end_text, range_end, "", Some(30.0), clear_cache) {
+									Ok(changed) => {
+										result.needs_recompilation |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+							}
+						});
+						if *ranged {
+							ui.label("Ranged fns can return 1 or 2 values: f(x)->y  or f(x)->(x,y)");
+						}
+					});
 				},
 				EntryType::Integral {
 					func,
@@ -297,6 +374,35 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						ui.add(Slider::new(resolution, 10..=1000).text("Resolution"));
 					});
 				},
+				EntryType::Label { text_x, x, text_y, y, text_size, size, underline } => {
+					ui.horizontal(|ui| {
+						match edit_expr(ui, text_x, x, "point_x", Some(80.0), clear_cache) {
+							Ok(_changed) => {
+								// result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+						match edit_expr(ui, text_y, y, "point_y", Some(80.0), clear_cache) {
+							Ok(_changed) => {
+								// result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+						match edit_expr(ui, text_size, size, "size", Some(80.0), clear_cache) {
+							Ok(_changed) => {
+								// result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+						ui.checkbox(underline, "Underline");
+					});
+				},
 				EntryType::Points(points) => {
 					let mut remove_point = None;
 					ui.vertical(|ui| {
@@ -310,8 +416,8 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									Some(80.0),
 									clear_cache,
 								) {
-									Ok(changed) => {
-										result.needs_recompilation |= changed;
+									Ok(_changed) => {
+										// result.needs_recompilation |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
@@ -325,8 +431,8 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									Some(80.0),
 									clear_cache,
 								) {
-									Ok(changed) => {
-										result.needs_recompilation |= changed;
+									Ok(_changed) => {
+										// result.needs_recompilation |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
@@ -494,6 +600,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 		match &mut entry.ty {
 			EntryType::Points(_) => {},
 			EntryType::Integral { .. } => {},
+			EntryType::Label { .. } => {},
 			EntryType::Constant { value, .. } => {
 				if !entry.name.is_empty() {
 					ctx.write()
@@ -502,7 +609,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						.unwrap();
 				}
 			},
-			EntryType::Function { text, func } => {
+			EntryType::Function { text, func, .. } => {
 				if let Some(func) = func.clone() {
 					// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
 					// impl Clone for LocalCache {
@@ -542,31 +649,13 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								.unwrap_or(T::Float::ZERO),
 							Value::Empty => T::Float::ZERO,
 						};
-						// let animating = animating.load(Ordering::Relaxed);
-						// if !animating {
-						// 	if let Some(cached) =
-						// 		local_cache.lock().get(&CacheKey(T::float_to_f64(v)))
-						// 	{
-						// 		stack_overflow_guard
-						// 			.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-						// 		return Ok(Value::Float(T::f64_to_float(*cached)));
-						// 	}
-						// }
 						let vv = Value::<T>::Float(v);
 
 						let context = main_context.read().unwrap();
 
-						let res = { func.eval_float_with_context_and_x(&*context, &vv) };
+						let res = { func.eval_with_context_and_x(&*context, &vv) };
 						stack_overflow_guard.fetch_sub(1, Ordering::Relaxed);
-						res.map(|res| {
-							// if !animating {
-							// 	local_cache.lock().insert(
-							// 		CacheKey(T::float_to_f64(v)),
-							// 		T::float_to_f64(res),
-							// 	);
-							// }
-							Value::Float(res)
-						})
+						res
 					});
 
 					let name = if entry.name.is_empty() { text.clone() } else { entry.name.clone() };
@@ -579,15 +668,16 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 }
 
 pub struct PlotParams {
-	pub eps:       f64,
-	pub first_x:   f64,
-	pub last_x:    f64,
-	pub step_size: f64,
+	pub eps:        f64,
+	pub first_x:    f64,
+	pub last_x:     f64,
+	pub step_size:  f64,
+	pub resolution: usize,
 }
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, selected: bool, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	polygons: &mut Vec<Polygon<'static>>, lines: &mut Vec<(bool, Id, Line<'static>)>,
-	points: &mut Vec<Points<'static>>,
+	points: &mut Vec<Points<'static>>, texts: &mut Vec<Text>,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -744,6 +834,32 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			lines.push((false, Id::NULL, Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color)));
 			*calculated = Some(result);
 		},
+		EntryType::Label { x, y, size, underline, .. } => match eval_point(ctx, x, y) {
+			Ok(Some((x, y))) => {
+				let size = if let Some(size) = size {
+					match size.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::f64_to_float(x))) {
+						Ok(size) => size.to_f64() as f32,
+						Err(e) => {
+							return Err(e.to_string());
+						},
+					}
+				} else {
+					12.0
+				};
+				let mut label_text = RichText::new(entry.name.clone()).size(size);
+				if *underline {
+					label_text = label_text.underline()
+				}
+
+				let text = Text::new(entry.name.clone(), PlotPoint { x, y }, label_text).color(color);
+
+				texts.push(text);
+			},
+			Err(e) => {
+				return Err(e);
+			},
+			_ => {},
+		},
 		EntryType::Points(ps) => {
 			// main_context
 			// 	.write()
@@ -752,7 +868,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// 	.unwrap();
 			let mut line_buffer = vec![];
 			for p in ps {
-				match eval_point(ctx, p) {
+				match eval_point(ctx, &p.x, &p.y) {
 					Ok(Some((x, y))) => line_buffer.push([x, y]),
 					Err(e) => {
 						return Err(e);
@@ -775,7 +891,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// plot_ui.line(line);
 			}
 		},
-		EntryType::Function { text, func } => {
+		EntryType::Function { text, func, ranged, range_start, range_end, .. } => {
 			if let Some(func) = func {
 				let name = if entry.name.is_empty() {
 					format!("y = {}", text)
@@ -794,81 +910,117 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 				let mut x = plot_params.first_x;
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-				while x < plot_params.last_x {
-					let cur_x = x;
-					// puffin::profile_scope!("graph_step");
 
-					let cur_y =
-                // if let Some(cache) = &mut cache {
-								// let value = cache.entry(CacheKey(x));
-
-								// match value {
-									// hash_map::Entry::Occupied(entry) => entry.get().clone(),
-									// hash_map::Entry::Vacant(entry) => {
-										// let x = evalexpr::Value::<T>::Float(T::f64_to_float(x));
-										// match func
-											// .eval_number_with_context_and_x(&*main_context.read().unwrap(), &x)
-										// {
-											// Ok(y) => {
-												// entry.insert(T::float_to_f64(y));
-												// T::float_to_f64(y)
-											// },
-											// Err(e) => {
-												// ui_state.eval_errors.insert(ei, e.to_string());
-
-												// continue 'next_entry;
-											// },
-										// }
-									// },
-								// }
-							// } else
-                {
-								let x = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
-								match func.eval_float_with_context_and_x(ctx, &x) {
-									Ok(y) => y.to_f64(),
+				if *ranged {
+					match eval_point(ctx, range_start, range_end) {
+						Ok(Some((start, end))) => {
+							if start > end {
+								return Err("Range start must be less than range end".to_string());
+							}
+							let range = end - start;
+							let step = range / plot_params.resolution as f64;
+							let step_f = T::Float::f64_to_float(step);
+							if start + step == end {
+								return Ok(());
+							}
+							for i in 0..(plot_params.resolution + 1) {
+								let x = start + step * i as f64;
+								let xx = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
+								match func.eval_with_context_and_x(ctx, &xx) {
+									Ok(Value::Float(y)) => {
+										pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+									},
+									Ok(Value::Empty) => {},
+									Ok(Value::Tuple(values)) => {
+										if values.len() != 2 {
+											return Err(format!(
+												"Ranged function must return 1 or 2 float values, got {}",
+												values.len()
+											));
+										}
+										let x = values[0].as_float().map_err(|e| e.to_string())?;
+										let y = values[1].as_float().map_err(|e| e.to_string())?;
+										pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+									},
+									Ok(_) => {
+										return Err(
+											"Ranged function must return 1 or 2 float values".to_string()
+										);
+									},
 									Err(e) => {
 										return Err(e.to_string());
-
 									},
 								}
-							};
-					pp_buffer.push(PlotPoint::new(x, cur_y));
-					let cur = (cur_x, cur_y);
-					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-					if selected {
-						if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-							if less_then(prev_0.1, prev_1.1, plot_params.eps)
-								&& greater_then(prev_1.1, cur.1, plot_params.eps)
-							{
-								local_optima_buffer.push(
-									Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(3.5),
-								);
 							}
-							if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-								&& less_then(prev_1.1, cur.1, plot_params.eps)
-							{
-								local_optima_buffer.push(
-									Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(3.5),
-								);
-							}
-						}
-						prev[0] = prev[1];
-						prev[1] = Some(cur);
+						},
+						Err(e) => {
+							return Err(e);
+						},
+						_ => {},
 					}
 
-					let prev_x = x;
-					x += plot_params.step_size;
-					if x == prev_x {
-						break;
+					// implicit = false;
+				} else {
+					while x < plot_params.last_x {
+						let cur_x = x;
+						// puffin::profile_scope!("graph_step");
+
+						let xf = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
+						match func.eval_with_context_and_x(ctx, &xf) {
+							Ok(Value::Float(y)) => {
+								let cur_y = y.to_f64();
+								pp_buffer.push(PlotPoint::new(x, cur_y));
+								let cur = (cur_x, cur_y);
+								fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+								fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+								if selected {
+									if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+										if less_then(prev_0.1, prev_1.1, plot_params.eps)
+											&& greater_then(prev_1.1, cur.1, plot_params.eps)
+										{
+											local_optima_buffer.push(
+												Points::new("", [prev_1.0, prev_1.1])
+													.color(Color32::GRAY)
+													.radius(3.5),
+											);
+										}
+										if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+											&& less_then(prev_1.1, cur.1, plot_params.eps)
+										{
+											local_optima_buffer.push(
+												Points::new("", [prev_1.0, prev_1.1])
+													.color(Color32::GRAY)
+													.radius(3.5),
+											);
+										}
+									}
+									prev[0] = prev[1];
+									prev[1] = Some(cur);
+								}
+							},
+							Ok(Value::Empty) => {},
+							Ok(_) => {
+								return Err("Function must return float or empty".to_string());
+							},
+
+							Err(e) => {
+								return Err(e.to_string());
+							},
+						}
+
+						let prev_x = x;
+						x += plot_params.step_size;
+						if x == prev_x {
+							break;
+						}
 					}
 				}
 
 				let line = Line::new(name, PlotPoints::Owned(pp_buffer))
 					.id(id)
 					.width(if selected { 3.5 } else { 1.0 })
-					.color(entry.color());
-				lines.push((true, id, line));
+					.color(color);
+				lines.push((!*ranged, id, line));
 
 				for point in local_optima_buffer {
 					points.push(point);
@@ -880,9 +1032,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 }
 
 fn eval_point<T: EvalexprNumericTypes>(
-	ctx: &evalexpr::HashMapContext<T>, p: &PointEntry<T>,
+	ctx: &evalexpr::HashMapContext<T>, px: &Option<Node<T>>, py: &Option<Node<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
-	let (Some(x), Some(y)) = (&p.x, &p.y) else {
+	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
 	};
 	let x = x.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO)).map_err(|e| e.to_string())?;
