@@ -6,6 +6,7 @@ use eframe::egui::{self, Grid, Id, Modal};
 use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
 use serde::{Deserialize, Serialize};
 
+use crate::entry::FunctionStyle;
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
 #[derive(Serialize, Deserialize)]
@@ -20,11 +21,15 @@ pub enum EntryValueSerialized {
 	Function {
 		text:             String,
 		#[serde(default)]
-		ranged:       bool,
+		ranged:           bool,
 		#[serde(default)]
 		range_start_text: String,
 		#[serde(default)]
 		range_end_text:   String,
+		#[serde(default)]
+		style:            FunctionStyle,
+		#[serde(default)]
+    multiline:bool
 	},
 	Constant {
 		value: f64,
@@ -39,6 +44,8 @@ pub enum EntryValueSerialized {
 
 		#[serde(default)]
 		resolution: usize,
+		#[serde(default)]
+    multiline:bool
 	},
 	Label {
 		text_x:    String,
@@ -61,12 +68,14 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 			visible: entry.visible,
 			color:   entry.color,
 			value:   match &entry.ty {
-				EntryType::Function { text, ranged, range_start_text, range_end_text, .. } => {
+				EntryType::Function { text, ranged, range_start_text, range_end_text, style,multiline, .. } => {
 					EntryValueSerialized::Function {
 						text:             text.clone(),
-						ranged:       *ranged,
+						ranged:           *ranged,
 						range_start_text: range_start_text.clone(),
 						range_end_text:   range_end_text.clone(),
+						style:            style.clone(),
+            multiline: *multiline
 					}
 				},
 				EntryType::Constant { value, step, ty } => {
@@ -81,12 +90,13 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 					}
 					EntryValueSerialized::Points(points_serialized)
 				},
-				EntryType::Integral { func_text, lower_text, upper_text, resolution, .. } => {
+				EntryType::Integral { func_text, lower_text, upper_text, resolution,multiline, .. } => {
 					EntryValueSerialized::Integral {
 						func_text:  func_text.clone(),
 						lower_text: lower_text.clone(),
 						upper_text: upper_text.clone(),
 						resolution: *resolution,
+            multiline: *multiline
 					}
 				},
 				EntryType::Label { text_x, text_y, text_size, underline, .. } => EntryValueSerialized::Label {
@@ -128,13 +138,14 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>() -> Result<Vec<Entry<T>>, 
 pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<Entry<T>>, String> {
 	let entries: Vec<EntrySerialized> = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
 	let mut result = Vec::new();
-	for entry in entries {
+	for (id, entry) in entries.into_iter().enumerate() {
 		let entry_deserialized = Entry {
+			id:      id as u64,
 			name:    entry.name,
 			visible: entry.visible,
 			color:   entry.color,
 			ty:      match entry.value {
-				EntryValueSerialized::Function { text, ranged, range_start_text, range_end_text } => {
+				EntryValueSerialized::Function { text, ranged, range_start_text, range_end_text, style ,multiline} => {
 					EntryType::Function {
 						func: evalexpr::build_operator_tree::<T>(&text).ok(),
 						text,
@@ -144,6 +155,8 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 
 						range_start_text,
 						range_end_text,
+						style,
+            multiline
 					}
 				},
 				EntryValueSerialized::Constant { value, step, ty } => {
@@ -162,7 +175,7 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 					}
 					EntryType::Points(points_deserialized)
 				},
-				EntryValueSerialized::Integral { func_text, lower_text, upper_text, resolution } => {
+				EntryValueSerialized::Integral { func_text, lower_text, upper_text, resolution,multiline } => {
 					EntryType::Integral {
 						func: evalexpr::build_operator_tree::<T>(&func_text).ok(),
 						lower: evalexpr::build_operator_tree::<T>(&lower_text).ok(),
@@ -172,6 +185,7 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 						upper_text,
 						calculated: None,
 						resolution: resolution.max(10),
+            multiline
 					}
 				},
 				EntryValueSerialized::Label { text_x, text_y, text_size, underline } => EntryType::Label {
@@ -315,6 +329,7 @@ pub fn persistence_ui<T: EvalexprNumericTypes>(
 						ui_state.serialization_error = Some(format!("Could not open file: {}", e));
 						return;
 					};
+					ui_state.next_id += state.entries.len() as u64;
 				}
 				if ui.button("Delete").clicked() {
 					ui_state.file_to_remove = Some(file_name.clone());

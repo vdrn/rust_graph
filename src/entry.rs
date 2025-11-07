@@ -2,9 +2,11 @@ use alloc::sync::Arc;
 use core::ops::RangeInclusive;
 use core::sync::atomic::{AtomicIsize, Ordering};
 
-use eframe::egui::containers::menu::MenuButton;
-use eframe::egui::{self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget};
-use egui_plot::{Line, PlotItem, PlotPoint, PlotPoints, Points, Polygon, Text};
+use eframe::egui::containers::menu::{MenuButton, MenuConfig};
+use eframe::egui::{
+	self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget, popup_below_widget
+};
+use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
 	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, Node, Value
 };
@@ -38,21 +40,27 @@ pub const NUM_COLORS: usize = COLORS.len();
 
 #[derive(Clone, Debug)]
 pub struct Entry<T: EvalexprNumericTypes> {
+	pub id:      u64,
 	pub name:    String,
 	pub visible: bool,
 	pub color:   usize,
 	pub ty:      EntryType<T>,
+}
+impl<T: EvalexprNumericTypes> core::hash::Hash for Entry<T> {
+	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
 }
 #[derive(Clone, Debug)]
 pub enum EntryType<T: EvalexprNumericTypes> {
 	Function {
 		text:             String,
 		func:             Option<Node<T>>,
-		ranged:       bool,
+		ranged:           bool,
 		range_start_text: String,
 		range_end_text:   String,
 		range_start:      Option<Node<T>>,
 		range_end:        Option<Node<T>>,
+		style:            FunctionStyle,
+		multiline:        bool,
 	},
 	Constant {
 		value: T::Float,
@@ -69,6 +77,7 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		upper:      Option<Node<T>>,
 		calculated: Option<T::Float>,
 		resolution: usize,
+		multiline:  bool,
 	},
 	Label {
 		text_x:    String,
@@ -79,6 +88,67 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		size:      Option<Node<T>>,
 		underline: bool,
 	},
+}
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum LineStyle {
+	Solid,
+	Dotted,
+	Dashed,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FunctionStyle {
+	line_width:      f32,
+	line_style:      LineStyle,
+	line_style_size: f32,
+}
+impl Default for FunctionStyle {
+	fn default() -> Self { Self { line_width: 1.0, line_style: LineStyle::Solid, line_style_size: 3.5 } }
+}
+impl FunctionStyle {
+	fn ui(&mut self, ui: &mut egui::Ui) {
+		MenuButton::new("Style")
+			.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+			.ui(ui, |ui| {
+				Slider::new(&mut self.line_width, 0.1..=10.0).text("Line Width").ui(ui);
+        ui.separator();
+				ui.horizontal(|ui| {
+					ui.selectable_value(&mut self.line_style, LineStyle::Solid, "Solid");
+					ui.selectable_value(&mut self.line_style, LineStyle::Dotted, "Dotted");
+					ui.selectable_value(&mut self.line_style, LineStyle::Dashed, "Dashed");
+				});
+				match &mut self.line_style {
+					LineStyle::Solid => {},
+					LineStyle::Dotted => {
+						ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Spacing"));
+					},
+					LineStyle::Dashed => {
+						ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Length"));
+					},
+				}
+        ui.separator();
+				egui::Sides::new().show(
+					ui,
+					|_ui| {},
+					|ui| {
+						if ui.button("Close").clicked() {
+							ui.close();
+						}
+						if ui.button("Reset").clicked() {
+							*self = Default::default();
+							ui.close();
+						}
+					},
+				);
+			});
+	}
+
+	fn egui_line_style(&self) -> egui_plot::LineStyle {
+		match self.line_style {
+			LineStyle::Solid => egui_plot::LineStyle::Solid,
+			LineStyle::Dotted => egui_plot::LineStyle::Dotted { spacing: self.line_style_size },
+			LineStyle::Dashed => egui_plot::LineStyle::Dashed { length: self.line_style_size },
+		}
+	}
 }
 
 impl<T: EvalexprNumericTypes> Entry<T> {
@@ -98,12 +168,13 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
-	pub fn new_function(color: usize, text: String) -> Self {
+	pub fn new_function(id: u64, text: String) -> Self {
 		Self {
-			color:   color % NUM_COLORS,
+			id,
+			color: id as usize % NUM_COLORS,
 			visible: true,
-			name:    String::new(),
-			ty:      EntryType::Function {
+			name: String::new(),
+			ty: EntryType::Function {
 				text,
 				func: None,
 				ranged: false,
@@ -111,35 +182,40 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 				range_end_text: String::new(),
 				range_start: None,
 				range_end: None,
+				style: FunctionStyle::default(),
+				multiline: false,
 			},
 		}
 	}
-	pub fn new_constant(color: usize) -> Self {
+	pub fn new_constant(id: u64) -> Self {
 		Self {
-			color:   color % NUM_COLORS,
+			id,
+			color: id as usize % NUM_COLORS,
 			visible: false,
-			name:    String::new(),
-			ty:      EntryType::Constant {
+			name: String::new(),
+			ty: EntryType::Constant {
 				value: T::Float::ZERO,
 				step:  0.01,
 				ty:    ConstantType::LoopForwardAndBackward { start: 0.0, end: 2.0, forward: true },
 			},
 		}
 	}
-	pub fn new_points(color: usize) -> Self {
+	pub fn new_points(id: u64) -> Self {
 		Self {
-			color:   color % NUM_COLORS,
+			id,
+			color: id as usize % NUM_COLORS,
 			visible: true,
-			name:    String::new(),
-			ty:      EntryType::Points(vec![PointEntry::default()]),
+			name: String::new(),
+			ty: EntryType::Points(vec![PointEntry::default()]),
 		}
 	}
-	pub fn new_integral(color: usize) -> Self {
+	pub fn new_integral(id: u64) -> Self {
 		Self {
-			color:   color % NUM_COLORS,
+			id,
+			color: id as usize % NUM_COLORS,
 			visible: true,
-			name:    String::new(),
-			ty:      EntryType::Integral {
+			name: String::new(),
+			ty: EntryType::Integral {
 				func_text:  String::new(),
 				func:       None,
 				lower_text: String::new(),
@@ -148,15 +224,17 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 				upper:      None,
 				calculated: None,
 				resolution: 500,
+				multiline:  false,
 			},
 		}
 	}
-	pub fn new_label(color: usize) -> Self {
+	pub fn new_label(id: u64) -> Self {
 		Self {
-			color:   color % NUM_COLORS,
+			id,
+			color: id as usize % NUM_COLORS,
 			visible: true,
-			name:    String::new(),
-			ty:      EntryType::Label {
+			name: String::new(),
+			ty: EntryType::Label {
 				text_x:    String::new(),
 				x:         None,
 				text_y:    String::new(),
@@ -227,6 +305,7 @@ pub struct EditEntryResult {
 	pub animating:           bool,
 	pub remove:              bool,
 	pub error:               Option<String>,
+	pub parsed:              bool,
 }
 pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool,
@@ -235,7 +314,9 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 		needs_recompilation: false,
 		animating:           false,
 		remove:              false,
-		error:               None,
+		parsed:              false,
+
+		error: None,
 	};
 
 	let (text_col, fill_col) = if entry.visible {
@@ -284,10 +365,13 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					range_end_text,
 					range_start,
 					range_end,
+					style,
+					multiline,
 				} => {
 					ui.vertical(|ui| {
-						match edit_expr(ui, text, func, "sin(x)", None, clear_cache) {
+						match edit_expr(ui, text, func, "sin(x)", None, clear_cache, Some(multiline)) {
 							Ok(changed) => {
+								result.parsed |= changed;
 								result.needs_recompilation |= changed;
 							},
 							Err(e) => {
@@ -296,22 +380,40 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						}
 
 						ui.horizontal(|ui| {
+							style.ui(ui);
 							ui.checkbox(ranged, "Ranged");
 							if *ranged {
 								ui.label("Start:");
-								match edit_expr(ui, range_start_text, range_start, "", Some(30.0), clear_cache)
-								{
+								match edit_expr(
+									ui,
+									range_start_text,
+									range_start,
+									"",
+									Some(30.0),
+									clear_cache,
+									None,
+								) {
 									Ok(changed) => {
 										result.needs_recompilation |= changed;
+										result.parsed |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
 								ui.label("End:");
-								match edit_expr(ui, range_end_text, range_end, "", Some(30.0), clear_cache) {
+								match edit_expr(
+									ui,
+									range_end_text,
+									range_end,
+									"",
+									Some(30.0),
+									clear_cache,
+									None,
+								) {
 									Ok(changed) => {
 										result.needs_recompilation |= changed;
+										result.parsed |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
@@ -333,12 +435,14 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					upper_text,
 					calculated,
 					resolution,
+					multiline,
 				} => {
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.label("Lower:");
-							match edit_expr(ui, lower_text, lower, "lower", Some(50.0), clear_cache) {
-								Ok(_changed) => {
+							match edit_expr(ui, lower_text, lower, "lower", Some(50.0), clear_cache, None) {
+								Ok(changed) => {
+									result.parsed |= changed;
 									// needs_recompilation |= changed;
 								},
 								Err(e) => {
@@ -346,8 +450,9 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								},
 							}
 							ui.label("Upper:");
-							match edit_expr(ui, upper_text, upper, "upper", Some(50.0), clear_cache) {
-								Ok(_changed) => {
+							match edit_expr(ui, upper_text, upper, "upper", Some(50.0), clear_cache, None) {
+								Ok(changed) => {
+									result.parsed |= changed;
 									// needs_recompilation |= changed;
 								},
 								Err(e) => {
@@ -357,8 +462,9 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						});
 						ui.horizontal(|ui| {
 							ui.label("Func:");
-							match edit_expr(ui, func_text, func, "func", None, clear_cache) {
+							match edit_expr(ui, func_text, func, "func", None, clear_cache, Some(multiline)) {
 								Ok(changed) => {
+									result.parsed |= changed;
 									result.needs_recompilation |= changed;
 								},
 								Err(e) => {
@@ -376,24 +482,27 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				},
 				EntryType::Label { text_x, x, text_y, y, text_size, size, underline } => {
 					ui.horizontal(|ui| {
-						match edit_expr(ui, text_x, x, "point_x", Some(80.0), clear_cache) {
-							Ok(_changed) => {
+						match edit_expr(ui, text_x, x, "point_x", Some(80.0), clear_cache, None) {
+							Ok(changed) => {
+								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
 							},
 							Err(e) => {
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match edit_expr(ui, text_y, y, "point_y", Some(80.0), clear_cache) {
-							Ok(_changed) => {
+						match edit_expr(ui, text_y, y, "point_y", Some(80.0), clear_cache, None) {
+							Ok(changed) => {
+								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
 							},
 							Err(e) => {
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match edit_expr(ui, text_size, size, "size", Some(80.0), clear_cache) {
-							Ok(_changed) => {
+						match edit_expr(ui, text_size, size, "size", Some(80.0), clear_cache, None) {
+							Ok(changed) => {
+								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
 							},
 							Err(e) => {
@@ -415,8 +524,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									"point_x",
 									Some(80.0),
 									clear_cache,
+									None,
 								) {
-									Ok(_changed) => {
+									Ok(changed) => {
+										result.parsed |= changed;
 										// result.needs_recompilation |= changed;
 									},
 									Err(e) => {
@@ -430,8 +541,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									"point_y",
 									Some(80.0),
 									clear_cache,
+									None,
 								) {
-									Ok(_changed) => {
+									Ok(changed) => {
+										result.parsed |= changed;
 										// result.needs_recompilation |= changed;
 									},
 									Err(e) => {
@@ -569,27 +682,40 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 }
 fn edit_expr<T: EvalexprNumericTypes>(
 	ui: &mut egui::Ui, text: &mut String, expr: &mut Option<Node<T>>, hint_text: &str,
-	desired_width: Option<f32>, force_update: bool,
+	desired_width: Option<f32>, force_update: bool, multiline: Option<&mut bool>,
 ) -> Result<bool, String> {
-	let mut text_edit = TextEdit::singleline(text).hint_text(hint_text).code_editor();
-	if let Some(width) = desired_width {
-		text_edit = text_edit.desired_width(width);
-	}
-	if ui.add(text_edit).changed() || force_update {
-		if text.is_empty() {
-			*expr = None;
+	ui.horizontal_top(|ui| {
+		let mut text_edit = if multiline.as_ref().is_some_and(|m| **m) {
+			TextEdit::multiline(text).desired_rows(2)
 		} else {
-			*expr = match evalexpr::build_operator_tree::<T>(text) {
-				Ok(func) => Some(func),
-				Err(e) => {
-					return Err(e.to_string());
-				},
-			};
+			TextEdit::singleline(text)//.clip_text(false)
+		};
+		text_edit = text_edit.hint_text(hint_text).code_editor();
+		if let Some(width) = desired_width {
+			text_edit = text_edit.desired_width(width);
 		}
+		if ui.add(text_edit).changed() || force_update {
+			if text.is_empty() {
+				*expr = None;
+			} else {
+				*expr = match evalexpr::build_operator_tree::<T>(text) {
+					Ok(func) => Some(func),
+					Err(e) => {
+						return Err(e.to_string());
+					},
+				};
+			}
 
-		return Ok(true);
-	}
-	Ok(false)
+			return Ok(true);
+		}
+		if let Some(multiline) = multiline {
+			if ui.selectable_label(*multiline, "📝").clicked() {
+				*multiline = !*multiline;
+			}
+		}
+		Ok(false)
+	})
+	.inner
 }
 
 pub fn recompile_entry<T: EvalexprNumericTypes>(
@@ -674,6 +800,7 @@ pub struct PlotParams {
 	pub step_size:  f64,
 	pub resolution: usize,
 }
+#[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, selected: bool, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	polygons: &mut Vec<Polygon<'static>>, lines: &mut Vec<(bool, Id, Line<'static>)>,
@@ -828,13 +955,13 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			lines.push((
 				false,
 				Id::NULL,
-				Line::new(format!("∫[{},x]({})dx", lower, int_name), PlotPoints::Owned(int_lines))
+				Line::new(format!("∫[{},x]({})dx", lower, int_name.trim()), PlotPoints::Owned(int_lines))
 					.color(stroke_color),
 			));
 			lines.push((false, Id::NULL, Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color)));
 			*calculated = Some(result);
 		},
-		EntryType::Label { x, y, size, underline, .. } => match eval_point(ctx, x, y) {
+		EntryType::Label { x, y, size, underline, .. } => match eval_point(ctx, x.as_ref(), y.as_ref()) {
 			Ok(Some((x, y))) => {
 				let size = if let Some(size) = size {
 					match size.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::f64_to_float(x))) {
@@ -868,7 +995,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// 	.unwrap();
 			let mut line_buffer = vec![];
 			for p in ps {
-				match eval_point(ctx, &p.x, &p.y) {
+				match eval_point(ctx, p.x.as_ref(), p.y.as_ref()) {
 					Ok(Some((x, y))) => line_buffer.push([x, y]),
 					Err(e) => {
 						return Err(e);
@@ -891,12 +1018,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// plot_ui.line(line);
 			}
 		},
-		EntryType::Function { text, func, ranged, range_start, range_end, .. } => {
+		EntryType::Function { text, func, ranged, range_start, range_end, style, .. } => {
 			if let Some(func) = func {
 				let name = if entry.name.is_empty() {
-					format!("y = {}", text)
+					format!("y = {}", text.trim())
 				} else {
-					format!("{}(x) = {}", entry.name, text)
+					format!("{}(x) = {}", entry.name.trim(), text)
 				};
 				// let mut cache = (!animating).then(|| {
 				// 	state
@@ -912,14 +1039,13 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
 
 				if *ranged {
-					match eval_point(ctx, range_start, range_end) {
+					match eval_point(ctx, range_start.as_ref(), range_end.as_ref()) {
 						Ok(Some((start, end))) => {
 							if start > end {
 								return Err("Range start must be less than range end".to_string());
 							}
 							let range = end - start;
 							let step = range / plot_params.resolution as f64;
-							let step_f = T::Float::f64_to_float(step);
 							if start + step == end {
 								return Ok(());
 							}
@@ -981,7 +1107,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											local_optima_buffer.push(
 												Points::new("", [prev_1.0, prev_1.1])
 													.color(Color32::GRAY)
-													.radius(3.5),
+													.radius(style.line_width + 2.5),
 											);
 										}
 										if greater_then(prev_0.1, prev_1.1, plot_params.eps)
@@ -990,7 +1116,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											local_optima_buffer.push(
 												Points::new("", [prev_1.0, prev_1.1])
 													.color(Color32::GRAY)
-													.radius(3.5),
+													.radius(style.line_width + 2.5),
 											);
 										}
 									}
@@ -1018,7 +1144,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 				let line = Line::new(name, PlotPoints::Owned(pp_buffer))
 					.id(id)
-					.width(if selected { 3.5 } else { 1.0 })
+					.width(if selected { style.line_width + 2.5 } else { style.line_width })
+					.style(style.egui_line_style())
 					.color(color);
 				lines.push((!*ranged, id, line));
 
@@ -1032,7 +1159,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 }
 
 fn eval_point<T: EvalexprNumericTypes>(
-	ctx: &evalexpr::HashMapContext<T>, px: &Option<Node<T>>, py: &Option<Node<T>>,
+	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);

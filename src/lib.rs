@@ -6,7 +6,7 @@ use std::sync::RwLock;
 
 use ahash::AHashMap;
 use eframe::egui::{
-	self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Window
+	self, CollapsingHeader, Id, Label, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Widget, Window
 };
 use eframe::epaint::Color32;
 use eframe::{App, CreationContext};
@@ -313,7 +313,7 @@ impl Default for AppConfig {
 
 struct UiState {
 	conf:        AppConfig,
-	next_color:  usize,
+	next_id:     u64,
 	plot_bounds: PlotBounds,
 	// data_aspect: f32,
 	reset_graph: bool,
@@ -322,7 +322,8 @@ struct UiState {
 	serialization_error:  Option<String>,
 	web_storage:          AHashMap<String, String>,
 	stack_overflow_guard: Arc<AtomicIsize>,
-	eval_errors:          AHashMap<usize, String>,
+	eval_errors:          AHashMap<u64, String>,
+	parsing_errors:       AHashMap<u64, String>,
 	selected_plot_item:   Option<Id>,
 
 	f32_epsilon:          f64,
@@ -378,6 +379,7 @@ impl Application {
 			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 		}
 
+		let mut next_id = 0;
 		#[rustfmt::skip]
 		cfg_if::cfg_if! {
       if #[cfg(target_arch = "wasm32")] {
@@ -392,6 +394,8 @@ impl Application {
         match persistence::deserialize_from_url::<F32NumericTypes>() {
           Ok(data)=>{
             entries_s = data;
+            next_id += entries_s.len() as u64;
+
           },
           Err(e)=>{
             serialization_error = Some(e);
@@ -400,6 +404,7 @@ impl Application {
         match persistence::deserialize_from_url::<DefaultNumericTypes>() {
           Ok(data)=>{
             entries_d = data;
+            next_id += entries_s.len() as u64;
           },
           Err(e)=>{
             serialization_error = Some(e);
@@ -413,15 +418,14 @@ impl Application {
       }
 		}
 
-		let mut next_color = 0;
 		if entries_s.is_empty() {
-			next_color = 1;
+			next_id += 1;
 			entries_s.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
 		let ctx_s = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
 
 		if entries_d.is_empty() {
-			next_color = 1;
+			next_id += 1;
 			entries_d.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
 		let ctx_d = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
@@ -449,7 +453,7 @@ impl Application {
 				scheduled_url_update: false,
 				last_url_update: 0.0,
 				web_storage,
-				next_color,
+				next_id,
 				plot_bounds: PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]),
 				reset_graph: false,
 
@@ -457,6 +461,7 @@ impl Application {
 				serialization_error,
 				stack_overflow_guard: Arc::new(AtomicIsize::new(0)),
 				eval_errors: AHashMap::default(),
+				parsing_errors: AHashMap::default(),
 				selected_plot_item: None,
 				f32_epsilon: f32::EPSILON as f64,
 				f64_epsilon: f64::EPSILON,
@@ -495,6 +500,7 @@ impl App for Application {
 					self.state_f64.entries = persistence::deserialize_from(&output).unwrap();
 					self.state_f64.clear_cache = true;
 					self.state_f64.name = self.state_f32.name.clone();
+					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			} else {
 				let mut output = Vec::with_capacity(1024);
@@ -502,6 +508,7 @@ impl App for Application {
 					self.state_f32.entries = persistence::deserialize_from(&output).unwrap();
 					self.state_f32.clear_cache = true;
 					self.state_f32.name = self.state_f64.name.clone();
+					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			}
 		}
@@ -551,27 +558,27 @@ fn side_panel<T: EvalexprNumericTypes>(
 			ui.horizontal_top(|ui| {
 				ui.menu_button("Add", |ui| {
 					if ui.button("Function").clicked() {
-						state.entries.push(Entry::new_function(ui_state.next_color, String::new()));
-						ui_state.next_color += 1;
+						state.entries.push(Entry::new_function(ui_state.next_id, String::new()));
+						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
 					if ui.button("Constant").clicked() {
-						state.entries.push(Entry::new_constant(ui_state.next_color));
-						ui_state.next_color += 1;
+						state.entries.push(Entry::new_constant(ui_state.next_id));
+						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
 					if ui.button("Points").clicked() {
-						state.entries.push(Entry::new_points(ui_state.next_color));
-						ui_state.next_color += 1;
+						state.entries.push(Entry::new_points(ui_state.next_id));
+						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
 					if ui.button("Integral").clicked() {
-						state.entries.push(Entry::new_integral(ui_state.next_color));
-						ui_state.next_color += 1;
+						state.entries.push(Entry::new_integral(ui_state.next_id));
+						ui_state.next_id += 1;
 					}
 					if ui.button("Label").clicked() {
-						state.entries.push(Entry::new_label(ui_state.next_color));
-						ui_state.next_color += 1;
+						state.entries.push(Entry::new_label(ui_state.next_id));
+						ui_state.next_id += 1;
 					}
 				});
 
@@ -585,26 +592,40 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 			let mut remove = None;
 			let mut animating = false;
-			for n in 0..state.entries.len() {
-				let entry = &mut state.entries[n];
-				let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
-				if result.remove {
-					remove = Some(n);
-				}
-				animating |= result.animating;
-				needs_recompilation |= result.needs_recompilation;
-				if let Some(error) = result.error {
-					ui_state.eval_errors.insert(n, error);
-				}
-
-				if let Some(eval_error) = ui_state.eval_errors.get(&n) {
+			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
+				ui.horizontal_top(|ui| {
+					handle.ui(ui, |ui| {
+						ui.label("||");
+					});
+					ui.horizontal(|ui| {
+						let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
+						if result.remove {
+							remove = Some(entry.id);
+						}
+						animating |= result.animating;
+						needs_recompilation |= result.needs_recompilation;
+						if let Some(error) = result.error {
+							ui_state.parsing_errors.insert(entry.id, error);
+						} else if result.parsed {
+							ui_state.parsing_errors.remove(&entry.id);
+						}
+					});
+				});
+				if let Some(parsing_error) = ui_state.parsing_errors.get(&entry.id) {
+					ui.label(RichText::new(parsing_error).color(Color32::RED));
+				} else if let Some(eval_error) = ui_state.eval_errors.get(&entry.id) {
 					ui.label(RichText::new(eval_error).color(Color32::RED));
 				}
 				ui.separator();
-			}
+			});
+			// for n in 0..state.entries.len() {
+			// 	let entry = &mut state.entries[n];
+			// }
 
-			if let Some(n) = remove {
-				state.entries.remove(n);
+			if let Some(id) = remove {
+				if let Some(index) = state.entries.iter().position(|e| e.id == id) {
+					state.entries.remove(index);
+				}
 			}
 			// ui_state.animating.store(animating, Ordering::Relaxed);
 
@@ -815,7 +836,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	for (ei, entry) in state.entries.iter_mut().enumerate() {
 		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.store(0, Ordering::Relaxed);
-		let id = Id::new(ei);
+		let id = Id::new(entry.id).with("entry_plot_els");
 		if let Err(error) = entry::create_entry_plot_elements(
 			entry,
 			id,
@@ -827,7 +848,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			&mut ui_state.points,
 			&mut ui_state.texts,
 		) {
-			ui_state.eval_errors.insert(ei, error);
+			ui_state.eval_errors.insert(entry.id, error);
 		}
 	}
 
