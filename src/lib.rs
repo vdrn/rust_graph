@@ -6,7 +6,7 @@ use std::sync::RwLock;
 
 use ahash::AHashMap;
 use eframe::egui::{
-	self, CollapsingHeader, Id, Label, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Widget, Window
+	self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Window
 };
 use eframe::epaint::Color32;
 use eframe::{App, CreationContext};
@@ -593,7 +593,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 			let mut remove = None;
 			let mut animating = false;
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
-				ui.horizontal_top(|ui| {
+				ui.horizontal(|ui| {
 					handle.ui(ui, |ui| {
 						ui.label("||");
 					});
@@ -833,7 +833,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
 	scope!("graph");
 
-	for (ei, entry) in state.entries.iter_mut().enumerate() {
+	for  entry in state.entries.iter_mut(){
 		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.store(0, Ordering::Relaxed);
 		let id = Id::new(entry.id).with("entry_plot_els");

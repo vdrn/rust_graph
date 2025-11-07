@@ -1,10 +1,11 @@
 use alloc::sync::Arc;
+use core::mem;
 use core::ops::RangeInclusive;
 use core::sync::atomic::{AtomicIsize, Ordering};
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
-	self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget, popup_below_widget
+	self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget, vec2
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
@@ -110,7 +111,7 @@ impl FunctionStyle {
 			.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
 			.ui(ui, |ui| {
 				Slider::new(&mut self.line_width, 0.1..=10.0).text("Line Width").ui(ui);
-        ui.separator();
+				ui.separator();
 				ui.horizontal(|ui| {
 					ui.selectable_value(&mut self.line_style, LineStyle::Solid, "Solid");
 					ui.selectable_value(&mut self.line_style, LineStyle::Dotted, "Dotted");
@@ -125,7 +126,7 @@ impl FunctionStyle {
 						ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Length"));
 					},
 				}
-        ui.separator();
+				ui.separator();
 				egui::Sides::new().show(
 					ui,
 					|_ui| {},
@@ -461,7 +462,6 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							}
 						});
 						ui.horizontal(|ui| {
-							ui.label("Func:");
 							match edit_expr(ui, func_text, func, "func", None, clear_cache, Some(multiline)) {
 								Ok(changed) => {
 									result.parsed |= changed;
@@ -570,7 +570,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 				EntryType::Constant { value, step, ty } => {
 					let mut v = value.to_f64();
-					let step_f = T::Float::f64_to_float(*step);
+					let step_f = f64_to_float::<T>(*step);
 					let range = ty.range();
 					let start = *range.start();
 					let end = *range.end();
@@ -623,7 +623,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 							if !prev_visible && entry.visible {
 								if value.to_f64() >= end {
-									*value = T::Float::f64_to_float(start);
+									*value = f64_to_float::<T>(start);
 									result.animating = true;
 								}
 							}
@@ -649,7 +649,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									ConstantType::LoopForward { .. } => {
 										*value = *value + step_f;
 										if value.to_f64() >= end {
-											*value = T::Float::f64_to_float(start);
+											*value = f64_to_float::<T>(start);
 										}
 									},
 									ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
@@ -669,7 +669,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							)
 							.changed() || clear_cache
 						{
-							*value = T::Float::f64_to_float(v);
+							*value = f64_to_float::<T>(v);
 							result.animating = true;
 						}
 					});
@@ -685,10 +685,13 @@ fn edit_expr<T: EvalexprNumericTypes>(
 	desired_width: Option<f32>, force_update: bool, multiline: Option<&mut bool>,
 ) -> Result<bool, String> {
 	ui.horizontal_top(|ui| {
+		let mut changed = false;
+		let original_spacing = ui.style().spacing.item_spacing;
+		ui.style_mut().spacing.item_spacing = vec2(0.0, 0.0);
 		let mut text_edit = if multiline.as_ref().is_some_and(|m| **m) {
 			TextEdit::multiline(text).desired_rows(2)
 		} else {
-			TextEdit::singleline(text)//.clip_text(false)
+			TextEdit::singleline(text) //.clip_text(false)
 		};
 		text_edit = text_edit.hint_text(hint_text).code_editor();
 		if let Some(width) = desired_width {
@@ -706,14 +709,15 @@ fn edit_expr<T: EvalexprNumericTypes>(
 				};
 			}
 
-			return Ok(true);
+			changed = true;
 		}
 		if let Some(multiline) = multiline {
 			if ui.selectable_label(*multiline, "📝").clicked() {
 				*multiline = !*multiline;
 			}
 		}
-		Ok(false)
+		ui.style_mut().spacing.item_spacing = original_spacing;
+		Ok(changed)
 	})
 	.inner
 }
@@ -764,13 +768,13 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 						let v = match v {
 							Value::Float(x) => *x,
-							Value::Boolean(x) => T::Float::f64_to_float(*x as i64 as f64),
+							Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
 							Value::String(_) => T::Float::ZERO,
 							// Value::Int(x) => T::int_as_float(x),
 							Value::Tuple(values) => values[0]
 								.as_float()
 								.or_else(|_| {
-									values[0].as_boolean().map(|x| T::Float::f64_to_float(x as i64 as f64))
+									values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
 								})
 								.unwrap_or(T::Float::ZERO),
 							Value::Empty => T::Float::ZERO,
@@ -838,7 +842,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			}
 			let resolution = *resolution;
 			let step = range / resolution as f64;
-			let step_f = T::Float::f64_to_float(step);
+			let step_f = f64_to_float::<T>(step);
 			if lower + step == lower {
 				*calculated = Some(T::Float::ZERO);
 				return Ok(());
@@ -853,34 +857,52 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 			let mut result: T::Float = T::Float::ZERO;
 			let mut prev_y: Option<T::Float> = None;
+			let mut prev_sampling_point: Option<(f64, f64)> = None;
 			for i in 0..(resolution + 1) {
-				let x = lower + step * i as f64;
+				let sampling_x = lower + step * i as f64;
 
-				let xx = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
-
-				let y_f64 = match func.eval_float_with_context_and_x(ctx, &xx) {
-					Ok(y) => y.to_f64(),
+				let cur_x;
+				let cur_y;
+				match func.eval_float_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
+					Ok(y) => {
+						if let Some((prev_x, prev_y)) = prev_sampling_point {
+							(cur_x, cur_y) = zoom_in_on_nan_boundary(
+								(prev_x, prev_y),
+								(sampling_x, y.to_f64()),
+								plot_params.eps,
+								|x| {
+									func.eval_float_with_context_and_x(ctx, &f64_to_value(x))
+										.map(|y| y.to_f64())
+										.ok()
+								},
+							)
+						} else {
+							cur_x = sampling_x;
+							cur_y = y.to_f64();
+						}
+						prev_sampling_point = Some((sampling_x, y.to_f64()));
+					},
 					Err(e) => {
 						return Err(e.to_string());
 					},
 				};
 
-				let y = T::Float::f64_to_float(y_f64);
+				let y = f64_to_float::<T>(cur_y);
 				if let Some(prev_y) = prev_y {
 					let eps = 0.0;
 					let prev_y_f64 = prev_y.to_f64();
 
-					if prev_y_f64.signum() != y_f64.signum() {
+					if prev_y_f64.signum() != cur_y.signum() {
 						//2 triangles
-						let diff = (prev_y_f64 - y_f64).abs();
+						let diff = (prev_y_f64 - cur_y).abs();
 						let t = prev_y_f64.abs() / diff;
-						let x_midpoint = (x - step) + step * t;
+						let x_midpoint = (cur_x - step) + step * t;
 						if visible {
 							let triangle1 = Polygon::new(
 								entry.name.clone(),
 								PlotPoints::Owned(vec![
-									PlotPoint::new(x - step, 0.0),
-									PlotPoint::new(x - step, prev_y_f64),
+									PlotPoint::new(cur_x - step, 0.0),
+									PlotPoint::new(cur_x - step, prev_y_f64),
 									PlotPoint::new(x_midpoint, 0.0),
 								]),
 							)
@@ -891,8 +913,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								entry.name.clone(),
 								PlotPoints::Owned(vec![
 									PlotPoint::new(x_midpoint, 0.0),
-									PlotPoint::new(x, y_f64),
-									PlotPoint::new(x, 0.0),
+									PlotPoint::new(cur_x, cur_y),
+									PlotPoint::new(cur_x, 0.0),
 								]),
 							)
 							.fill_color(fill_color)
@@ -900,7 +922,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							polygons.push(triangle2);
 						}
 
-						let t = T::Float::f64_to_float(t);
+						let t = f64_to_float::<T>(t);
 
 						let step1 = step_f * t;
 						let step2 = step_f - step1;
@@ -915,17 +937,17 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								entry.name.clone(),
 								if prev_y_f64 > 0.0 {
 									PlotPoints::Owned(vec![
-										PlotPoint::new(x - step, 0.0),
-										PlotPoint::new(x - step, prev_y_f64),
-										PlotPoint::new(x, y_f64),
-										PlotPoint::new(x, 0.0),
+										PlotPoint::new(cur_x - step, 0.0),
+										PlotPoint::new(cur_x - step, prev_y_f64),
+										PlotPoint::new(cur_x, cur_y),
+										PlotPoint::new(cur_x, 0.0),
 									])
 								} else {
 									PlotPoints::Owned(vec![
-										PlotPoint::new(x - step, 0.0),
-										PlotPoint::new(x, 0.0),
-										PlotPoint::new(x, y_f64),
-										PlotPoint::new(x - step, prev_y_f64),
+										PlotPoint::new(cur_x - step, 0.0),
+										PlotPoint::new(cur_x, 0.0),
+										PlotPoint::new(cur_x, cur_y),
+										PlotPoint::new(cur_x - step, prev_y_f64),
 									])
 								},
 							)
@@ -934,7 +956,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							polygons.push(poly);
 						}
 						let dy = y - prev_y;
-						let step = T::Float::f64_to_float(step);
+						let step = f64_to_float::<T>(step);
 						let d = dy * step;
 						result = result + prev_y * step;
 						result = result + d * T::Float::HALF;
@@ -945,8 +967,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				}
 
 				if visible {
-					int_lines.push(PlotPoint::new(x, result.to_f64()));
-					fun_lines.push(PlotPoint::new(x, y_f64));
+					int_lines.push(PlotPoint::new(cur_x, result.to_f64()));
+					fun_lines.push(PlotPoint::new(cur_x, cur_y));
 				}
 				prev_y = Some(y);
 				// x += step;
@@ -964,7 +986,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 		EntryType::Label { x, y, size, underline, .. } => match eval_point(ctx, x.as_ref(), y.as_ref()) {
 			Ok(Some((x, y))) => {
 				let size = if let Some(size) = size {
-					match size.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::f64_to_float(x))) {
+					match size.eval_float_with_context_and_x(ctx, &f64_to_value(x)) {
 						Ok(size) => size.to_f64() as f32,
 						Err(e) => {
 							return Err(e.to_string());
@@ -1035,8 +1057,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				let mut local_optima_buffer = vec![];
 				let mut pp_buffer = vec![];
 
-				let mut x = plot_params.first_x;
+				let mut sampling_x = plot_params.first_x;
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
+				let mut prev_sampling_point: Option<(f64, f64)> = None;
 
 				if *ranged {
 					match eval_point(ctx, range_start.as_ref(), range_end.as_ref()) {
@@ -1051,8 +1074,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							}
 							for i in 0..(plot_params.resolution + 1) {
 								let x = start + step * i as f64;
-								let xx = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
-								match func.eval_with_context_and_x(ctx, &xx) {
+								match func.eval_with_context_and_x(ctx, &f64_to_value(x)) {
 									Ok(Value::Float(y)) => {
 										pp_buffer.push(PlotPoint::new(x, y.to_f64()));
 									},
@@ -1087,44 +1109,86 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 					// implicit = false;
 				} else {
-					while x < plot_params.last_x {
-						let cur_x = x;
+					while sampling_x < plot_params.last_x {
 						// puffin::profile_scope!("graph_step");
+						// println!("x {x}");
 
-						let xf = evalexpr::Value::<T>::Float(T::Float::f64_to_float(x));
-						match func.eval_with_context_and_x(ctx, &xf) {
+						match func.eval_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
 							Ok(Value::Float(y)) => {
-								let cur_y = y.to_f64();
-								pp_buffer.push(PlotPoint::new(x, cur_y));
-								let cur = (cur_x, cur_y);
-								fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-								fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-								if selected {
-									if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-										if less_then(prev_0.1, prev_1.1, plot_params.eps)
-											&& greater_then(prev_1.1, cur.1, plot_params.eps)
-										{
-											local_optima_buffer.push(
-												Points::new("", [prev_1.0, prev_1.1])
-													.color(Color32::GRAY)
-													.radius(style.line_width + 2.5),
-											);
-										}
-										if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-											&& less_then(prev_1.1, cur.1, plot_params.eps)
-										{
-											local_optima_buffer.push(
-												Points::new("", [prev_1.0, prev_1.1])
-													.color(Color32::GRAY)
-													.radius(style.line_width + 2.5),
-											);
-										}
+								let y = y.to_f64();
+
+								let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
+									zoom_in_on_nan_boundary(
+										(prev_x, prev_y),
+										(sampling_x, y),
+										plot_params.eps,
+										|x| {
+											func.eval_float_with_context_and_x(ctx, &f64_to_value(x))
+												.map(|y| y.to_f64())
+												.ok()
+										},
+									)
+								} else {
+									(sampling_x, y)
+								};
+								prev_sampling_point = Some((sampling_x, y));
+
+								if cur_y.is_nan() {
+									if !pp_buffer.is_empty() {
+										let line =
+											Line::new(&name, PlotPoints::Owned(mem::take(&mut pp_buffer)))
+												.id(id)
+												.width(if selected {
+													style.line_width + 2.5
+												} else {
+													style.line_width
+												})
+												.style(style.egui_line_style())
+												.color(color);
+										lines.push((!*ranged, id, line));
 									}
-									prev[0] = prev[1];
-									prev[1] = Some(cur);
+								} else {
+									pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+									let cur = (cur_x, cur_y);
+									fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+									fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+									if selected {
+										if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+											if less_then(prev_0.1, prev_1.1, plot_params.eps)
+												&& greater_then(prev_1.1, cur.1, plot_params.eps)
+											{
+												local_optima_buffer.push(
+													Points::new("", [prev_1.0, prev_1.1])
+														.color(Color32::GRAY)
+														.radius(style.line_width + 2.5),
+												);
+											}
+											if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+												&& less_then(prev_1.1, cur.1, plot_params.eps)
+											{
+												local_optima_buffer.push(
+													Points::new("", [prev_1.0, prev_1.1])
+														.color(Color32::GRAY)
+														.radius(style.line_width + 2.5),
+												);
+											}
+										}
+										prev[0] = prev[1];
+										prev[1] = Some(cur);
+									}
 								}
+
+								// if let Some(prev) = prev_sampling_point {
+								//    if prev.1.is_nan() && !init_y.is_nan(){
+								//      pp_buffer.last_mut().unwrap().x -= plot_params.eps;
+								//    }else if !prev.1.is_nan() && init_y.is_nan(){
+								//      // pp_buffer.last_mut().unwrap().x += plot_params.eps;
+								//    }
+								//  }
 							},
-							Ok(Value::Empty) => {},
+							Ok(Value::Empty) => {
+								println!("empty")
+							},
 							Ok(_) => {
 								return Err("Function must return float or empty".to_string());
 							},
@@ -1134,9 +1198,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							},
 						}
 
-						let prev_x = x;
-						x += plot_params.step_size;
-						if x == prev_x {
+						let prev_x = sampling_x;
+						sampling_x += plot_params.step_size;
+						if sampling_x == prev_x {
+							println!("break");
 							break;
 						}
 					}
@@ -1168,3 +1233,34 @@ fn eval_point<T: EvalexprNumericTypes>(
 	let y = y.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO)).map_err(|e| e.to_string())?;
 	Ok(Some((x.to_f64(), y.to_f64())))
 }
+fn zoom_in_on_nan_boundary(
+	a: (f64, f64), b: (f64, f64), eps: f64, eval: impl Fn(f64) -> Option<f64>,
+) -> (f64, f64) {
+	// If both are nans or both are defined, no need to do anything
+	if a.1.is_nan() == b.1.is_nan() {
+		return b;
+	}
+
+	let mut left = a;
+	let mut right = b;
+
+	while (right.0 - left.0).abs() > eps {
+		let mid_x = (left.0 + right.0) / 2.0;
+		let Some(mid_y) = eval(mid_x) else {
+			return if left.1.is_nan() { right } else { left };
+		};
+
+		let mid = (mid_x, mid_y);
+
+		if left.1.is_nan() == mid_y.is_nan() {
+			left = mid;
+		} else {
+			right = mid;
+		}
+	}
+
+	if left.1.is_nan() { right } else { left }
+}
+
+fn f64_to_value<T: EvalexprNumericTypes>(x: f64) -> Value<T> { Value::<T>::Float(T::Float::f64_to_float(x)) }
+fn f64_to_float<T: EvalexprNumericTypes>(x: f64) -> T::Float { T::Float::f64_to_float(x) }

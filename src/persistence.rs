@@ -29,7 +29,7 @@ pub enum EntryValueSerialized {
 		#[serde(default)]
 		style:            FunctionStyle,
 		#[serde(default)]
-    multiline:bool
+		multiline:        bool,
 	},
 	Constant {
 		value: f64,
@@ -45,7 +45,7 @@ pub enum EntryValueSerialized {
 		#[serde(default)]
 		resolution: usize,
 		#[serde(default)]
-    multiline:bool
+		multiline:  bool,
 	},
 	Label {
 		text_x:    String,
@@ -68,15 +68,21 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 			visible: entry.visible,
 			color:   entry.color,
 			value:   match &entry.ty {
-				EntryType::Function { text, ranged, range_start_text, range_end_text, style,multiline, .. } => {
-					EntryValueSerialized::Function {
-						text:             text.clone(),
-						ranged:           *ranged,
-						range_start_text: range_start_text.clone(),
-						range_end_text:   range_end_text.clone(),
-						style:            style.clone(),
-            multiline: *multiline
-					}
+				EntryType::Function {
+					text,
+					ranged,
+					range_start_text,
+					range_end_text,
+					style,
+					multiline,
+					..
+				} => EntryValueSerialized::Function {
+					text:             text.clone(),
+					ranged:           *ranged,
+					range_start_text: range_start_text.clone(),
+					range_end_text:   range_end_text.clone(),
+					style:            style.clone(),
+					multiline:        *multiline,
 				},
 				EntryType::Constant { value, step, ty } => {
 					EntryValueSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
@@ -90,13 +96,13 @@ pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entr
 					}
 					EntryValueSerialized::Points(points_serialized)
 				},
-				EntryType::Integral { func_text, lower_text, upper_text, resolution,multiline, .. } => {
+				EntryType::Integral { func_text, lower_text, upper_text, resolution, multiline, .. } => {
 					EntryValueSerialized::Integral {
 						func_text:  func_text.clone(),
 						lower_text: lower_text.clone(),
 						upper_text: upper_text.clone(),
 						resolution: *resolution,
-            multiline: *multiline
+						multiline:  *multiline,
 					}
 				},
 				EntryType::Label { text_x, text_y, text_size, underline, .. } => EntryValueSerialized::Label {
@@ -145,19 +151,24 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 			visible: entry.visible,
 			color:   entry.color,
 			ty:      match entry.value {
-				EntryValueSerialized::Function { text, ranged, range_start_text, range_end_text, style ,multiline} => {
-					EntryType::Function {
-						func: evalexpr::build_operator_tree::<T>(&text).ok(),
-						text,
-						ranged,
-						range_start: evalexpr::build_operator_tree::<T>(&range_start_text).ok(),
-						range_end: evalexpr::build_operator_tree::<T>(&range_end_text).ok(),
+				EntryValueSerialized::Function {
+					text,
+					ranged,
+					range_start_text,
+					range_end_text,
+					style,
+					multiline,
+				} => EntryType::Function {
+					func: evalexpr::build_operator_tree::<T>(&text).ok(),
+					text,
+					ranged,
+					range_start: evalexpr::build_operator_tree::<T>(&range_start_text).ok(),
+					range_end: evalexpr::build_operator_tree::<T>(&range_end_text).ok(),
 
-						range_start_text,
-						range_end_text,
-						style,
-            multiline
-					}
+					range_start_text,
+					range_end_text,
+					style,
+					multiline,
 				},
 				EntryValueSerialized::Constant { value, step, ty } => {
 					EntryType::Constant { value: T::Float::f64_to_float(value), step, ty }
@@ -175,18 +186,22 @@ pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<En
 					}
 					EntryType::Points(points_deserialized)
 				},
-				EntryValueSerialized::Integral { func_text, lower_text, upper_text, resolution,multiline } => {
-					EntryType::Integral {
-						func: evalexpr::build_operator_tree::<T>(&func_text).ok(),
-						lower: evalexpr::build_operator_tree::<T>(&lower_text).ok(),
-						upper: evalexpr::build_operator_tree::<T>(&upper_text).ok(),
-						func_text,
-						lower_text,
-						upper_text,
-						calculated: None,
-						resolution: resolution.max(10),
-            multiline
-					}
+				EntryValueSerialized::Integral {
+					func_text,
+					lower_text,
+					upper_text,
+					resolution,
+					multiline,
+				} => EntryType::Integral {
+					func: evalexpr::build_operator_tree::<T>(&func_text).ok(),
+					lower: evalexpr::build_operator_tree::<T>(&lower_text).ok(),
+					upper: evalexpr::build_operator_tree::<T>(&upper_text).ok(),
+					func_text,
+					lower_text,
+					upper_text,
+					calculated: None,
+					resolution: resolution.max(10),
+					multiline,
 				},
 				EntryValueSerialized::Label { text_x, text_y, text_size, underline } => EntryType::Label {
 					x: evalexpr::build_operator_tree::<T>(&text_x).ok(),
