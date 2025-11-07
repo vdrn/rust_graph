@@ -2,34 +2,57 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use ahash::AHashMap;
+use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
 use serde::{Deserialize, Serialize};
 
-use crate::entry::FunctionStyle;
+use crate::entry::{Expr, FunctionStyle, TextboxType};
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
+
+
+pub fn default_true() -> bool { true }
 
 #[derive(Serialize, Deserialize)]
 pub struct EntrySerialized {
+	#[serde(default)]
 	name:    String,
+	#[serde(default = "default_true")]
 	visible: bool,
 	color:   usize,
-	value:   EntryValueSerialized,
+	ty:      EntryTypeSerialized,
+}
+#[derive(Serialize, PartialEq, Deserialize, Default)]
+pub struct ExprSer {
+	#[serde(default)]
+	text:         String,
+	#[serde(default)]
+	textbox_type: TextboxType,
+}
+impl ExprSer {
+	pub fn from_expr<T: EvalexprNumericTypes>(expr: &Expr<T>) -> Self {
+		Self { text: expr.text.clone(), textbox_type: expr.textbox_type }
+	}
+	pub fn into_expr<T: EvalexprNumericTypes>(self) -> Expr<T> {
+		Expr {
+			node:         evalexpr::build_operator_tree::<T>(&self.text).ok(),
+			text:         self.text,
+			textbox_type: self.textbox_type,
+		}
+	}
 }
 #[derive(Serialize, Deserialize)]
-pub enum EntryValueSerialized {
+pub enum EntryTypeSerialized {
 	Function {
-		text:             String,
+		func:        ExprSer,
 		#[serde(default)]
-		ranged:           bool,
+		ranged:      bool,
 		#[serde(default)]
-		range_start_text: String,
+		range_start: ExprSer,
 		#[serde(default)]
-		range_end_text:   String,
+		range_end:   ExprSer,
 		#[serde(default)]
-		style:            FunctionStyle,
-		#[serde(default)]
-		multiline:        bool,
+		style:       FunctionStyle,
 	},
 	Constant {
 		value: f64,
@@ -38,85 +61,96 @@ pub enum EntryValueSerialized {
 	},
 	Points(Vec<EntryPointSerialized>),
 	Integral {
-		func_text:  String,
-		lower_text: String,
-		upper_text: String,
+		#[serde(default)]
+		func:  ExprSer,
+		#[serde(default)]
+		lower: ExprSer,
+		#[serde(default)]
+		upper: ExprSer,
 
-		#[serde(default)]
 		resolution: usize,
-		#[serde(default)]
-		multiline:  bool,
 	},
 	Label {
-		text_x:    String,
-		text_y:    String,
-		text_size: String,
+		#[serde(default)]
+		x:         ExprSer,
+		#[serde(default)]
+		y:         ExprSer,
+		#[serde(default)]
+		size:      ExprSer,
+		#[serde(default)]
 		underline: bool,
 	},
 }
 #[derive(Serialize, Deserialize)]
 pub struct EntryPointSerialized {
-	x: String,
-	y: String,
+	#[serde(default)]
+	x: ExprSer,
+	#[serde(default)]
+	y: ExprSer,
 }
 
-pub fn serialize_to<T: EvalexprNumericTypes>(writer: impl Write, entries: &[Entry<T>]) -> std::io::Result<()> {
+pub fn entries_to_ser<T: EvalexprNumericTypes>(entries: &[Entry<T>]) -> Vec<EntrySerialized> {
 	let mut result = Vec::new();
 	for entry in entries {
 		let entry_serialized = EntrySerialized {
 			name:    entry.name.clone(),
 			visible: entry.visible,
 			color:   entry.color,
-			value:   match &entry.ty {
-				EntryType::Function {
-					text,
-					ranged,
-					range_start_text,
-					range_end_text,
-					style,
-					multiline,
-					..
-				} => EntryValueSerialized::Function {
-					text:             text.clone(),
-					ranged:           *ranged,
-					range_start_text: range_start_text.clone(),
-					range_end_text:   range_end_text.clone(),
-					style:            style.clone(),
-					multiline:        *multiline,
+			ty:      match &entry.ty {
+				EntryType::Function { func, ranged, range_start, range_end, style, .. } => {
+					EntryTypeSerialized::Function {
+						func:        ExprSer::from_expr(func),
+						ranged:      *ranged,
+						range_start: ExprSer::from_expr(range_start),
+						range_end:   ExprSer::from_expr(range_end),
+						style:       style.clone(),
+					}
 				},
 				EntryType::Constant { value, step, ty } => {
-					EntryValueSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
+					EntryTypeSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
 				},
 				EntryType::Points(points) => {
 					let mut points_serialized = Vec::new();
 					for point in points {
-						let point_serialized =
-							EntryPointSerialized { x: point.text_x.clone(), y: point.text_y.clone() };
+						let point_serialized = EntryPointSerialized {
+							x: ExprSer::from_expr(&point.x),
+							y: ExprSer::from_expr(&point.y),
+						};
 						points_serialized.push(point_serialized);
 					}
-					EntryValueSerialized::Points(points_serialized)
+					EntryTypeSerialized::Points(points_serialized)
 				},
-				EntryType::Integral { func_text, lower_text, upper_text, resolution, multiline, .. } => {
-					EntryValueSerialized::Integral {
-						func_text:  func_text.clone(),
-						lower_text: lower_text.clone(),
-						upper_text: upper_text.clone(),
-						resolution: *resolution,
-						multiline:  *multiline,
-					}
+				EntryType::Integral { func, lower, upper, resolution, .. } => EntryTypeSerialized::Integral {
+					func:       ExprSer::from_expr(func),
+					lower:      ExprSer::from_expr(lower),
+					upper:      ExprSer::from_expr(upper),
+					resolution: *resolution,
 				},
-				EntryType::Label { text_x, text_y, text_size, underline, .. } => EntryValueSerialized::Label {
-					text_x:    text_x.clone(),
-					text_y:    text_y.clone(),
-					text_size: text_size.clone(),
+				EntryType::Label { x, y, size, underline, .. } => EntryTypeSerialized::Label {
+					x:         ExprSer::from_expr(x),
+					y:         ExprSer::from_expr(y),
+					size:      ExprSer::from_expr(size),
 					underline: *underline,
 				},
 			},
 		};
 		result.push(entry_serialized);
 	}
-	serde_json::to_writer(writer, &result)?;
+	result
+}
+pub fn serialize_to_json<T: EvalexprNumericTypes>(
+	writer: impl Write, entries: &[Entry<T>],
+) -> std::io::Result<()> {
+	let ser = entries_to_ser(entries);
+	serde_json::to_writer(writer, &ser)?;
 	Ok(())
+}
+pub fn serialize_to_url<T: EvalexprNumericTypes>(entries: &[Entry<T>]) -> Result<String, String> {
+	let ser = entries_to_ser(entries);
+	let bincoded =
+		bincode::serde::encode_to_vec(&ser, bincode::config::standard()).map_err(|e| e.to_string())?;
+	let base64_encoded = base64::engine::general_purpose::STANDARD.encode(bincoded);
+	Ok(base64_encoded)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -129,6 +163,7 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>() -> Result<Vec<Entry<T>>, 
 		.expect("Couldn't get location")
 		.href()
 		.expect("Couldn't get href");
+	// let href = "";
 
 	if !href.contains('#') {
 		return Ok(Vec::new());
@@ -137,94 +172,87 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>() -> Result<Vec<Entry<T>>, 
 		return Ok(Vec::new());
 	};
 
-	let decoded = urlencoding::decode(without_prefix).map_err(|e| e.to_string())?;
-	deserialize_from(decoded.as_bytes())
+	let base64_decoded =
+		base64::engine::general_purpose::STANDARD.decode(without_prefix).map_err(|e| e.to_string())?;
+	// let base64_decoded = base64::decode(without_prefix).map_err(|e| e.to_string())?;
+	let entries_ser = bincode::serde::decode_from_slice(&base64_decoded, bincode::config::standard())
+		.map_err(|e| e.to_string())?
+		.0;
+	Ok(entries_from_ser(entries_ser))
+
+	// let decoded = urlencoding::decode(without_prefix).map_err(|e| e.to_string())?;
+	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn deserialize_from<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<Entry<T>>, String> {
-	let entries: Vec<EntrySerialized> = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
+pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: Vec<EntrySerialized>) -> Vec<Entry<T>> {
 	let mut result = Vec::new();
-	for (id, entry) in entries.into_iter().enumerate() {
+	for (id, entry) in ser.into_iter().enumerate() {
 		let entry_deserialized = Entry {
 			id:      id as u64,
 			name:    entry.name,
 			visible: entry.visible,
 			color:   entry.color,
-			ty:      match entry.value {
-				EntryValueSerialized::Function {
-					text,
-					ranged,
-					range_start_text,
-					range_end_text,
+			ty:      match entry.ty {
+				EntryTypeSerialized::Function {
+					func: f,
+					ranged: r,
+					range_start: rs,
+					range_end: re,
 					style,
-					multiline,
 				} => EntryType::Function {
-					func: evalexpr::build_operator_tree::<T>(&text).ok(),
-					text,
-					ranged,
-					range_start: evalexpr::build_operator_tree::<T>(&range_start_text).ok(),
-					range_end: evalexpr::build_operator_tree::<T>(&range_end_text).ok(),
+					func: f.into_expr(),
+					ranged: r,
+					range_start: rs.into_expr(),
+					range_end: re.into_expr(),
 
-					range_start_text,
-					range_end_text,
 					style,
-					multiline,
 				},
-				EntryValueSerialized::Constant { value, step, ty } => {
+				EntryTypeSerialized::Constant { value, step, ty } => {
 					EntryType::Constant { value: T::Float::f64_to_float(value), step, ty }
 				},
-				EntryValueSerialized::Points(points) => {
+				EntryTypeSerialized::Points(points) => {
 					let mut points_deserialized = Vec::new();
 					for point in points {
-						let point_deserialized = PointEntry {
-							x:      evalexpr::build_operator_tree::<T>(&point.x).ok(),
-							y:      evalexpr::build_operator_tree::<T>(&point.y).ok(),
-							text_x: point.x,
-							text_y: point.y,
-						};
+						let point_deserialized = PointEntry { x: point.x.into_expr(), y: point.y.into_expr() };
 						points_deserialized.push(point_deserialized);
 					}
 					EntryType::Points(points_deserialized)
 				},
-				EntryValueSerialized::Integral {
-					func_text,
-					lower_text,
-					upper_text,
-					resolution,
-					multiline,
-				} => EntryType::Integral {
-					func: evalexpr::build_operator_tree::<T>(&func_text).ok(),
-					lower: evalexpr::build_operator_tree::<T>(&lower_text).ok(),
-					upper: evalexpr::build_operator_tree::<T>(&upper_text).ok(),
-					func_text,
-					lower_text,
-					upper_text,
-					calculated: None,
-					resolution: resolution.max(10),
-					multiline,
+				EntryTypeSerialized::Integral { func: f, lower: l, upper: u, resolution: r } => {
+					EntryType::Integral {
+						func:  f.into_expr(),
+						lower: l.into_expr(),
+						upper: u.into_expr(),
+
+						calculated: None,
+						resolution: r.max(10),
+					}
 				},
-				EntryValueSerialized::Label { text_x, text_y, text_size, underline } => EntryType::Label {
-					x: evalexpr::build_operator_tree::<T>(&text_x).ok(),
-					text_x,
-					y: evalexpr::build_operator_tree::<T>(&text_y).ok(),
-					text_y,
-					size: evalexpr::build_operator_tree::<T>(&text_size).ok(),
-					text_size,
+				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {
+					x: text_x.into_expr(),
+					y: text_y.into_expr(),
+					size: size.into_expr(),
 					underline,
 				},
 			},
 		};
 		result.push(entry_deserialized);
 	}
-	Ok(result)
+	result
 }
+pub fn deserialize_from_json<T: EvalexprNumericTypes>(reader: &[u8]) -> Result<Vec<Entry<T>>, String> {
+	let entries: Vec<EntrySerialized> = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
+	Ok(entries_from_ser(entries))
+}
+// pub fn deserialize_from_url<T: EvalexprNumericTypes>(url: &str) -> Result<Vec<Entry<T>>, String> {
+// }
 #[cfg(target_arch = "wasm32")]
 pub fn save_file<T: EvalexprNumericTypes>(
 	ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame,
 ) {
 	let file = format!("{}.json", state.name);
 	let mut output = Vec::new();
-	if let Err(e) = serialize_to(&mut output, &state.entries) {
+	if let Err(e) = serialize_to_json(&mut output, &state.entries) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
@@ -253,7 +281,7 @@ pub fn save_file<T: EvalexprNumericTypes>(
 		ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
 		return;
 	};
-	if let Err(e) = serialize_to(&mut file, &state.entries) {
+	if let Err(e) = serialize_to_json(&mut file, &state.entries) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
@@ -286,7 +314,7 @@ pub fn load_file<T: EvalexprNumericTypes>(
 	cur_dir: &str, web_st: &AHashMap<String, String>, file_name: &str, state: &mut State<T>,
 ) -> Result<(), String> {
 	if let Some(file) = web_st.get(file_name) {
-		let entries = deserialize_from::<T>(file.as_bytes())?;
+		let entries = deserialize_from_json::<T>(file.as_bytes())?;
 		state.entries = entries;
 		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 		state.clear_cache = true;
@@ -300,7 +328,8 @@ pub fn load_file<T: EvalexprNumericTypes>(
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
 	};
-	let entries = deserialize_from::<T>(&file).map_err(|e| format!("Could not deserialize file: {}", e))?;
+	let entries =
+		deserialize_from_json::<T>(&file).map_err(|e| format!("Could not deserialize file: {}", e))?;
 	state.entries = entries;
 	state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 	state.clear_cache = true;
@@ -344,6 +373,7 @@ pub fn persistence_ui<T: EvalexprNumericTypes>(
 						ui_state.serialization_error = Some(format!("Could not open file: {}", e));
 						return;
 					};
+					ui_state.serialization_error = None;
 					ui_state.next_id += state.entries.len() as u64;
 				}
 				if ui.button("Delete").clicked() {

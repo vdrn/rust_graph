@@ -30,6 +30,7 @@ macro_rules! scope {
 macro_rules! scope {
 	($($tt:tt)*) => {};
 }
+pub const DEFAULT_RESOLUTION: usize = 500;
 
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
@@ -232,7 +233,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 #[rustfmt::skip]
 const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
 	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
-  ("g(tuple, index) or get(tuple,index)", " Get the value at the index from the tuple."),
+  ("get(tuple,index)", " Get the value at the index from the tuple."),
+  ("g(tuple, index)", " Alias for `get`."),
 	("", ""),
 	("max(a, b)", " Returns the maximum of the two numbers."),
 	("min(a, b)", " Returns the minimum of the two numbers."),
@@ -496,16 +498,16 @@ impl App for Application {
 		if use_f32 != self.ui.conf.use_f32 {
 			if use_f32 {
 				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to(&mut output, &self.state_f32.entries).is_ok() {
-					self.state_f64.entries = persistence::deserialize_from(&output).unwrap();
+				if persistence::serialize_to_json(&mut output, &self.state_f32.entries).is_ok() {
+					self.state_f64.entries = persistence::deserialize_from_json(&output).unwrap();
 					self.state_f64.clear_cache = true;
 					self.state_f64.name = self.state_f32.name.clone();
 					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			} else {
 				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to(&mut output, &self.state_f64.entries).is_ok() {
-					self.state_f32.entries = persistence::deserialize_from(&output).unwrap();
+				if persistence::serialize_to_json(&mut output, &self.state_f64.entries).is_ok() {
+					self.state_f32.entries = persistence::deserialize_from_json(&output).unwrap();
 					self.state_f32.clear_cache = true;
 					self.state_f32.name = self.state_f64.name.clone();
 					self.ui.next_id += self.state_f32.entries.len() as u64;
@@ -556,33 +558,38 @@ fn side_panel<T: EvalexprNumericTypes>(
 			let mut needs_recompilation = false;
 
 			ui.horizontal_top(|ui| {
-				ui.menu_button("Add", |ui| {
-					if ui.button("Function").clicked() {
-						state.entries.push(Entry::new_function(ui_state.next_id, String::new()));
+				ui.menu_button("➕ Add", |ui| {
+					let new_function = Entry::new_function(ui_state.next_id, String::new());
+					if ui.button(new_function.type_name()).clicked() {
+						state.entries.push(new_function);
 						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
-					if ui.button("Constant").clicked() {
-						state.entries.push(Entry::new_constant(ui_state.next_id));
+					let new_constant = Entry::new_constant(ui_state.next_id);
+					if ui.button(new_constant.type_name()).clicked() {
+						state.entries.push(new_constant);
 						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
-					if ui.button("Points").clicked() {
-						state.entries.push(Entry::new_points(ui_state.next_id));
+					let new_points = Entry::new_points(ui_state.next_id);
+					if ui.button(new_points.type_name()).clicked() {
+						state.entries.push(new_points);
 						ui_state.next_id += 1;
 						needs_recompilation = true;
 					}
-					if ui.button("Integral").clicked() {
-						state.entries.push(Entry::new_integral(ui_state.next_id));
+					let new_integral = Entry::new_integral(ui_state.next_id);
+					if ui.button(new_integral.type_name()).clicked() {
+						state.entries.push(new_integral);
 						ui_state.next_id += 1;
 					}
-					if ui.button("Label").clicked() {
-						state.entries.push(Entry::new_label(ui_state.next_id));
+					let new_label = Entry::new_label(ui_state.next_id);
+					if ui.button(new_label.type_name()).clicked() {
+						state.entries.push(new_label);
 						ui_state.next_id += 1;
 					}
 				});
 
-				if ui.button("Clear all").clicked() {
+				if ui.button("❌ Clear all").clicked() {
 					state.entries.clear();
 					state.clear_cache = true;
 				}
@@ -672,11 +679,12 @@ fn side_panel<T: EvalexprNumericTypes>(
 					ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(ui_state.conf.fullscreen));
 				}
 
-				if ui.button("Toggle Help").clicked() {
+				if ui.button(format!("{} Help", if ui_state.showing_help { "📖" } else { "📚" })).clicked()
+				{
 					ui_state.showing_help = !ui_state.showing_help;
 				}
 				if ui_state.showing_help {
-					Window::new("Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
+					Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
 						ScrollArea::vertical().show(ui, |ui| {
 							ui.columns_const::<3, _>(|columns| {
 								columns[0].heading("Operators");
@@ -740,15 +748,19 @@ fn side_panel<T: EvalexprNumericTypes>(
 			if needs_recompilation || state.clear_cache {
 				scope!("clear_cache");
 				// state.points_cache.clear();
-				let mut output = Vec::new();
-				if persistence::serialize_to(&mut output, &state.entries).is_ok() {
+				match persistence::serialize_to_url( &state.entries){
+          Ok(output)=>{
 					// let mut data_str = String::with_capacity(output.len() + 1);
-					let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
-					let mut permalink_string = String::with_capacity(url_encoded.len() + 1);
+					// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
+					let mut permalink_string = String::with_capacity(output.len() + 1);
 					permalink_string.push('#');
-					permalink_string.push_str(&url_encoded);
+					permalink_string.push_str(&output);
 					ui_state.permalink_string = permalink_string;
 					ui_state.scheduled_url_update = true;
+          }
+          Err(e)=>{
+            println!("Error: {e}");
+          }
 				}
 
 				state.ctx.write().unwrap().clear();
@@ -833,7 +845,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
 	scope!("graph");
 
-	for  entry in state.entries.iter_mut(){
+	for entry in state.entries.iter_mut() {
 		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.store(0, Ordering::Relaxed);
 		let id = Id::new(entry.id).with("entry_plot_els");

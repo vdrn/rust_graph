@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -37,6 +37,9 @@ serde = { version = "1" }
 serde_json = "1"
 urlencoding = "2"
 egui_dnd="0.14"
+# serde_urlencoded="0.7"
+bincode={version="2", features=["serde"]}
+base64="0.22"
 # [patch."https://github.com/vdrn/evalexpr"]
 # evalexpr = { path = "../../contrib/evalexpr" }
 # [patch.crates-io]
