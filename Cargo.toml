@@ -1,6 +1,7 @@
 [package]
+
 name = "rust_graph"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -41,6 +42,9 @@ bincode={version="2", features=["serde"]}
 base64="0.22"
 arrayvec = "0.7"
 smallvec = {version = "1.15", features = ["union"]}
+rayon={version="1", features=["web_spin_lock"]}
+thread_local="1"
+# wasm-bindgen = "0.2.99"
 
 # [patch."https://github.com/vdrn/evalexpr"]
 # evalexpr = { path = "../../contrib/evalexpr" }
@@ -56,6 +60,7 @@ puffin_http = { version = "0.16", optional = true }
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Window", "Location", "History"] }
 console_error_panic_hook = "0.1"
+wasm-bindgen-rayon = {version = "1.3", features=["no-bundler"]}
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"

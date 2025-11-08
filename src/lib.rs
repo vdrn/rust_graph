@@ -1,8 +1,10 @@
 extern crate alloc;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicIsize, Ordering};
+use core::cell::{Cell, RefCell};
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::env;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
+use thread_local::ThreadLocal;
 
 use ahash::AHashMap;
 use eframe::egui::{
@@ -36,6 +38,9 @@ pub const DEFAULT_RESOLUTION: usize = 500;
 
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -113,7 +118,7 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 		($ident:ident) => {
 			ctx.set_function(
 				stringify!($ident).to_string(),
-				evalexpr::Function::new(move |v| {
+				evalexpr::Function::new(move |_, v| {
 					let v: T::Float = v.as_float()?;
 					Ok(Value::Float(v.$ident()))
 				}),
@@ -153,7 +158,7 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 		($ident:ident) => {
 			ctx.set_function(
 				stringify!($ident).to_string(),
-				evalexpr::Function::new(move |v| {
+				evalexpr::Function::new(move |_, v| {
 					let v = v.as_tuple_ref()?;
 					let v1: T::Float = v
 						.first()
@@ -182,7 +187,7 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 
 	ctx.set_function(
 		"normaldist".to_string(),
-		evalexpr::Function::new(move |v| {
+		evalexpr::Function::new(move |_, v| {
 			let zero = T::Float::f64_to_float(0.0);
 			let one = T::Float::f64_to_float(1.0);
 
@@ -213,23 +218,44 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	)
 	.unwrap();
 
-	let tuple_getter = |v: &Value<T>| {
-		let v = v.as_fixed_len_tuple_ref(2)?;
-		let tuple = v[0].as_tuple_ref()?;
-		let index: T::Float = v[1].as_float()?;
+	ctx.set_function(
+		"g".to_string(),
+		evalexpr::Function::new(|_, v: &Value<T>| {
+			let v = v.as_fixed_len_tuple_ref(2)?;
+			let tuple = v[0].as_tuple_ref()?;
+			let index: T::Float = v[1].as_float()?;
 
-		let index = index.to_f64() as usize;
+			let index = index.to_f64() as usize;
 
-		let value = tuple.get(index).ok_or_else(|| {
-			EvalexprError::CustomMessage(format!(
-				"Index out of bounds: index = {index} but the length was {}",
-				tuple.len()
-			))
-		})?;
-		Ok(value.clone())
-	};
-	ctx.set_function("get".to_string(), evalexpr::Function::new(tuple_getter)).unwrap();
-	ctx.set_function("g".to_string(), evalexpr::Function::new(tuple_getter)).unwrap();
+			let value = tuple.get(index).ok_or_else(|| {
+				EvalexprError::CustomMessage(format!(
+					"Index out of bounds: index = {index} but the length was {}",
+					tuple.len()
+				))
+			})?;
+			Ok(value.clone())
+		}),
+	)
+	.unwrap();
+	ctx.set_function(
+		"get".to_string(),
+		evalexpr::Function::new(|_, v: &Value<T>| {
+			let v = v.as_fixed_len_tuple_ref(2)?;
+			let tuple = v[0].as_tuple_ref()?;
+			let index: T::Float = v[1].as_float()?;
+
+			let index = index.to_f64() as usize;
+
+			let value = tuple.get(index).ok_or_else(|| {
+				EvalexprError::CustomMessage(format!(
+					"Index out of bounds: index = {index} but the length was {}",
+					tuple.len()
+				))
+			})?;
+			Ok(value.clone())
+		}),
+	)
+	.unwrap();
 	// };
 }
 #[rustfmt::skip]
@@ -315,6 +341,29 @@ impl Default for AppConfig {
 	}
 }
 
+struct DrawBuffer {
+	lines:    Vec<FunctionLine>,
+	points:   Vec<egui_plot::Points<'static>>,
+	polygons: Vec<egui_plot::Polygon<'static>>,
+	texts:    Vec<egui_plot::Text>,
+}
+impl DrawBuffer {
+	fn new() -> Self {
+		Self {
+			lines:    Vec::with_capacity(512),
+			points:   Vec::with_capacity(512),
+			polygons: Vec::with_capacity(512),
+			texts:    Vec::with_capacity(8),
+		}
+	}
+}
+/// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
+/// We dont use those so we're fine.
+unsafe impl Sync for DrawBuffer {}
+#[allow(clippy::non_send_fields_in_send_ty)]
+/// SAFETY: same as abouve
+unsafe impl Send for DrawBuffer {}
+
 struct UiState {
 	conf:        AppConfig,
 	next_id:     u64,
@@ -325,7 +374,7 @@ struct UiState {
 	cur_dir:              String,
 	serialization_error:  Option<String>,
 	web_storage:          AHashMap<String, String>,
-	stack_overflow_guard: Arc<AtomicIsize>,
+	stack_overflow_guard: Arc<ThreadLocal<Cell<isize>>>,
 	eval_errors:          AHashMap<u64, String>,
 	parsing_errors:       AHashMap<u64, String>,
 	selected_plot_item:   Option<Id>,
@@ -335,14 +384,13 @@ struct UiState {
 	permalink_string:     String,
 	scheduled_url_update: bool,
 	last_url_update:      f64,
-	// animating:            Arc<AtomicBool>,
 	file_to_remove:       Option<String>,
 
-	lines:        Vec<FunctionLine>,
-	points:       Vec<egui_plot::Points<'static>>,
-	polygons:     Vec<egui_plot::Polygon<'static>>,
-	texts:        Vec<egui_plot::Text>,
+	draw_buffer:  Box<ThreadLocal<RefCell<DrawBuffer>>>,
 	showing_help: bool,
+
+	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+  full_frame_scope: Option<puffin::ProfilerScope>
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -452,6 +500,8 @@ impl Application {
 				clear_cache: true,
 			},
 			ui: UiState {
+        #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+        full_frame_scope: None,
 				// animating: Arc::new(AtomicBool::new(true)),
 				conf,
 				scheduled_url_update: false,
@@ -463,7 +513,7 @@ impl Application {
 
 				cur_dir,
 				serialization_error,
-				stack_overflow_guard: Arc::new(AtomicIsize::new(0)),
+				stack_overflow_guard: Arc::new(ThreadLocal::new()),
 				eval_errors: AHashMap::default(),
 				parsing_errors: AHashMap::default(),
 				selected_plot_item: None,
@@ -471,10 +521,7 @@ impl Application {
 				f64_epsilon: f64::EPSILON,
 				permalink_string: String::new(),
 				file_to_remove: None,
-				lines: Vec::with_capacity(512),
-				points: Vec::with_capacity(512),
-				polygons: Vec::with_capacity(512),
-				texts: Vec::with_capacity(8),
+				draw_buffer: Box::new(ThreadLocal::new()),
 				showing_help: false,
 			},
 		}
@@ -543,7 +590,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 ) {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	{
+    ui_state.full_frame_scope.take();
 		puffin::GlobalProfiler::lock().new_frame();
+    ui_state.full_frame_scope = puffin::profile_scope_custom!("full_frame");
 	}
 
 	scope!("side_panel");
@@ -822,10 +871,10 @@ fn side_panel<T: EvalexprNumericTypes>(
 	ui_state.eval_errors.clear();
 }
 fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
-	ui_state.lines.clear();
-	ui_state.points.clear();
-	ui_state.polygons.clear();
-	ui_state.texts.clear();
+	// ui_state.lines.clear();
+	// ui_state.points.clear();
+	// ui_state.polygons.clear();
+	// ui_state.texts.clear();
 
 	let main_context = &*state.ctx.read().unwrap();
 	let first_x = ui_state.plot_bounds.min()[0];
@@ -851,9 +900,14 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
 	scope!("graph");
 
-	for entry in state.entries.iter_mut() {
+	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
+	state.entries.par_iter_mut().for_each(|entry| {
+		// for entry in state.entries.iter_mut() {
 		scope!("entry_draw", entry.name.clone());
-		ui_state.stack_overflow_guard.store(0, Ordering::Relaxed);
+		ui_state.stack_overflow_guard.get_or_default().set(0);
+		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
+		let mut draw_buffer = draw_buffer.borrow_mut();
+
 		let id = Id::new(entry.id).with("entry_plot_els");
 		if let Err(error) = entry::create_entry_plot_elements(
 			entry,
@@ -861,71 +915,73 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			Some(id) == ui_state.selected_plot_item,
 			main_context,
 			&plot_params,
-			&mut ui_state.polygons,
-			&mut ui_state.lines,
-			&mut ui_state.points,
-			&mut ui_state.texts,
+			&mut draw_buffer,
 		) {
-			ui_state.eval_errors.insert(entry.id, error);
+			eval_errors.lock().unwrap().insert(entry.id, error);
 		}
-	}
+	});
 
 	let mut local_optima_buffer = vec![];
-	for fline in ui_state.lines.iter() {
-		if Some(fline.id) != ui_state.selected_plot_item {
-			continue;
-		}
-		let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
-			continue;
-		};
-
-		let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-		for point in plot_points.iter() {
-			let cur = (point.x, point.y);
-			fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-			fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-			if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-				if less_then(prev_0.1, prev_1.1, plot_params.eps)
-					&& greater_then(prev_1.1, cur.1, plot_params.eps)
-				{
-					local_optima_buffer
-						.push(Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width));
-				}
-				if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-					&& less_then(prev_1.1, cur.1, plot_params.eps)
-				{
-					local_optima_buffer
-						.push(Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width));
-				}
+	for draw_buffer in ui_state.draw_buffer.iter_mut() {
+		let draw_buffer = draw_buffer.borrow_mut();
+		for fline in draw_buffer.lines.iter() {
+			if Some(fline.id) != ui_state.selected_plot_item {
+				continue;
 			}
-			prev[0] = prev[1];
-			prev[1] = Some(cur);
+			let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
+				continue;
+			};
 
-			// 	let Some(point_before) = plot_points.get(p_i - 1) else {
-			// 		continue;
-			// 	};
-			// 	for (other_implicit, other_line_id, other_line) in ui_state.lines.iter() {
-			// 		if !other_implicit || other_line_id == line_id {
-			// 			continue;
-			// 		}
-			// 		let PlotGeometry::Points(other_points) = other_line.geometry() else {
-			// 			continue;
-			// 		};
-			// 		let (Some(other_point_before), Some(other_point)) =
-			// 			(other_points.get(p_i - 1), other_points.get(p_i))
-			// 		else {
-			// 			continue;
-			// 		};
-			// 		if let Some((t, y)) =
-			// 			implicit_intersects(point_before.y, point.y, other_point_before.y, other_point.y)
-			// 		{
-			// 			ui_state.points.push(
-			// 				Points::new("", [point_before.x + (point.x - point_before.x) * t, y])
-			// 					.color(Color32::GRAY)
-			// 					.radius(3.5),
-			// 			);
-			// 		}
-			// 	}
+			let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
+			for point in plot_points.iter() {
+				let cur = (point.x, point.y);
+				fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+				fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+				if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+					if less_then(prev_0.1, prev_1.1, plot_params.eps)
+						&& greater_then(prev_1.1, cur.1, plot_params.eps)
+					{
+						local_optima_buffer.push(
+							Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
+						);
+					}
+					if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+						&& less_then(prev_1.1, cur.1, plot_params.eps)
+					{
+						local_optima_buffer.push(
+							Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
+						);
+					}
+				}
+				prev[0] = prev[1];
+				prev[1] = Some(cur);
+
+				// 	let Some(point_before) = plot_points.get(p_i - 1) else {
+				// 		continue;
+				// 	};
+				// 	for (other_implicit, other_line_id, other_line) in ui_state.lines.iter() {
+				// 		if !other_implicit || other_line_id == line_id {
+				// 			continue;
+				// 		}
+				// 		let PlotGeometry::Points(other_points) = other_line.geometry() else {
+				// 			continue;
+				// 		};
+				// 		let (Some(other_point_before), Some(other_point)) =
+				// 			(other_points.get(p_i - 1), other_points.get(p_i))
+				// 		else {
+				// 			continue;
+				// 		};
+				// 		if let Some((t, y)) =
+				// 			implicit_intersects(point_before.y, point.y, other_point_before.y, other_point.y)
+				// 		{
+				// 			ui_state.points.push(
+				// 				Points::new("", [point_before.x + (point.x - point_before.x) * t, y])
+				// 					.color(Color32::GRAY)
+				// 					.radius(3.5),
+				// 			);
+				// 		}
+				// 	}
+			}
 		}
 	}
 
@@ -946,17 +1002,20 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
-			for poly in ui_state.polygons.drain(..) {
-				plot_ui.polygon(poly);
-			}
-			for fline in ui_state.lines.drain(..) {
-				plot_ui.line(fline.line);
-			}
-			for point in ui_state.points.drain(..) {
-				plot_ui.points(point);
-			}
-			for text in ui_state.texts.drain(..) {
-				plot_ui.text(text);
+			for draw_buffer in ui_state.draw_buffer.iter_mut() {
+				let mut draw_buffer = draw_buffer.borrow_mut();
+				for poly in draw_buffer.polygons.drain(..) {
+					plot_ui.polygon(poly);
+				}
+				for fline in draw_buffer.lines.drain(..) {
+					plot_ui.line(fline.line);
+				}
+				for point in draw_buffer.points.drain(..) {
+					plot_ui.points(point);
+				}
+				for text in draw_buffer.texts.drain(..) {
+					plot_ui.text(text);
+				}
 			}
 		});
 
