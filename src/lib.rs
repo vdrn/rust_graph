@@ -17,8 +17,9 @@ use evalexpr::{
 use serde::{Deserialize, Serialize};
 
 mod entry;
+mod marching_squares;
 mod persistence;
-use crate::entry::{ConstantType, Entry, EntryType, PointEntry};
+use crate::entry::{ConstantType, Entry, EntryType, FunctionLine, PointEntry};
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -30,6 +31,7 @@ macro_rules! scope {
 macro_rules! scope {
 	($($tt:tt)*) => {};
 }
+pub(crate) use scope;
 pub const DEFAULT_RESOLUTION: usize = 500;
 
 #[cfg(target_arch = "wasm32")]
@@ -336,7 +338,7 @@ struct UiState {
 	// animating:            Arc<AtomicBool>,
 	file_to_remove:       Option<String>,
 
-	lines:        Vec<(bool, Id, egui_plot::Line<'static>)>,
+	lines:        Vec<FunctionLine>,
 	points:       Vec<egui_plot::Points<'static>>,
 	polygons:     Vec<egui_plot::Polygon<'static>>,
 	texts:        Vec<egui_plot::Text>,
@@ -357,7 +359,7 @@ pub fn run_puffin_server() -> puffin_http::Server {
 	let puffin_server = puffin_http::Server::new(&server_addr).unwrap();
 	println!("Run this to view profiling data:  puffin_viewer {server_addr}");
 
-	puffin::set_scopes_on(false);
+	puffin::set_scopes_on(true);
 
 	puffin_server
 }
@@ -540,7 +542,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-	puffin::GlobalProfiler::lock().new_frame();
+	{
+		puffin::GlobalProfiler::lock().new_frame();
+	}
 
 	scope!("side_panel");
 	SidePanel::left("left_panel").default_width(200.0).show(ctx, |ui| {
@@ -748,19 +752,19 @@ fn side_panel<T: EvalexprNumericTypes>(
 			if needs_recompilation || state.clear_cache {
 				scope!("clear_cache");
 				// state.points_cache.clear();
-				match persistence::serialize_to_url( &state.entries){
-          Ok(output)=>{
-					// let mut data_str = String::with_capacity(output.len() + 1);
-					// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
-					let mut permalink_string = String::with_capacity(output.len() + 1);
-					permalink_string.push('#');
-					permalink_string.push_str(&output);
-					ui_state.permalink_string = permalink_string;
-					ui_state.scheduled_url_update = true;
-          }
-          Err(e)=>{
-            println!("Error: {e}");
-          }
+				match persistence::serialize_to_url(&state.entries) {
+					Ok(output) => {
+						// let mut data_str = String::with_capacity(output.len() + 1);
+						// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
+						let mut permalink_string = String::with_capacity(output.len() + 1);
+						permalink_string.push('#');
+						permalink_string.push_str(&output);
+						ui_state.permalink_string = permalink_string;
+						ui_state.scheduled_url_update = true;
+					},
+					Err(e) => {
+						println!("Error: {e}");
+					},
 				}
 
 				state.ctx.write().unwrap().clear();
@@ -838,6 +842,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		eps: if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon },
 		first_x,
 		last_x,
+		first_y: ui_state.plot_bounds.min()[1],
+		last_y: ui_state.plot_bounds.max()[1],
 		step_size,
 		resolution: ui_state.conf.resolution,
 	};
@@ -864,39 +870,62 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 	}
 
-	for (implicit, line_id, line) in ui_state.lines.iter() {
-		if !*implicit || Some(*line_id) != ui_state.selected_plot_item {
+	let mut local_optima_buffer = vec![];
+	for fline in ui_state.lines.iter() {
+		if Some(fline.id) != ui_state.selected_plot_item {
 			continue;
 		}
-		let PlotGeometry::Points(plot_points) = line.geometry() else {
+		let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
 			continue;
 		};
-		for (p_i, point) in plot_points.iter().enumerate() {
-			let Some(point_before) = plot_points.get(p_i - 1) else {
-				continue;
-			};
-			for (other_implicit, other_line_id, other_line) in ui_state.lines.iter() {
-				if !other_implicit || other_line_id == line_id {
-					continue;
-				}
-				let PlotGeometry::Points(other_points) = other_line.geometry() else {
-					continue;
-				};
-				let (Some(other_point_before), Some(other_point)) =
-					(other_points.get(p_i - 1), other_points.get(p_i))
-				else {
-					continue;
-				};
-				if let Some((t, y)) =
-					implicit_intersects(point_before.y, point.y, other_point_before.y, other_point.y)
+
+		let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
+		for point in plot_points.iter() {
+			let cur = (point.x, point.y);
+			fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+			fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+			if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+				if less_then(prev_0.1, prev_1.1, plot_params.eps)
+					&& greater_then(prev_1.1, cur.1, plot_params.eps)
 				{
-					ui_state.points.push(
-						Points::new("", [point_before.x + (point.x - point_before.x) * t, y])
-							.color(Color32::GRAY)
-							.radius(3.5),
-					);
+					local_optima_buffer
+						.push(Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width));
+				}
+				if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+					&& less_then(prev_1.1, cur.1, plot_params.eps)
+				{
+					local_optima_buffer
+						.push(Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width));
 				}
 			}
+			prev[0] = prev[1];
+			prev[1] = Some(cur);
+
+			// 	let Some(point_before) = plot_points.get(p_i - 1) else {
+			// 		continue;
+			// 	};
+			// 	for (other_implicit, other_line_id, other_line) in ui_state.lines.iter() {
+			// 		if !other_implicit || other_line_id == line_id {
+			// 			continue;
+			// 		}
+			// 		let PlotGeometry::Points(other_points) = other_line.geometry() else {
+			// 			continue;
+			// 		};
+			// 		let (Some(other_point_before), Some(other_point)) =
+			// 			(other_points.get(p_i - 1), other_points.get(p_i))
+			// 		else {
+			// 			continue;
+			// 		};
+			// 		if let Some((t, y)) =
+			// 			implicit_intersects(point_before.y, point.y, other_point_before.y, other_point.y)
+			// 		{
+			// 			ui_state.points.push(
+			// 				Points::new("", [point_before.x + (point.x - point_before.x) * t, y])
+			// 					.color(Color32::GRAY)
+			// 					.radius(3.5),
+			// 			);
+			// 		}
+			// 	}
 		}
 	}
 
@@ -920,8 +949,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			for poly in ui_state.polygons.drain(..) {
 				plot_ui.polygon(poly);
 			}
-			for (_, _, line) in ui_state.lines.drain(..) {
-				plot_ui.line(line);
+			for fline in ui_state.lines.drain(..) {
+				plot_ui.line(fline.line);
 			}
 			for point in ui_state.points.drain(..) {
 				plot_ui.points(point);
@@ -948,30 +977,30 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	});
 }
 
-fn implicit_intersects(p1_y: f64, p2_y: f64, o_p1_y: f64, o_p2_y: f64) -> Option<(f64, f64)> {
-	let m1 = p2_y - p1_y;
-	let m2 = o_p2_y - o_p1_y;
+// fn implicit_intersects(p1_y: f64, p2_y: f64, o_p1_y: f64, o_p2_y: f64) -> Option<(f64, f64)> {
+// 	let m1 = p2_y - p1_y;
+// 	let m2 = o_p2_y - o_p1_y;
 
-	// Check if lines are parallel
-	let slope_diff = m1 - m2;
-	if slope_diff.abs() < 1e-10 {
-		return None;
-	}
+// 	// Check if lines are parallel
+// 	let slope_diff = m1 - m2;
+// 	if slope_diff.abs() < 1e-10 {
+// 		return None;
+// 	}
 
-	// Line equations:
-	// y1 = p1_y + m1 * x
-	// y2 = o_p1_y + m2 * x
+// 	// Line equations:
+// 	// y1 = p1_y + m1 * x
+// 	// y2 = o_p1_y + m2 * x
 
-	let x = (o_p1_y - p1_y) / slope_diff;
+// 	let x = (o_p1_y - p1_y) / slope_diff;
 
-	if !(0.0..=1.0).contains(&x) {
-		return None;
-	}
+// 	if !(0.0..=1.0).contains(&x) {
+// 		return None;
+// 	}
 
-	let y = p1_y + m1 * x;
+// 	let y = p1_y + m1 * x;
 
-	Some((x, y))
-}
+// 	Some((x, y))
+// }
 
 // pub fn snap_range_to_grid(start: f64, end: f64, expand_percent: f64) -> (f64, f64) {
 // 	let range = end - start;
@@ -1014,3 +1043,4 @@ fn implicit_intersects(p1_y: f64, p2_y: f64, o_p1_y: f64, o_p2_y: f64) -> Option
 // 	};
 // 	multiplier * power
 // }
+//

@@ -7,9 +7,10 @@ use eframe::egui::{self, Grid, Id, Modal};
 use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{Expr, FunctionStyle, TextboxType};
+use crate::entry::{
+	Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, TextboxType
+};
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
-
 
 pub fn default_true() -> bool { true }
 
@@ -44,15 +45,17 @@ impl ExprSer {
 #[derive(Serialize, Deserialize)]
 pub enum EntryTypeSerialized {
 	Function {
-		func:        ExprSer,
+		func:                ExprSer,
 		#[serde(default)]
-		ranged:      bool,
+		ranged:              bool,
 		#[serde(default)]
-		range_start: ExprSer,
+		range_start:         ExprSer,
 		#[serde(default)]
-		range_end:   ExprSer,
+		range_end:           ExprSer,
 		#[serde(default)]
-		style:       FunctionStyle,
+		style:               FunctionStyle,
+		#[serde(default)]
+		implicit_resolution: usize,
 	},
 	Constant {
 		value: f64,
@@ -97,14 +100,15 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(entries: &[Entry<T>]) -> Vec<Entr
 			visible: entry.visible,
 			color:   entry.color,
 			ty:      match &entry.ty {
-				EntryType::Function { func, ranged, range_start, range_end, style, .. } => {
-					EntryTypeSerialized::Function {
-						func:        ExprSer::from_expr(func),
-						ranged:      *ranged,
-						range_start: ExprSer::from_expr(range_start),
-						range_end:   ExprSer::from_expr(range_end),
-						style:       style.clone(),
-					}
+				EntryType::Function {
+					func, range_start, range_end, style, implicit_resolution, ty, ..
+				} => EntryTypeSerialized::Function {
+					func:                ExprSer::from_expr(func),
+					ranged:              ty == &FunctionType::Ranged,
+					range_start:         ExprSer::from_expr(range_start),
+					range_end:           ExprSer::from_expr(range_end),
+					style:               style.clone(),
+					implicit_resolution: *implicit_resolution,
 				},
 				EntryType::Constant { value, step, ty } => {
 					EntryTypeSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
@@ -194,16 +198,20 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: Vec<EntrySerialized>) -> V
 			color:   entry.color,
 			ty:      match entry.ty {
 				EntryTypeSerialized::Function {
-					func: f,
-					ranged: r,
-					range_start: rs,
-					range_end: re,
+					func,
+					ranged,
+					range_start,
+					range_end,
 					style,
+					implicit_resolution,
 				} => EntryType::Function {
-					func: f.into_expr(),
-					ranged: r,
-					range_start: rs.into_expr(),
-					range_end: re.into_expr(),
+					func: func.into_expr(),
+					// Actual type will be set in compilation step later
+					ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
+					range_start: range_start.into_expr(),
+					range_end: range_end.into_expr(),
+					implicit_resolution: implicit_resolution
+						.clamp(MIN_IMPLICIT_RESOLUTION, MAX_IMPLICIT_RESOLUTION),
 
 					style,
 				},

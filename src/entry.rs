@@ -13,8 +13,17 @@ use evalexpr::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::MAX_FUNCTION_NESTING;
-pub fn is_default<T: Default + PartialEq>(value: &T) -> bool { value == &T::default() }
+use crate::{MAX_FUNCTION_NESTING, marching_squares};
+
+pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 100;
+pub const MAX_IMPLICIT_RESOLUTION: usize = 300;
+pub const MIN_IMPLICIT_RESOLUTION: usize = 10;
+
+pub struct FunctionLine {
+	pub line:  egui_plot::Line<'static>,
+	pub id:    egui::Id,
+	pub width: f32,
+}
 
 pub const COLORS: &[Color32; 20] = &[
 	Color32::from_rgb(255, 107, 107), // Bright coral red
@@ -94,6 +103,7 @@ impl<T: EvalexprNumericTypes> Default for Expr<T> {
 impl<T: EvalexprNumericTypes> Expr<T> {
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
+		postfix: Option<&str>,
 	) -> Result<bool, String> {
 		ui.horizontal_top(|ui| {
 			let mut changed = false;
@@ -123,6 +133,9 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 
 				changed = true;
 			}
+			if let Some(postfix) = postfix {
+				ui.label(RichText::new(postfix).monospace());
+			}
 			ui.menu_button(RichText::new(self.textbox_type.symbol()), |ui| {
 				ui.selectable_value(
 					&mut self.textbox_type,
@@ -146,15 +159,26 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 		.inner
 	}
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FunctionType {
+	X,
+	Y,
+	Ranged,
+	Implicit,
+}
 #[derive(Clone, Debug)]
 pub enum EntryType<T: EvalexprNumericTypes> {
 	Function {
-		func: Expr<T>,
+		func:  Expr<T>,
+		style: FunctionStyle,
+		ty:    FunctionType,
 
-		ranged:      bool,
-		range_start: Expr<T>,
-		range_end:   Expr<T>,
-		style:       FunctionStyle,
+		/// used for `RangedFunction`
+		range_start:         Expr<T>,
+		/// used for `RangedFunction`
+		range_end:           Expr<T>,
+		/// used for `ImplicitFunction`
+		implicit_resolution: usize,
 	},
 	Constant {
 		value: T::Float,
@@ -273,15 +297,16 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			visible: true,
 			name: String::new(),
 			ty: EntryType::Function {
-				func:        Expr {
+				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
 					text,
 					textbox_type: TextboxType::default(),
 				},
-				range_start: Expr::default(),
-				range_end:   Expr::default(),
-				ranged:      false,
-				style:       FunctionStyle::default(),
+				range_start:         Expr::default(),
+				range_end:           Expr::default(),
+				ty:                  FunctionType::X,
+				style:               FunctionStyle::default(),
+				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},
 		}
 	}
@@ -351,22 +376,10 @@ impl<T: EvalexprNumericTypes> Default for PointEntry<T> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ConstantType {
-	LoopForwardAndBackward {
-		start:   f64,
-		end:     f64,
-		forward: bool,
-	},
-	LoopForward {
-		start: f64,
-		end:   f64,
-	},
-	PlayOnce {
-		start: f64,
-		end:   f64,
-	},
-	PlayIndefinitely {
-		start: f64,
-	},
+	LoopForwardAndBackward { start: f64, end: f64, forward: bool },
+	LoopForward { start: f64, end: f64 },
+	PlayOnce { start: f64, end: f64 },
+	PlayIndefinitely { start: f64 },
 }
 impl ConstantType {
 	pub fn range(&self) -> RangeInclusive<f64> {
@@ -452,9 +465,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			}
 			let color = entry.color();
 			match &mut entry.ty {
-				EntryType::Function { func, ranged, range_start, range_end, style } => {
+				EntryType::Function { func, range_start, range_end, style, ty, implicit_resolution } => {
 					ui.vertical(|ui| {
-						match func.edit_ui(ui, "sin(x)", None, clear_cache) {
+						let postfix = if ty == &FunctionType::Implicit { Some("= 0 ") } else { None };
+						match func.edit_ui(ui, "sin(x)", None, clear_cache, postfix) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								result.needs_recompilation |= changed;
@@ -466,31 +480,50 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 						ui.horizontal(|ui| {
 							style.ui(ui);
-							ui.checkbox(ranged, "Ranged");
-							if *ranged {
-								ui.label("Start:");
-								match range_start.edit_ui(ui, "", Some(30.0), clear_cache) {
-									Ok(changed) => {
-										result.needs_recompilation |= changed;
-										result.parsed |= changed;
-									},
-									Err(e) => {
-										result.error = Some(format!("Parsing error: {e}"));
-									},
-								}
-								ui.label("End:");
-								match range_end.edit_ui(ui, "", Some(30.0), clear_cache) {
-									Ok(changed) => {
-										result.needs_recompilation |= changed;
-										result.parsed |= changed;
-									},
-									Err(e) => {
-										result.error = Some(format!("Parsing error: {e}"));
-									},
-								}
+							match ty {
+								FunctionType::X | FunctionType::Ranged => {
+									let mut is_ranged = *ty == FunctionType::Ranged;
+									ui.checkbox(&mut is_ranged, "Ranged");
+									*ty = if is_ranged { FunctionType::Ranged } else { FunctionType::X };
+								},
+
+								_ => {},
+							}
+							match ty {
+								FunctionType::Ranged => {
+									ui.label("Start:");
+									match range_start.edit_ui(ui, "", Some(30.0), clear_cache, None) {
+										Ok(changed) => {
+											result.needs_recompilation |= changed;
+											result.parsed |= changed;
+										},
+										Err(e) => {
+											result.error = Some(format!("Parsing error: {e}"));
+										},
+									}
+									ui.label("End:");
+									match range_end.edit_ui(ui, "", Some(30.0), clear_cache, None) {
+										Ok(changed) => {
+											result.needs_recompilation |= changed;
+											result.parsed |= changed;
+										},
+										Err(e) => {
+											result.error = Some(format!("Parsing error: {e}"));
+										},
+									}
+								},
+								FunctionType::Implicit => {
+									Slider::new(
+										implicit_resolution,
+										MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
+									)
+									.text("Implicit Resolution")
+									.ui(ui);
+								},
+								_ => {},
 							}
 						});
-						if *ranged {
+						if let FunctionType::Ranged = ty {
 							ui.label("Ranged fns can return 1 or 2 values: f(x)->y  or f(x)->(x,y)");
 						}
 					});
@@ -499,7 +532,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.label("Lower:");
-							match lower.edit_ui(ui, "lower", Some(50.0), clear_cache) {
+							match lower.edit_ui(ui, "lower", Some(50.0), clear_cache, None) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									// needs_recompilation |= changed;
@@ -509,7 +542,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								},
 							}
 							ui.label("Upper:");
-							match upper.edit_ui(ui, "upper", Some(50.0), clear_cache) {
+							match upper.edit_ui(ui, "upper", Some(50.0), clear_cache, None) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									// needs_recompilation |= changed;
@@ -520,7 +553,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							}
 						});
 						ui.horizontal(|ui| {
-							match func.edit_ui(ui, "func", None, clear_cache) {
+							match func.edit_ui(ui, "func", None, clear_cache, None) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									result.needs_recompilation |= changed;
@@ -540,7 +573,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				},
 				EntryType::Label { x, y, size, underline } => {
 					ui.horizontal(|ui| {
-						match x.edit_ui(ui, "point_x", Some(80.0), clear_cache) {
+						match x.edit_ui(ui, "point_x", Some(80.0), clear_cache, None) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -549,7 +582,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match y.edit_ui(ui, "point_y", Some(80.0), clear_cache) {
+						match y.edit_ui(ui, "point_y", Some(80.0), clear_cache, None) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -558,7 +591,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match size.edit_ui(ui, "size", Some(80.0), clear_cache) {
+						match size.edit_ui(ui, "size", Some(80.0), clear_cache, None) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -575,7 +608,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						for (pi, point) in points.iter_mut().enumerate() {
 							ui.horizontal(|ui| {
-								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache) {
+								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, None) {
 									Ok(changed) => {
 										result.parsed |= changed;
 										// result.needs_recompilation |= changed;
@@ -584,7 +617,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
-								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache) {
+								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, None) {
 									Ok(changed) => {
 										result.parsed |= changed;
 										// result.needs_recompilation |= changed;
@@ -740,7 +773,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						.unwrap();
 				}
 			},
-			EntryType::Function { func, .. } => {
+			EntryType::Function { func, ty, .. } => {
 				if let Some(func_node) = func.node.clone() {
 					// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
 					// impl Clone for LocalCache {
@@ -757,8 +790,26 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					// 	AHashMap::with_capacity(ui_state.conf.resolution),
 					// ));
 					// let animating = ui_state.animating.clone();
+					let mut has_x = false;
+					let mut has_y = false;
+					for ident in func_node.iter_identifiers() {
+						if ident == "x" {
+							has_x = true;
+						} else if ident == "y" {
+							has_y = true;
+						}
+					}
+					if has_x && has_y {
+						*ty = FunctionType::Implicit;
+					} else if has_y {
+						*ty = FunctionType::Y;
+					} else if matches!(ty, FunctionType::Implicit | FunctionType::Y) {
+						*ty = FunctionType::X;
+					}
+
 					let main_context = ctx.clone();
 					let stack_overflow_guard = stack_overflow_guard.clone();
+					let ty = *ty;
 					let fun = Function::new(move |v| {
 						// puffin::profile_scope!("eval_function");
 						if stack_overflow_guard.fetch_add(1, Ordering::Relaxed) > MAX_FUNCTION_NESTING {
@@ -766,25 +817,44 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								"Max function nesting reached ({MAX_FUNCTION_NESTING})"
 							)));
 						}
-
-						let v = match v {
-							Value::Float(x) => *x,
-							Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
-							Value::String(_) => T::Float::ZERO,
-							// Value::Int(x) => T::int_as_float(x),
-							Value::Tuple(values) => values[0]
-								.as_float()
-								.or_else(|_| {
-									values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
-								})
-								.unwrap_or(T::Float::ZERO),
-							Value::Empty => T::Float::ZERO,
-						};
-						let vv = Value::<T>::Float(v);
-
 						let context = main_context.read().unwrap();
 
-						let res = { func_node.eval_with_context_and_x(&*context, &vv) };
+						let res = match ty {
+							FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
+								let v = match v {
+									Value::Float(x) => *x,
+									Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
+									Value::String(_) => T::Float::ZERO,
+									// Value::Int(x) => T::int_as_float(x),
+									Value::Tuple(values) => values[0]
+										.as_float()
+										.or_else(|_| {
+											values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
+										})
+										.unwrap_or(T::Float::ZERO),
+									Value::Empty => T::Float::ZERO,
+								};
+								let vv = Value::<T>::Float(v);
+
+								if ty == FunctionType::Y {
+									func_node.eval_with_context_and_y(&*context, &vv)
+								} else {
+									func_node.eval_with_context_and_x(&*context, &vv)
+								}
+							},
+							FunctionType::Implicit => {
+								let v = v.as_tuple_ref()?;
+								let x = v.first().ok_or_else(|| {
+									EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
+								})?;
+								let y = v.get(1).ok_or_else(|| {
+									EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
+								})?;
+
+								func_node.eval_with_context_and_xy(&*context, x, y)
+							},
+						};
+
 						stack_overflow_guard.fetch_sub(1, Ordering::Relaxed);
 						res
 					});
@@ -802,14 +872,16 @@ pub struct PlotParams {
 	pub eps:        f64,
 	pub first_x:    f64,
 	pub last_x:     f64,
+	pub first_y:    f64,
+	pub last_y:     f64,
 	pub step_size:  f64,
 	pub resolution: usize,
 }
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, selected: bool, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	polygons: &mut Vec<Polygon<'static>>, lines: &mut Vec<(bool, Id, Line<'static>)>,
-	points: &mut Vec<Points<'static>>, texts: &mut Vec<Text>,
+	polygons: &mut Vec<Polygon<'static>>, lines: &mut Vec<FunctionLine>, points: &mut Vec<Points<'static>>,
+	texts: &mut Vec<Text>,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -976,13 +1048,21 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// x += step;
 			}
 			let int_name = if entry.name.is_empty() { func.text.as_str() } else { entry.name.as_str() };
-			lines.push((
-				false,
-				Id::NULL,
-				Line::new(format!("∫[{},x]({})dx", lower, int_name.trim()), PlotPoints::Owned(int_lines))
-					.color(stroke_color),
-			));
-			lines.push((false, Id::NULL, Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color)));
+			lines.push(FunctionLine {
+				width: 1.0,
+				id:    Id::NULL,
+				line:  Line::new(
+					format!("∫[{},x]({})dx", lower, int_name.trim()),
+					PlotPoints::Owned(int_lines),
+				)
+				.color(stroke_color),
+			});
+
+			lines.push(FunctionLine {
+				width: 1.0,
+				id:    Id::NULL,
+				line:  Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color),
+			});
 			*calculated = Some(result);
 		},
 		EntryType::Label { x, y, size, underline, .. } => {
@@ -1035,192 +1115,239 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				points
 					.push(Points::new(entry.name.clone(), line_buffer[0]).id(id).color(color).radius(radius));
 			} else if line_buffer.len() > 1 {
-				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(if selected {
-					3.5
-				} else {
-					1.0
-				});
-				lines.push((false, id, line));
+				let width = if selected { 3.5 } else { 1.0 };
+				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(width);
+				lines.push(FunctionLine { width, id, line });
 				// plot_ui.line(line);
 			}
 		},
-		EntryType::Function { func, ranged, range_start, range_end, style, .. } => {
-			if let Some(func_noe) = &func.node {
+		EntryType::Function { func, range_start, range_end, style, ty, implicit_resolution, .. } => {
+			if let Some(func_node) = &func.node {
 				let name = if entry.name.is_empty() {
-					format!("y = {}", func.text.trim())
+					match ty {
+						FunctionType::Y => format!("x = {}", func.text.trim()),
+						FunctionType::Ranged | FunctionType::X => {
+							format!("y = {}", func.text.trim())
+						},
+						FunctionType::Implicit => format!("{} = 0.0", func.text.trim()),
+					}
 				} else {
-					format!("{}(x) = {}", entry.name.trim(), func.text)
+					match ty {
+						FunctionType::Y => format!("{}(y) = {}", entry.name.trim(), func.text.trim()),
+						FunctionType::Ranged | FunctionType::X => {
+							format!("{}(x) = {}", entry.name.trim(), func.text.trim())
+						},
+						FunctionType::Implicit => {
+							format!("{}(x,y) = {} = 0.0", entry.name.trim(), func.text.trim())
+						},
+					}
 				};
+				let width = if selected { style.line_width + 2.5 } else { style.line_width };
+
 				// let mut cache = (!animating).then(|| {
 				// 	state
 				// 		.points_cache
 				// 		.entry(text.clone())
 				// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 				// });
+				let mut add_line = |line: Vec<PlotPoint>| {
+					lines.push(FunctionLine {
+						width,
+						id,
+						line: Line::new(&name, PlotPoints::Owned(line))
+							.id(id)
+							.width(width)
+							.style(style.egui_line_style())
+							.color(color),
+					});
+				};
 
-				let mut local_optima_buffer = vec![];
-				let mut pp_buffer = vec![];
+				match ty {
+					FunctionType::X => {
+						let mut pp_buffer = vec![];
+						let mut prev_sampling_point: Option<(f64, f64)> = None;
+						let mut sampling_x = plot_params.first_x;
+						while sampling_x < plot_params.last_x {
+							match func_node.eval_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
+								Ok(Value::Float(y)) => {
+									let y = y.to_f64();
 
-				let mut sampling_x = plot_params.first_x;
-				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-				let mut prev_sampling_point: Option<(f64, f64)> = None;
+									let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
+										zoom_in_on_nan_boundary(
+											(prev_x, prev_y),
+											(sampling_x, y),
+											plot_params.eps,
+											|x| {
+												func_node
+													.eval_float_with_context_and_x(ctx, &f64_to_value(x))
+													.map(|y| y.to_f64())
+													.ok()
+											},
+										)
+									} else {
+										(sampling_x, y)
+									};
+									prev_sampling_point = Some((sampling_x, y));
 
-				if *ranged {
-					match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref()) {
-						Ok(Some((start, end))) => {
-							if start > end {
-								return Err("Range start must be less than range end".to_string());
-							}
-							let range = end - start;
-							let step = range / plot_params.resolution as f64;
-							if start + step == end {
-								return Ok(());
-							}
-							for i in 0..(plot_params.resolution + 1) {
-								let x = start + step * i as f64;
-								match func_noe.eval_with_context_and_x(ctx, &f64_to_value(x)) {
-									Ok(Value::Float(y)) => {
-										pp_buffer.push(PlotPoint::new(x, y.to_f64()));
-									},
-									Ok(Value::Empty) => {},
-									Ok(Value::Tuple(values)) => {
-										if values.len() != 2 {
-											return Err(format!(
-												"Ranged function must return 1 or 2 float values, got {}",
-												values.len()
-											));
+									if cur_y.is_nan() {
+										if !pp_buffer.is_empty() {
+											add_line(mem::take(&mut pp_buffer));
 										}
-										let x = values[0].as_float().map_err(|e| e.to_string())?;
-										let y = values[1].as_float().map_err(|e| e.to_string())?;
-										pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
-									},
-									Ok(_) => {
-										return Err(
-											"Ranged function must return 1 or 2 float values".to_string()
-										);
-									},
-									Err(e) => {
-										return Err(e.to_string());
-									},
-								}
+									} else {
+										pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+									}
+								},
+								Ok(Value::Empty) => {},
+								Ok(_) => {
+									return Err("Function must return float or empty".to_string());
+								},
+
+								Err(e) => {
+									return Err(e.to_string());
+								},
 							}
-						},
-						Err(e) => {
-							return Err(e);
-						},
-						_ => {},
-					}
 
-					// implicit = false;
-				} else {
-					while sampling_x < plot_params.last_x {
-						// puffin::profile_scope!("graph_step");
-						// println!("x {x}");
+							let prev_x = sampling_x;
+							sampling_x += plot_params.step_size;
+							if sampling_x == prev_x {
+								break;
+							}
+						}
 
-						match func_noe.eval_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
-							Ok(Value::Float(y)) => {
-								let y = y.to_f64();
+						add_line(pp_buffer);
+					},
 
-								let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
-									zoom_in_on_nan_boundary(
-										(prev_x, prev_y),
-										(sampling_x, y),
-										plot_params.eps,
-										|x| {
-											func_noe
-												.eval_float_with_context_and_x(ctx, &f64_to_value(x))
-												.map(|y| y.to_f64())
-												.ok()
+					FunctionType::Y => {
+						let mut sampling_y = plot_params.first_y;
+						let mut pp_buffer = vec![];
+						let mut prev_sampling_point: Option<(f64, f64)> = None;
+						while sampling_y < plot_params.last_y {
+							match func_node.eval_with_context_and_y(ctx, &f64_to_value(sampling_y)) {
+								Ok(Value::Float(x)) => {
+									let x = x.to_f64();
+
+									let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
+										zoom_in_on_nan_boundary(
+											(prev_x, prev_y),
+											(x, sampling_y),
+											plot_params.eps,
+											|y| {
+												func_node
+													.eval_float_with_context_and_y(ctx, &f64_to_value(y))
+													.map(|x| x.to_f64())
+													.ok()
+											},
+										)
+									} else {
+										(x, sampling_y)
+									};
+									prev_sampling_point = Some((x, sampling_y));
+
+									if cur_x.is_nan() {
+										if !pp_buffer.is_empty() {
+											add_line(mem::take(&mut pp_buffer));
+										}
+									} else {
+										pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+									}
+								},
+								Ok(Value::Empty) => {},
+								Ok(_) => {
+									return Err("Function must return float or empty".to_string());
+								},
+
+								Err(e) => {
+									return Err(e.to_string());
+								},
+							}
+
+							let prev_y = sampling_y;
+							sampling_y += plot_params.step_size;
+							if sampling_y == prev_y {
+								break;
+							}
+						}
+
+						add_line(pp_buffer);
+					},
+					FunctionType::Ranged => {
+						let mut pp_buffer = vec![];
+						match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref()) {
+							Ok(Some((start, end))) => {
+								if start > end {
+									return Err("Range start must be less than range end".to_string());
+								}
+								let range = end - start;
+								let step = range / plot_params.resolution as f64;
+								if start + step == end {
+									return Ok(());
+								}
+								for i in 0..(plot_params.resolution + 1) {
+									let x = start + step * i as f64;
+									match func_node.eval_with_context_and_x(ctx, &f64_to_value(x)) {
+										Ok(Value::Float(y)) => {
+											if y.is_nan() {
+												if !pp_buffer.is_empty() {
+													add_line(mem::take(&mut pp_buffer));
+												}
+											} else {
+												pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+											}
 										},
-									)
-								} else {
-									(sampling_x, y)
-								};
-								prev_sampling_point = Some((sampling_x, y));
-
-								if cur_y.is_nan() {
-									if !pp_buffer.is_empty() {
-										let line =
-											Line::new(&name, PlotPoints::Owned(mem::take(&mut pp_buffer)))
-												.id(id)
-												.width(if selected {
-													style.line_width + 2.5
-												} else {
-													style.line_width
-												})
-												.style(style.egui_line_style())
-												.color(color);
-										lines.push((!*ranged, id, line));
-									}
-								} else {
-									pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-									let cur = (cur_x, cur_y);
-									fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-									fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-									if selected {
-										if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-											if less_then(prev_0.1, prev_1.1, plot_params.eps)
-												&& greater_then(prev_1.1, cur.1, plot_params.eps)
-											{
-												local_optima_buffer.push(
-													Points::new("", [prev_1.0, prev_1.1])
-														.color(Color32::GRAY)
-														.radius(style.line_width + 2.5),
-												);
+										Ok(Value::Empty) => {},
+										Ok(Value::Tuple(values)) => {
+											if values.len() != 2 {
+												return Err(format!(
+													"Ranged function must return 1 or 2 float values, got {}",
+													values.len()
+												));
 											}
-											if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-												&& less_then(prev_1.1, cur.1, plot_params.eps)
-											{
-												local_optima_buffer.push(
-													Points::new("", [prev_1.0, prev_1.1])
-														.color(Color32::GRAY)
-														.radius(style.line_width + 2.5),
-												);
+											let x = values[0].as_float().map_err(|e| e.to_string())?;
+											let y = values[1].as_float().map_err(|e| e.to_string())?;
+											if y.is_nan() {
+												if !pp_buffer.is_empty() {
+													add_line(mem::take(&mut pp_buffer));
+												}
+											} else {
+												pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
 											}
-										}
-										prev[0] = prev[1];
-										prev[1] = Some(cur);
+										},
+										Ok(_) => {
+											return Err(
+												"Ranged function must return 1 or 2 float values".to_string()
+											);
+										},
+										Err(e) => {
+											return Err(e.to_string());
+										},
 									}
 								}
-
-								// if let Some(prev) = prev_sampling_point {
-								//    if prev.1.is_nan() && !init_y.is_nan(){
-								//      pp_buffer.last_mut().unwrap().x -= plot_params.eps;
-								//    }else if !prev.1.is_nan() && init_y.is_nan(){
-								//      // pp_buffer.last_mut().unwrap().x += plot_params.eps;
-								//    }
-								//  }
+								add_line(pp_buffer);
 							},
-							Ok(Value::Empty) => {
-								println!("empty")
-							},
-							Ok(_) => {
-								return Err("Function must return float or empty".to_string());
-							},
-
 							Err(e) => {
-								return Err(e.to_string());
+								return Err(e);
 							},
+							_ => {},
 						}
-
-						let prev_x = sampling_x;
-						sampling_x += plot_params.step_size;
-						if sampling_x == prev_x {
-							println!("break");
-							break;
+					},
+					FunctionType::Implicit => {
+						let mins = (plot_params.first_x, plot_params.first_y);
+						let maxs = (plot_params.last_x, plot_params.last_y);
+						for line in marching_squares::marching_squares(
+							|x, y| {
+								func_node
+									.eval_float_with_context_and_xy(ctx, &f64_to_value(x), &f64_to_value(y))
+									.map(|y| y.to_f64())
+									.map_err(|e| e.to_string())
+							},
+							mins,
+							maxs,
+							*implicit_resolution,
+              // plot_params.eps
+						)? {
+							add_line(line);
 						}
-					}
-				}
-
-				let line = Line::new(name, PlotPoints::Owned(pp_buffer))
-					.id(id)
-					.width(if selected { style.line_width + 2.5 } else { style.line_width })
-					.style(style.egui_line_style())
-					.color(color);
-				lines.push((!*ranged, id, line));
-
-				for point in local_optima_buffer {
-					points.push(point);
+					},
 				}
 			}
 		},
