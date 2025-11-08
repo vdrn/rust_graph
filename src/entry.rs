@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
+use thread_local::ThreadLocal;
+use core::cell::Cell;
 use core::mem;
 use core::ops::RangeInclusive;
-use core::sync::atomic::{AtomicIsize, Ordering};
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
@@ -13,10 +14,10 @@ use evalexpr::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MAX_FUNCTION_NESTING, marching_squares};
+use crate::{DrawBuffer, MAX_FUNCTION_NESTING, marching_squares};
 
-pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 100;
-pub const MAX_IMPLICIT_RESOLUTION: usize = 300;
+pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
+pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
 pub const MIN_IMPLICIT_RESOLUTION: usize = 10;
 
 pub struct FunctionLine {
@@ -758,7 +759,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &Arc<std::sync::RwLock<evalexpr::HashMapContext<T>>>,
-	stack_overflow_guard: &Arc<AtomicIsize>,
+	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
 ) {
 	if entry.name != "x" {
 		match &mut entry.ty {
@@ -807,17 +808,18 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						*ty = FunctionType::X;
 					}
 
-					let main_context = ctx.clone();
 					let stack_overflow_guard = stack_overflow_guard.clone();
 					let ty = *ty;
-					let fun = Function::new(move |v| {
+					let fun = Function::new(move |context, v| {
 						// puffin::profile_scope!("eval_function");
-						if stack_overflow_guard.fetch_add(1, Ordering::Relaxed) > MAX_FUNCTION_NESTING {
+            let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
+            let stack_depth = stack_overflow_guard.get() + 1;
+            stack_overflow_guard.set(stack_depth);
+						if stack_depth > MAX_FUNCTION_NESTING {
 							return Err(EvalexprError::CustomMessage(format!(
 								"Max function nesting reached ({MAX_FUNCTION_NESTING})"
 							)));
 						}
-						let context = main_context.read().unwrap();
 
 						let res = match ty {
 							FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
@@ -837,9 +839,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								let vv = Value::<T>::Float(v);
 
 								if ty == FunctionType::Y {
-									func_node.eval_with_context_and_y(&*context, &vv)
+									func_node.eval_with_context_and_y(context, &vv)
 								} else {
-									func_node.eval_with_context_and_x(&*context, &vv)
+									func_node.eval_with_context_and_x(context, &vv)
 								}
 							},
 							FunctionType::Implicit => {
@@ -851,11 +853,11 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 									EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
 								})?;
 
-								func_node.eval_with_context_and_xy(&*context, x, y)
+								func_node.eval_with_context_and_xy(context, x, y)
 							},
 						};
 
-						stack_overflow_guard.fetch_sub(1, Ordering::Relaxed);
+						stack_overflow_guard.set(stack_depth - 1);
 						res
 					});
 
@@ -880,8 +882,7 @@ pub struct PlotParams {
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, selected: bool, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	polygons: &mut Vec<Polygon<'static>>, lines: &mut Vec<FunctionLine>, points: &mut Vec<Points<'static>>,
-	texts: &mut Vec<Text>,
+  draw_buffer: &mut DrawBuffer,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -982,7 +983,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(triangle1);
+							draw_buffer.polygons.push(triangle1);
 							let triangle2 = Polygon::new(
 								entry.name.clone(),
 								PlotPoints::Owned(vec![
@@ -993,7 +994,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(triangle2);
+							draw_buffer.polygons.push(triangle2);
 						}
 
 						let t = f64_to_float::<T>(t);
@@ -1027,7 +1028,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(poly);
+							draw_buffer.polygons.push(poly);
 						}
 						let dy = y - prev_y;
 						let step = f64_to_float::<T>(step);
@@ -1048,7 +1049,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// x += step;
 			}
 			let int_name = if entry.name.is_empty() { func.text.as_str() } else { entry.name.as_str() };
-			lines.push(FunctionLine {
+			draw_buffer.lines.push(FunctionLine {
 				width: 1.0,
 				id:    Id::NULL,
 				line:  Line::new(
@@ -1058,7 +1059,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				.color(stroke_color),
 			});
 
-			lines.push(FunctionLine {
+			draw_buffer.lines.push(FunctionLine {
 				width: 1.0,
 				id:    Id::NULL,
 				line:  Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color),
@@ -1085,7 +1086,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 					let text = Text::new(entry.name.clone(), PlotPoint { x, y }, label_text).color(color);
 
-					texts.push(text);
+					draw_buffer.texts.push(text);
 				},
 				Err(e) => {
 					return Err(e);
@@ -1112,12 +1113,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 			if line_buffer.len() == 1 {
 				let radius = if selected { 5.0 } else { 3.5 };
-				points
+				draw_buffer.points
 					.push(Points::new(entry.name.clone(), line_buffer[0]).id(id).color(color).radius(radius));
 			} else if line_buffer.len() > 1 {
 				let width = if selected { 3.5 } else { 1.0 };
 				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(width);
-				lines.push(FunctionLine { width, id, line });
+				draw_buffer.lines.push(FunctionLine { width, id, line });
 				// plot_ui.line(line);
 			}
 		},
@@ -1151,7 +1152,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 				// });
 				let mut add_line = |line: Vec<PlotPoint>| {
-					lines.push(FunctionLine {
+					draw_buffer.lines.push(FunctionLine {
 						width,
 						id,
 						line: Line::new(&name, PlotPoints::Owned(line))

@@ -2,10 +2,11 @@ use crate::scope;
 use ahash::AHashMap;
 use arrayvec::ArrayVec;
 use egui_plot::PlotPoint;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use smallvec::SmallVec;
 
 pub fn marching_squares(
-	f: impl Fn(f64, f64) -> Result<f64, String>, bounds_min: (f64, f64), bounds_max: (f64, f64),
+	f: impl Fn(f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64), bounds_max: (f64, f64),
 	resolution: usize,
 ) -> Result<Vec<Vec<PlotPoint>>, String> {
 	scope!("marching_squares");
@@ -15,16 +16,34 @@ pub fn marching_squares(
 	let dx = (x_max - x_min) / resolution as f64;
 	let dy = (y_max - y_min) / resolution as f64;
 
-	let mut grid = vec![vec![0.0; resolution + 1]; resolution + 1];
+	let grid; // vec![vec![0.0; resolution + 1]; resolution + 1];
 	{
 		scope!("grid_calc");
 
-		for i in 0..=resolution {
-			for j in 0..=resolution {
-				let x = x_min + i as f64 * dx;
-				let y = y_min + j as f64 * dy;
-				grid[i][j] = f(x, y)?;
-			}
+		let mut error = std::sync::Mutex::new(None);
+		grid = (0..=resolution)
+			.into_par_iter()
+			.map(|i| {
+				scope!("grid_calc_par");
+				let mut grid_i = vec![0.0; resolution + 1];
+				for j in 0..=resolution {
+					let x = x_min + i as f64 * dx;
+					let y = y_min + j as f64 * dy;
+					match f(x, y) {
+						Ok(y) => {
+							grid_i[j] = y;
+						},
+						Err(e) => {
+							*error.lock().unwrap() = Some(e);
+						},
+					}
+				}
+				grid_i
+			})
+			.collect::<Vec<_>>();
+		// for i in 0..=resolution {}
+		if let Some(error) = error.get_mut().unwrap().take() {
+			return Err(error);
 		}
 	}
 
@@ -272,12 +291,12 @@ struct PolylineBuilder {
 	polylines:       Vec<Vec<PlotPoint>>,
 	/// (polyline index, is_start)
 	endpoint_map:    AHashMap<HashablePoint, SmallVec<[(u32, bool); 2]>>,
-	eps:       f64,
+	eps:             f64,
 	precision_recip: f64,
 }
 
 impl PolylineBuilder {
-	fn new(grid_precision: f64, eps:f64) -> Self {
+	fn new(grid_precision: f64, eps: f64) -> Self {
 		PolylineBuilder {
 			polylines: Vec::new(),
 			endpoint_map: AHashMap::new(),

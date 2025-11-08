@@ -1,0 +1,14 @@
+[unstable]
+build-std = ["panic_abort", "std"]
+[rust]
+[build]
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+atomics,+bulk-memory"]
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+  "-C", "link-arg=-fuse-ld=/home/vedran/.cargo/bin/wild",
+ "-C", "force-frame-pointers=yes",
+]
+
