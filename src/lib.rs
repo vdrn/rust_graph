@@ -2,26 +2,30 @@ extern crate alloc;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+use rustc_hash::FxHashMap;
 use std::env;
 use std::sync::{Mutex, RwLock};
 use thread_local::ThreadLocal;
 
-use ahash::AHashMap;
 use eframe::egui::{
 	self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Window
 };
 use eframe::epaint::Color32;
 use eframe::{App, CreationContext};
-use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, Points, VLine};
+use egui_plot::{
+	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
+};
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Node, Value
 };
 use serde::{Deserialize, Serialize};
 
 mod entry;
 mod marching_squares;
 mod persistence;
-use crate::entry::{ConstantType, Entry, EntryType, FunctionLine, PointEntry};
+use crate::entry::{
+	ConstantType, DragPoint, Entry, EntryType, FunctionLine, PointEntry, eval_point, f64_to_float, f64_to_value
+};
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -86,12 +90,13 @@ const CONF_KEY: &str = "conf";
 const MAX_FUNCTION_NESTING: isize = 50;
 
 struct State<T: EvalexprNumericTypes> {
-	entries:     Vec<Entry<T>>,
-	ctx:         Arc<RwLock<evalexpr::HashMapContext<T>>>,
+	entries:        Vec<Entry<T>>,
+	ctx:            evalexpr::HashMapContext<T>,
+	default_bounds: Option<PlotBounds>,
 	// context_stash: &'static Mutex<Vec<evalexpr::HashMapContext<T>>>,
-	name:        String,
+	name:           String,
 	// points_cache: PointsCache,
-	clear_cache: bool,
+	clear_cache:    bool,
 }
 fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
@@ -341,9 +346,15 @@ impl Default for AppConfig {
 	}
 }
 
+struct SelectablePoint {
+	i:      (Id, u32),
+	x:      f64,
+	y:      f64,
+	radius: f32,
+}
 struct DrawBuffer {
 	lines:    Vec<FunctionLine>,
-	points:   Vec<egui_plot::Points<'static>>,
+	points:   Vec<(Option<SelectablePoint>, egui_plot::Points<'static>)>,
 	polygons: Vec<egui_plot::Polygon<'static>>,
 	texts:    Vec<egui_plot::Text>,
 }
@@ -373,11 +384,15 @@ struct UiState {
 
 	cur_dir:              String,
 	serialization_error:  Option<String>,
-	web_storage:          AHashMap<String, String>,
+	web_storage:          FxHashMap<String, String>,
 	stack_overflow_guard: Arc<ThreadLocal<Cell<isize>>>,
-	eval_errors:          AHashMap<u64, String>,
-	parsing_errors:       AHashMap<u64, String>,
-	selected_plot_item:   Option<Id>,
+	eval_errors:          FxHashMap<u64, String>,
+	parsing_errors:       FxHashMap<u64, String>,
+
+	selected_plot_item: Option<Id>,
+	dragging_point:     Option<Id>,
+	dragging_point_i:   Option<SelectablePoint>,
+	plot_mouese_pos:    Option<((f32, f32), PlotTransform)>,
 
 	f32_epsilon:          f64,
 	f64_epsilon:          f64,
@@ -390,7 +405,7 @@ struct UiState {
 	showing_help: bool,
 
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-  full_frame_scope: Option<puffin::ProfilerScope>
+	full_frame_scope: Option<puffin::ProfilerScope>,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -415,9 +430,11 @@ impl Application {
 	pub fn new(cc: &CreationContext) -> Self {
 		let mut entries_s = Vec::new();
 		let mut entries_d = Vec::new();
+		let mut default_bounds_s = None;
+		let mut default_bounds_d = None;
 
 		// TODO
-		let mut web_storage = AHashMap::new();
+		let mut web_storage = FxHashMap::default();
 
 		#[allow(unused_mut)]
 		let mut serialization_error = None;
@@ -444,8 +461,9 @@ impl Application {
         }
 
         match persistence::deserialize_from_url::<F32NumericTypes>() {
-          Ok(data)=>{
+          Ok((data, bounds))=>{
             entries_s = data;
+            default_bounds_s = bounds;
             next_id += entries_s.len() as u64;
 
           },
@@ -454,8 +472,9 @@ impl Application {
           }
         }
         match persistence::deserialize_from_url::<DefaultNumericTypes>() {
-          Ok(data)=>{
+          Ok((data,bounds))=>{
             entries_d = data;
+            default_bounds_d = bounds;
             next_id += entries_s.len() as u64;
           },
           Err(e)=>{
@@ -474,34 +493,36 @@ impl Application {
 			next_id += 1;
 			entries_s.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
-		let ctx_s = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
+		let ctx_s = evalexpr::HashMapContext::new();
 
 		if entries_d.is_empty() {
 			next_id += 1;
 			entries_d.push(Entry::new_function(0, "sin(x)".to_string()));
 		}
-		let ctx_d = Arc::new(RwLock::new(evalexpr::HashMapContext::new()));
+		let ctx_d = evalexpr::HashMapContext::new();
 
 		Self {
 			#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 			_puffin: run_puffin_server(),
 			state_f32: State {
-				entries:     entries_s,
-				ctx:         ctx_s,
-				name:        String::new(),
+				entries:        entries_s,
+				ctx:            ctx_s,
+				name:           String::new(),
+				default_bounds: default_bounds_s,
 				// points_cache: PointsCache::default(),
-				clear_cache: true,
+				clear_cache:    true,
 			},
 			state_f64: State {
-				entries:     entries_d,
-				ctx:         ctx_d,
-				name:        String::new(),
+				entries:        entries_d,
+				default_bounds: default_bounds_d,
+				ctx:            ctx_d,
+				name:           String::new(),
 				// points_cache: PointsCache::default(),
-				clear_cache: true,
+				clear_cache:    true,
 			},
 			ui: UiState {
-        #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-        full_frame_scope: None,
+				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+				full_frame_scope: None,
 				// animating: Arc::new(AtomicBool::new(true)),
 				conf,
 				scheduled_url_update: false,
@@ -514,9 +535,12 @@ impl Application {
 				cur_dir,
 				serialization_error,
 				stack_overflow_guard: Arc::new(ThreadLocal::new()),
-				eval_errors: AHashMap::default(),
-				parsing_errors: AHashMap::default(),
+				eval_errors: FxHashMap::default(),
+				parsing_errors: FxHashMap::default(),
 				selected_plot_item: None,
+				dragging_point: None,
+				dragging_point_i: None,
+				plot_mouese_pos: None,
 				f32_epsilon: f32::EPSILON as f64,
 				f64_epsilon: f64::EPSILON,
 				permalink_string: String::new(),
@@ -547,16 +571,32 @@ impl App for Application {
 		if use_f32 != self.ui.conf.use_f32 {
 			if use_f32 {
 				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to_json(&mut output, &self.state_f32.entries).is_ok() {
-					self.state_f64.entries = persistence::deserialize_from_json(&output).unwrap();
+				if persistence::serialize_to_json(
+					&mut output,
+					&self.state_f32.entries,
+					Some(&self.ui.plot_bounds),
+				)
+				.is_ok()
+				{
+					let (entries, default_bounds) = persistence::deserialize_from_json(&output).unwrap();
+					self.state_f64.entries = entries;
+					self.state_f64.default_bounds = default_bounds;
 					self.state_f64.clear_cache = true;
 					self.state_f64.name = self.state_f32.name.clone();
 					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			} else {
 				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to_json(&mut output, &self.state_f64.entries).is_ok() {
-					self.state_f32.entries = persistence::deserialize_from_json(&output).unwrap();
+				if persistence::serialize_to_json(
+					&mut output,
+					&self.state_f64.entries,
+					Some(&self.ui.plot_bounds),
+				)
+				.is_ok()
+				{
+					let (entries, default_bounds) = persistence::deserialize_from_json(&output).unwrap();
+					self.state_f32.entries = entries;
+					self.state_f32.default_bounds = default_bounds;
 					self.state_f32.clear_cache = true;
 					self.state_f32.name = self.state_f64.name.clone();
 					self.ui.next_id += self.state_f32.entries.len() as u64;
@@ -590,9 +630,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 ) {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	{
-    ui_state.full_frame_scope.take();
+		ui_state.full_frame_scope.take();
 		puffin::GlobalProfiler::lock().new_frame();
-    ui_state.full_frame_scope = puffin::profile_scope_custom!("full_frame");
+		ui_state.full_frame_scope = puffin::profile_scope_custom!("full_frame");
 	}
 
 	scope!("side_panel");
@@ -801,7 +841,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 			if needs_recompilation || state.clear_cache {
 				scope!("clear_cache");
 				// state.points_cache.clear();
-				match persistence::serialize_to_url(&state.entries) {
+				match persistence::serialize_to_url(&state.entries, Some(&ui_state.plot_bounds)) {
 					Ok(output) => {
 						// let mut data_str = String::with_capacity(output.len() + 1);
 						// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
@@ -816,16 +856,16 @@ fn side_panel<T: EvalexprNumericTypes>(
 					},
 				}
 
-				state.ctx.write().unwrap().clear();
-				state.ctx.write().unwrap().set_builtin_functions_disabled(false).unwrap();
-				init_functions::<T>(&mut *(state.ctx.write().unwrap()));
-				init_consts::<T>(&mut *(state.ctx.write().unwrap()));
+				state.ctx.clear();
+				state.ctx.set_builtin_functions_disabled(false).unwrap();
+				init_functions::<T>(&mut state.ctx);
+				init_consts::<T>(&mut state.ctx);
 
 				// state.context_stash.lock().unwrap().clear();
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					entry::recompile_entry(entry, &state.ctx, &ui_state.stack_overflow_guard);
+					entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard);
 				}
 			} else if animating {
 				for entry in state.entries.iter_mut() {
@@ -835,8 +875,6 @@ fn side_panel<T: EvalexprNumericTypes>(
 							if !entry.name.is_empty() {
 								state
 									.ctx
-									.write()
-									.unwrap()
 									.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value))
 									.unwrap();
 							}
@@ -876,7 +914,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	// ui_state.polygons.clear();
 	// ui_state.texts.clear();
 
-	let main_context = &*state.ctx.read().unwrap();
+	let main_context = &state.ctx;
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
 	// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
@@ -908,14 +946,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
 		let mut draw_buffer = draw_buffer.borrow_mut();
 
-		let id = Id::new(entry.id).with("entry_plot_els");
+		let id = Id::new(entry.id); //.with("entry_plot_els");
 		if let Err(error) = entry::create_entry_plot_elements(
-			entry,
-			id,
-			Some(id) == ui_state.selected_plot_item,
-			main_context,
-			&plot_params,
-			&mut draw_buffer,
+			entry, id, ui_state.selected_plot_item, main_context, &plot_params, &mut draw_buffer,
 		) {
 			eval_errors.lock().unwrap().insert(entry.id, error);
 		}
@@ -990,14 +1023,21 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		let mut plot = Plot::new(plot_id)
 			.id(plot_id)
 			.legend(Legend::default().text_style(TextStyle::Body))
-			.default_x_bounds(ui_state.plot_bounds.min()[0], ui_state.plot_bounds.max()[0])
-			.default_y_bounds(ui_state.plot_bounds.min()[1], ui_state.plot_bounds.max()[1]);
+			.allow_drag(ui_state.dragging_point_i.is_none());
 
+		let mut bounds = ui_state.plot_bounds;
 		if ui_state.reset_graph {
 			ui_state.reset_graph = false;
 			plot = plot.data_aspect(1.0).center_x_axis(true).center_y_axis(true).reset();
+			if let Some(default_bounds) = state.default_bounds {
+				bounds = default_bounds;
+			}
 		}
+		plot = plot
+			.default_x_bounds(bounds.min()[0], bounds.max()[0])
+			.default_y_bounds(bounds.min()[1], bounds.max()[1]);
 
+		let mut hovered_point = None;
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
@@ -1007,12 +1047,28 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 				for poly in draw_buffer.polygons.drain(..) {
 					plot_ui.polygon(poly);
 				}
+			}
+			for draw_buffer in ui_state.draw_buffer.iter_mut() {
+				let mut draw_buffer = draw_buffer.borrow_mut();
 				for fline in draw_buffer.lines.drain(..) {
 					plot_ui.line(fline.line);
 				}
-				for point in draw_buffer.points.drain(..) {
+			}
+			for draw_buffer in ui_state.draw_buffer.iter_mut() {
+				let mut draw_buffer = draw_buffer.borrow_mut();
+				for (sel, point) in draw_buffer.points.drain(..) {
+					if let (Some(sel), Some((mouse_pos, transform))) = (sel, ui_state.plot_mouese_pos) {
+						let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
+						let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
+						if dist_sq < sel.radius * sel.radius {
+							hovered_point = Some(sel);
+						}
+					}
 					plot_ui.points(point);
 				}
+			}
+			for draw_buffer in ui_state.draw_buffer.iter_mut() {
+				let mut draw_buffer = draw_buffer.borrow_mut();
 				for text in draw_buffer.texts.drain(..) {
 					plot_ui.text(text);
 				}
@@ -1024,11 +1080,89 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		ui_state.plot_bounds = *plot_res.transform.bounds();
-		if let Some(id) = plot_res.hovered_plot_item {
-			if ui.input(|i| i.pointer.primary_clicked()) {
-				ui_state.selected_plot_item = Some(id);
+		ui_state.plot_mouese_pos = plot_res.response.hover_pos().map(|p| {
+			// let p = plot_res.transform.value_from_position(p);
+			((p.x, p.y), plot_res.transform.clone())
+		});
+
+		if let Some(hovered_point) = hovered_point {
+			// println!("hovered {:?}", hovered_point.i);
+			if plot_res.response.drag_started() {
+				// println!("drag started {:?}", hovered_point.i);
+				ui_state.dragging_point_i = Some(hovered_point);
 			}
-		} else {
+		}
+		if plot_res.response.drag_stopped() {
+			// if let Some(dragging_point_i) = &ui_state.dragging_point_i {
+			// 	println!("drag stopped {:?}", dragging_point_i.i);
+			// }
+			ui_state.dragging_point_i = None;
+		}
+
+		if let Some(dragging_point_i) = &ui_state.dragging_point_i {
+			if let Some(points) = state
+				.entries
+				.iter_mut()
+				.find(|e| Id::new(e.id) == dragging_point_i.i.0)
+				.and_then(|e| if let EntryType::Points(points) = &mut e.ty { Some(points) } else { None })
+			{
+				let point = &mut points[dragging_point_i.i.1 as usize];
+
+				let point_x = dragging_point_i.x;
+				let point_y = dragging_point_i.y;
+
+				if let (Some(drag_point_type), Some(screen_pos)) =
+					(point.drag_point.clone(), plot_res.response.hover_pos())
+				{
+					let pos = plot_res.transform.value_from_position(screen_pos);
+
+					match drag_point_type {
+						DragPoint::BothCoordLiterals => {
+							point.x.text = format!("{}", pos.x);
+							point.y.text = format!("{}", pos.y);
+						},
+						DragPoint::XLiteral => {
+							point.x.text = format!("{}", pos.x);
+						},
+						DragPoint::YLiteral => {
+							point.y.text = format!("{}", pos.y);
+						},
+						DragPoint::XLiteralYConstant(y_const) => {
+							point.x.text = format!("{}", pos.x);
+							let x_node = point.x.node.clone();
+							drag(state, y_const, x_node, point_y, pos.y, plot_params.eps);
+						},
+						DragPoint::YLiteralXConstant(x_const) => {
+							point.y.text = format!("{}", pos.y);
+							let x_node = point.x.node.clone();
+							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
+						},
+						DragPoint::BothCoordConstants(x_const, y_const) => {
+							let x_node = point.x.node.clone();
+							let y_node = point.y.node.clone();
+
+							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
+							drag(state, y_const, y_node, point_y, pos.y, plot_params.eps);
+						},
+						DragPoint::XConstant(x_const) => {
+							let x_node = point.x.node.clone();
+							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
+						},
+						DragPoint::YConstant(y_const) => {
+							let y_node = point.y.node.clone();
+							drag(state, y_const, y_node, point_y, pos.y, plot_params.eps);
+						},
+					}
+					state.clear_cache = true;
+				}
+			}
+		}
+
+		if let Some(hovered_id) = plot_res.hovered_plot_item {
+			if ui.input(|i| i.pointer.primary_clicked()) {
+				ui_state.selected_plot_item = Some(hovered_id);
+			}
+		} else if ui_state.dragging_point.is_none() {
 			if ui.input(|i| i.pointer.primary_clicked()) {
 				ui_state.selected_plot_item = None;
 			}
@@ -1103,3 +1237,77 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 // 	multiplier * power
 // }
 //
+fn drag<T: EvalexprNumericTypes>(
+	state: &mut State<T>, name: String, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
+) {
+	if let Some(point_node) = node {
+		if let Some(c_idx) = state.entries.iter().position(|e| e.name == name) {
+			if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
+				let value = *value;
+				if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
+					state.ctx.set_value(&name, f64_to_value::<T>(x)).unwrap();
+					point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
+				}) {
+					if let EntryType::Constant { value, .. } = &mut state.entries[c_idx].ty {
+						*value = f64_to_float::<T>(new_value);
+					}
+				}
+			}
+		}
+	}
+}
+
+fn solve_secant(
+	cur_x: f64, cur_y: f64, target_y: f64, eps: f64, mut f: impl FnMut(f64) -> f64,
+) -> Option<f64> {
+	// find root f(x) - target_y = 0
+	let max_iterations = 40;
+	let h = 0.0001; // small step for second point
+
+	// initial points
+	let mut x0 = cur_x;
+	let mut y0 = cur_y - target_y;
+
+	let mut x1 = cur_x + h;
+	let mut y1 = f(x1) - target_y;
+
+	for _ in 0..max_iterations {
+		if y1.abs() < eps {
+			// success
+			return Some(x1);
+		}
+
+		if (y1 - y0) == 0.0 {
+			// div by zero
+      // We do best effort guess here.
+      // TODO: this is not the solution!
+      // The real solution is to disallow dragging of non-injective expressions.
+      if (x0 - cur_x).abs() < (x1 - cur_x).abs() {
+        // x0 is closer to cur_x
+        return Some(x0);
+      } else {
+        // x1 is closer to cur_x
+        return Some(x1);
+      }
+
+		}
+
+		let x_next = x1 - y1 * (x1 - x0) / (y1 - y0);
+		if !x_next.is_finite() {
+			// nan or inf
+			return None;
+		}
+
+		x0 = x1;
+		y0 = y1;
+		x1 = x_next;
+		y1 = f(x1) - target_y;
+	}
+
+	if y1.abs() < eps {
+		Some(x1)
+	} else {
+		// Failed to converge
+		None
+	}
+}

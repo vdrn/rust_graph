@@ -1,7 +1,7 @@
 [package]
 
 name = "rust_graph"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -33,7 +33,8 @@ cfg-if = "1"
 egui_plot="0.34"
 evalexpr = { git = "https://github.com/vdrn/evalexpr" }
 
-ahash = { version = "0.8", default-features = false, features = [ "no-rng","std"] }
+# ahash = { version = "0.8", default-features = false, features = [ "no-rng"] }
+rustc-hash = "2"
 serde = { version = "1" }
 serde_json = "1"
 # urlencoding = "2"

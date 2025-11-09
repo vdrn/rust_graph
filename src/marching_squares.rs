@@ -1,8 +1,8 @@
 use crate::scope;
-use ahash::AHashMap;
 use arrayvec::ArrayVec;
 use egui_plot::PlotPoint;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 pub fn marching_squares(
@@ -290,7 +290,7 @@ impl core::hash::Hash for HashablePoint {
 struct PolylineBuilder {
 	polylines:       Vec<Vec<PlotPoint>>,
 	/// (polyline index, is_start)
-	endpoint_map:    AHashMap<HashablePoint, SmallVec<[(u32, bool); 2]>>,
+	endpoint_map:    FxHashMap<HashablePoint, SmallVec<[(u32, bool); 2]>>,
 	eps:             f64,
 	precision_recip: f64,
 }
@@ -299,7 +299,7 @@ impl PolylineBuilder {
 	fn new(grid_precision: f64, eps: f64) -> Self {
 		PolylineBuilder {
 			polylines: Vec::new(),
-			endpoint_map: AHashMap::new(),
+			endpoint_map: FxHashMap::default(),
 			eps,
 			precision_recip: 1.0 / grid_precision,
 		}

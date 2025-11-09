@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
-use thread_local::ThreadLocal;
 use core::cell::Cell;
 use core::mem;
 use core::ops::RangeInclusive;
+use smallvec::SmallVec;
+use thread_local::ThreadLocal;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
@@ -14,7 +15,7 @@ use evalexpr::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{DrawBuffer, MAX_FUNCTION_NESTING, marching_squares};
+use crate::{DrawBuffer, MAX_FUNCTION_NESTING, SelectablePoint, marching_squares};
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
@@ -102,6 +103,19 @@ impl<T: EvalexprNumericTypes> Default for Expr<T> {
 	}
 }
 impl<T: EvalexprNumericTypes> Expr<T> {
+	pub fn reparse(&mut self) -> Result<(), String> {
+		if self.text.is_empty() {
+			self.node = None;
+		} else {
+			self.node = match evalexpr::build_operator_tree::<T>(&self.text) {
+				Ok(func) => Some(func),
+				Err(e) => {
+					return Err(e.to_string());
+				},
+			};
+		}
+		Ok(())
+	}
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
 		postfix: Option<&str>,
@@ -216,7 +230,7 @@ pub struct FunctionStyle {
 	line_style_size: f32,
 }
 impl Default for FunctionStyle {
-	fn default() -> Self { Self { line_width: 1.0, line_style: LineStyle::Solid, line_style_size: 3.5 } }
+	fn default() -> Self { Self { line_width: 1.5, line_style: LineStyle::Solid, line_style_size: 3.5 } }
 }
 impl FunctionStyle {
 	fn ui(&mut self, ui: &mut egui::Ui) {
@@ -320,7 +334,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			ty: EntryType::Constant {
 				value: T::Float::ZERO,
 				step:  0.01,
-				ty:    ConstantType::LoopForwardAndBackward { start: 0.0, end: 2.0, forward: true },
+				ty:    ConstantType::LoopForwardAndBackward { start: -10.0, end: 10.0, forward: true },
 			},
 		}
 	}
@@ -365,14 +379,51 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum PointDragType {
+	#[default]
+	Both,
+	X,
+	Y,
+	NoDrag,
+}
+impl PointDragType {
+	pub fn symbol(&self) -> &'static str {
+		match self {
+			PointDragType::Both => "↗",
+			PointDragType::X => "↔",
+			PointDragType::Y => "↕",
+			PointDragType::NoDrag => "○",
+		}
+	}
+	fn name(&self) -> &'static str {
+		match self {
+			PointDragType::Both => "↗ Both",
+			PointDragType::X => "↔ X",
+			PointDragType::Y => "↕ Y",
+			PointDragType::NoDrag => "○ No Drag",
+		}
+	}
+}
 #[derive(Clone, Debug)]
 pub struct PointEntry<T: EvalexprNumericTypes> {
-	pub x: Expr<T>,
-	pub y: Expr<T>,
+	pub x:                        Expr<T>,
+	pub y:                        Expr<T>,
+	pub drag_point:               Option<DragPoint>,
+	pub drag_type:                PointDragType,
+	pub both_drag_dirs_available: bool,
 }
 
 impl<T: EvalexprNumericTypes> Default for PointEntry<T> {
-	fn default() -> Self { Self { x: Expr::default(), y: Expr::default() } }
+	fn default() -> Self {
+		Self {
+			x:                        Expr::default(),
+			y:                        Expr::default(),
+			drag_point:               None,
+			drag_type:                PointDragType::default(),
+			both_drag_dirs_available: true,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -612,7 +663,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, None) {
 									Ok(changed) => {
 										result.parsed |= changed;
-										// result.needs_recompilation |= changed;
+										result.needs_recompilation |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
@@ -621,11 +672,67 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, None) {
 									Ok(changed) => {
 										result.parsed |= changed;
-										// result.needs_recompilation |= changed;
+										result.needs_recompilation |= changed;
 									},
 									Err(e) => {
 										result.error = Some(format!("Parsing error: {e}"));
 									},
+								}
+                let mut drag_type_changed = false;
+								if !point.both_drag_dirs_available && point.drag_type == PointDragType::Both {
+									point.both_drag_dirs_available = false;
+                  drag_type_changed = true;
+								}
+
+								let drag_menu_text = match &point.drag_point {
+									Some(d) => match d {
+										DragPoint::BothCoordLiterals => {
+											format!("{}(x,y)", point.drag_type.symbol())
+										},
+										DragPoint::XLiteral => format!("{}(x,_)", point.drag_type.symbol()),
+										DragPoint::YLiteral => format!("{}(_,y)", point.drag_type.symbol()),
+										DragPoint::XConstant(x) => {
+											format!("{}({},_)", point.drag_type.symbol(), x)
+										},
+										DragPoint::YConstant(y) => {
+											format!("{}(_, {})", point.drag_type.symbol(), y)
+										},
+										DragPoint::XLiteralYConstant(y) => {
+											format!("{}(x, {})", point.drag_type.symbol(), y)
+										},
+										DragPoint::YLiteralXConstant(x) => {
+											format!("{}({}, y)", point.drag_type.symbol(), x)
+										},
+										DragPoint::BothCoordConstants(x, y) => {
+											format!("{}({}, {})", point.drag_type.symbol(), x, y,)
+										},
+									},
+									None => point.drag_type.symbol().to_string(),
+								};
+								ui
+									.menu_button(drag_menu_text, |ui| {
+										if point.both_drag_dirs_available {
+											drag_type_changed |= ui.selectable_value(
+												&mut point.drag_type,
+												PointDragType::Both,
+												PointDragType::Both.name(),
+											).changed();
+										}
+										drag_type_changed |= ui.selectable_value(
+											&mut point.drag_type,
+											PointDragType::X,
+											PointDragType::X.name(),
+										).changed();
+										drag_type_changed |= ui.selectable_value(
+											&mut point.drag_type,
+											PointDragType::Y,
+											PointDragType::Y.name(),
+										).changed();
+									});
+                if drag_type_changed 
+								{
+									result.parsed = true;
+									result.needs_recompilation = true;
 								}
 
 								if ui.button("❌").clicked() {
@@ -655,7 +762,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.menu_button(ty.symbol(), |ui| {
-								let new_end = if end.is_infinite() { start + 10.0 } else { end };
+								let new_end = if end.is_infinite() { start + 20.0 } else { end };
 								let lfab = ConstantType::LoopForwardAndBackward {
 									start,
 									end: new_end,
@@ -758,20 +865,98 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 }
 
 pub fn recompile_entry<T: EvalexprNumericTypes>(
-	entry: &mut Entry<T>, ctx: &Arc<std::sync::RwLock<evalexpr::HashMapContext<T>>>,
+	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
 ) {
 	if entry.name != "x" {
 		match &mut entry.ty {
-			EntryType::Points(_) => {},
+			EntryType::Points(points) => {
+				for point in points {
+					if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
+						let x_state = analyze_node(x);
+						let y_state = analyze_node(y);
+
+						let both_dirs_available =
+							x_state.constants.iter().all(|c| !y_state.constants.contains(c));
+						if !both_dirs_available && point.both_drag_dirs_available {
+							point.drag_type = PointDragType::X;
+						}
+						point.both_drag_dirs_available = both_dirs_available;
+
+						match point.drag_type {
+							PointDragType::NoDrag => {
+								point.drag_point = None;
+							},
+							PointDragType::Both => {
+								if x_state.is_literal && y_state.is_literal {
+									point.drag_point = Some(DragPoint::BothCoordLiterals);
+								} else if x_state.is_literal
+									&& let Some(y_const) = y_state.constants.first()
+								{
+									point.drag_point = Some(DragPoint::XLiteralYConstant(y_const.to_string()));
+								} else if y_state.is_literal
+									&& let Some(x_const) = x_state.constants.first()
+								{
+									point.drag_point = Some(DragPoint::YLiteralXConstant(x_const.to_string()));
+								} else if let (Some(x_const), Some(y_const)) =
+									(x_state.constants.first(), y_state.constants.first())
+								{
+									// todo:
+									if x_const == y_const {
+										if let Some(y_const) = y_state.constants.get(1) {
+											point.drag_point = Some(DragPoint::BothCoordConstants(
+												x_const.to_string(),
+												y_const.to_string(),
+											));
+										} else if let Some(x_const) = x_state.constants.get(1) {
+											point.drag_point = Some(DragPoint::BothCoordConstants(
+												x_const.to_string(),
+												y_const.to_string(),
+											));
+										} else {
+											point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+										}
+									} else {
+										point.drag_point = Some(DragPoint::BothCoordConstants(
+											x_const.to_string(),
+											y_const.to_string(),
+										));
+									}
+								} else if let Some(x_const) = x_state.constants.first()
+								// && y_state.first_constant.is_none()
+								{
+									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+								} else if let Some(y_const) = y_state.constants.first() {
+									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+								} else {
+									point.drag_point = None;
+								}
+							},
+							PointDragType::X => {
+								if x_state.is_literal {
+									point.drag_point = Some(DragPoint::XLiteral);
+								} else if let Some(x_const) = x_state.constants.first() {
+									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+								}
+							},
+							PointDragType::Y => {
+								if y_state.is_literal {
+									point.drag_point = Some(DragPoint::YLiteral);
+								} else if let Some(y_const) = y_state.constants.first() {
+									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+								}
+							},
+						}
+					} else {
+						point.drag_point = None;
+					}
+				}
+			},
 			EntryType::Integral { .. } => {},
 			EntryType::Label { .. } => {},
 			EntryType::Constant { value, .. } => {
 				if !entry.name.is_empty() {
-					ctx.write()
-						.unwrap()
-						.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value))
-						.unwrap();
+					ctx.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value)).unwrap();
 				}
 			},
 			EntryType::Function { func, ty, .. } => {
@@ -812,9 +997,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					let ty = *ty;
 					let fun = Function::new(move |context, v| {
 						// puffin::profile_scope!("eval_function");
-            let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
-            let stack_depth = stack_overflow_guard.get() + 1;
-            stack_overflow_guard.set(stack_depth);
+						let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
+						let stack_depth = stack_overflow_guard.get() + 1;
+						stack_overflow_guard.set(stack_depth);
 						if stack_depth > MAX_FUNCTION_NESTING {
 							return Err(EvalexprError::CustomMessage(format!(
 								"Max function nesting reached ({MAX_FUNCTION_NESTING})"
@@ -863,7 +1048,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 					let name = if entry.name.is_empty() { func.text.clone() } else { entry.name.clone() };
 
-					ctx.write().unwrap().set_function(name, fun).unwrap();
+					ctx.set_function(name, fun).unwrap();
 				}
 			},
 		}
@@ -881,8 +1066,8 @@ pub struct PlotParams {
 }
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
-	entry: &mut Entry<T>, id: Id, selected: bool, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-  draw_buffer: &mut DrawBuffer,
+	entry: &mut Entry<T>, id: Id, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
+	plot_params: &PlotParams, draw_buffer: &mut DrawBuffer,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -1101,9 +1286,34 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// 	.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
 			// 	.unwrap();
 			let mut line_buffer = vec![];
-			for p in ps {
+			let color_rgba = color.to_array();
+			let color_outer =
+				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
+			for (i, p) in ps.iter().enumerate() {
 				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
-					Ok(Some((x, y))) => line_buffer.push([x, y]),
+					Ok(Some((x, y))) => {
+						let point_id = id.with(i);
+						let selected = selected_id == Some(id);
+						let radius = if selected { 6.5 } else { 4.5 };
+						let radius_outer = if selected { 12.5 } else { 7.5 };
+
+						draw_buffer
+							.points
+							.push((None, Points::new(entry.name.clone(), [x, y]).color(color).radius(radius)));
+						if p.drag_point.is_some() {
+							let selectable_point =
+								SelectablePoint { i: (id, i as u32), x, y, radius: radius_outer };
+							draw_buffer.points.push((
+								Some(selectable_point),
+								Points::new(entry.name.clone(), [x, y])
+									.id(point_id)
+									.color(color_outer)
+									.radius(radius_outer as f32),
+							));
+						}
+
+						line_buffer.push([x, y]);
+					},
 					Err(e) => {
 						return Err(e);
 					},
@@ -1111,12 +1321,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				}
 			}
 
-			if line_buffer.len() == 1 {
-				let radius = if selected { 5.0 } else { 3.5 };
-				draw_buffer.points
-					.push(Points::new(entry.name.clone(), line_buffer[0]).id(id).color(color).radius(radius));
-			} else if line_buffer.len() > 1 {
-				let width = if selected { 3.5 } else { 1.0 };
+			// let width = if selected { 3.5 } else { 1.0 };
+			let width = 1.0;
+
+			if line_buffer.len() > 1 {
 				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(width);
 				draw_buffer.lines.push(FunctionLine { width, id, line });
 				// plot_ui.line(line);
@@ -1143,6 +1351,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						},
 					}
 				};
+				let selected = selected_id == Some(id);
 				let width = if selected { style.line_width + 2.5 } else { style.line_width };
 
 				// let mut cache = (!animating).then(|| {
@@ -1344,7 +1553,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							mins,
 							maxs,
 							*implicit_resolution,
-              // plot_params.eps
+							// plot_params.eps
 						)? {
 							add_line(line);
 						}
@@ -1356,8 +1565,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	Ok(())
 }
 
-fn eval_point<T: EvalexprNumericTypes>(
-	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>,
+pub fn eval_point<'a, 'b, T: EvalexprNumericTypes>(
+	ctx: &'a evalexpr::HashMapContext<T>, px: Option<&'b Node<T>>, py: Option<&'b Node<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
@@ -1433,5 +1642,44 @@ fn zoom_in_y_on_nan_boundary(
 	if left.0.is_nan() { right } else { left }
 }
 
-fn f64_to_value<T: EvalexprNumericTypes>(x: f64) -> Value<T> { Value::<T>::Float(T::Float::f64_to_float(x)) }
-fn f64_to_float<T: EvalexprNumericTypes>(x: f64) -> T::Float { T::Float::f64_to_float(x) }
+pub fn f64_to_value<T: EvalexprNumericTypes>(x: f64) -> Value<T> {
+	Value::<T>::Float(T::Float::f64_to_float(x))
+}
+pub fn f64_to_float<T: EvalexprNumericTypes>(x: f64) -> T::Float { T::Float::f64_to_float(x) }
+
+#[derive(Clone, Debug)]
+pub enum DragPoint {
+	BothCoordLiterals,
+	XLiteral,
+	YLiteral,
+	XConstant(String),
+	YConstant(String),
+	XLiteralYConstant(String),
+	YLiteralXConstant(String),
+	BothCoordConstants(String, String),
+}
+
+pub struct NodeAnalysis<'a> {
+	pub is_literal:    bool,
+	pub constants:     SmallVec<[&'a str; 6]>,
+	pub num_constants: u32,
+}
+pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_> {
+	let mut is_literal = true;
+	let mut num_constants = 0;
+	let mut constants = SmallVec::new();
+
+	for i in node.iter_variable_identifiers() {
+		constants.push(i);
+		num_constants += 1;
+		is_literal = false;
+	}
+
+	if !is_literal {
+		if node.iter_identifiers().next().is_some() {
+			is_literal = false;
+		}
+	}
+
+	NodeAnalysis { is_literal, constants, num_constants }
+}
