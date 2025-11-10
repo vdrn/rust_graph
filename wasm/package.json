@@ -1,0 +1,24 @@
+{
+  "name": "rust_graph",
+  "type": "module",
+  "collaborators": [
+    "Vedran Maric <valinion@gmail.com>"
+  ],
+  "description": "Graphing calculator with f32 support.",
+  "version": "0.3.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vdrn/rust_graph"
+  },
+  "files": [
+    "rust_graph_bg.wasm",
+    "rust_graph.js",
+    "rust_graph.d.ts"
+  ],
+  "main": "rust_graph.js",
+  "types": "rust_graph.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
