@@ -28,6 +28,8 @@ pub struct FunctionLine {
 	pub id:    egui::Id,
 	pub width: f32,
 }
+/// SAFETY: Not Sync because of `ExplicitGenerator` callbacks, but we dont use those.
+unsafe impl Sync for FunctionLine {}
 
 pub const COLORS: &[Color32; 20] = &[
 	Color32::from_rgb(255, 107, 107), // Bright coral red
@@ -392,7 +394,7 @@ pub enum PointDragType {
 	NoDrag,
 }
 impl PointDragType {
-	pub fn symbol(&self) -> &'static str {
+	pub fn symbol(self) -> &'static str {
 		match self {
 			PointDragType::Both => "↗",
 			PointDragType::X => "↔",
@@ -400,7 +402,7 @@ impl PointDragType {
 			PointDragType::NoDrag => "○",
 		}
 	}
-	fn name(&self) -> &'static str {
+	fn name(self) -> &'static str {
 		match self {
 			PointDragType::Both => "↗ Both",
 			PointDragType::X => "↔ X",
@@ -1320,7 +1322,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								Points::new(entry.name.clone(), [x, y])
 									.id(point_id)
 									.color(color_outer)
-									.radius(radius_outer as f32),
+									.radius(radius_outer),
 							));
 						}
 
@@ -1350,7 +1352,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						FunctionType::Ranged | FunctionType::X => {
 							format!("f(x):  {}", func.text.trim())
 						},
-						FunctionType::Implicit => format!("{}", func.text.trim()),
+						FunctionType::Implicit => func.text.trim().to_string(),
 					}
 				} else {
 					match ty {
@@ -1577,8 +1579,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	Ok(())
 }
 
-pub fn eval_point<'a, 'b, T: EvalexprNumericTypes>(
-	ctx: &'a evalexpr::HashMapContext<T>, px: Option<&'b Node<T>>, py: Option<&'b Node<T>>,
+pub fn eval_point<T: EvalexprNumericTypes>(
+	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
@@ -1672,18 +1674,15 @@ pub enum DragPoint {
 }
 
 pub struct NodeAnalysis<'a> {
-	pub is_literal:    bool,
-	pub constants:     SmallVec<[&'a str; 6]>,
-	pub num_constants: u32,
+	pub is_literal: bool,
+	pub constants:  SmallVec<[&'a str; 6]>,
 }
 pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_> {
 	let mut is_literal = true;
-	let mut num_constants = 0;
 	let mut constants = SmallVec::new();
 
 	for i in node.iter_variable_identifiers() {
 		constants.push(i);
-		num_constants += 1;
 		is_literal = false;
 	}
 
@@ -1693,9 +1692,9 @@ pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_>
 		}
 	}
 
-	NodeAnalysis { is_literal, constants, num_constants }
+	NodeAnalysis { is_literal, constants }
 }
-pub fn preprecess_fn(text: &String) -> Result<Option<String>, String> {
+pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	// regex to check if theres an y identifier (single y not surrounded by alphanumerics on either
 	// side)
 	static RE_Y: LazyLock<Regex> =
@@ -1714,20 +1713,17 @@ pub fn preprecess_fn(text: &String) -> Result<Option<String>, String> {
 	if left == "y" {
 		if RE_Y.is_match(right) {
 			return Ok(Some(format!("y - ({right})")));
-		} else {
-			return Ok(Some(right.to_string()));
 		}
+		return Ok(Some(right.to_string()));
 	}
 	if left == "x" {
 		if RE_X.is_match(right) {
 			return Ok(Some(format!("x - ({right})")));
-		} else {
-			if RE_Y.is_match(right) {
-				return Ok(Some(right.to_string()));
-			} else {
-				return Ok(Some(format!("{right} + y*0")));
-			}
 		}
+		if RE_Y.is_match(right) {
+			return Ok(Some(right.to_string()));
+		}
+		return Ok(Some(format!("{right} + y*0")));
 	}
 	let new = format!("{} - ({})", left, right);
 	Ok(Some(new))

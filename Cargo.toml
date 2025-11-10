@@ -1,7 +1,7 @@
 [package]
 
 name = "rust_graph"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -33,20 +33,17 @@ cfg-if = "1"
 egui_plot="0.34"
 evalexpr = { git = "https://github.com/vdrn/evalexpr" }
 
-# ahash = { version = "0.8", default-features = false, features = [ "no-rng"] }
 rustc-hash = "2"
 serde = { version = "1" }
 serde_json = "1"
-# urlencoding = "2"
 egui_dnd="0.14"
 bincode={version="2", features=["serde"]}
 base64="0.22"
 arrayvec = "0.7"
-smallvec = {version = "1.15", features = ["union"]}
+smallvec = {version = "1", features = ["union"]}
 rayon={version="1", features=["web_spin_lock"]}
 thread_local="1"
 regex = "1"
-# wasm-bindgen = "0.2.99"
 
 # [patch."https://github.com/vdrn/evalexpr"]
 # evalexpr = { path = "../../contrib/evalexpr" }

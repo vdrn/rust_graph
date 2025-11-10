@@ -1,10 +1,9 @@
 extern crate alloc;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
-use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use rustc_hash::FxHashMap;
 use std::env;
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 use thread_local::ThreadLocal;
 
 use eframe::egui::{
@@ -18,13 +17,14 @@ use egui_plot::{
 use evalexpr::{
 	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Node, Value
 };
+use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, Entry, EntryType, FunctionLine, PointEntry, eval_point, f64_to_float, f64_to_value
+	ConstantType, DragPoint, Entry, EntryType, FunctionLine, PointEntry, f64_to_float, f64_to_value
 };
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -368,11 +368,9 @@ impl DrawBuffer {
 		}
 	}
 }
+#[allow(clippy::non_send_fields_in_send_ty)]
 /// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
 /// We dont use those so we're fine.
-unsafe impl Sync for DrawBuffer {}
-#[allow(clippy::non_send_fields_in_send_ty)]
-/// SAFETY: same as abouve
 unsafe impl Send for DrawBuffer {}
 
 struct UiState {
@@ -389,7 +387,7 @@ struct UiState {
 	eval_errors:          FxHashMap<u64, String>,
 	parsing_errors:       FxHashMap<u64, String>,
 
-	selected_plot_item: Option<Id>,
+	selected_plot_line: Option<Id>,
 	dragging_point:     Option<Id>,
 	dragging_point_i:   Option<SelectablePoint>,
 	plot_mouese_pos:    Option<((f32, f32), PlotTransform)>,
@@ -427,6 +425,7 @@ pub fn run_puffin_server() -> puffin_http::Server {
 	puffin_server
 }
 impl Application {
+	#[allow(unused_mut)]
 	pub fn new(cc: &CreationContext) -> Self {
 		let mut entries_s = Vec::new();
 		let mut entries_d = Vec::new();
@@ -436,7 +435,6 @@ impl Application {
 		// TODO
 		let mut web_storage = FxHashMap::default();
 
-		#[allow(unused_mut)]
 		let mut serialization_error = None;
 
 		let conf: AppConfig = cc
@@ -537,7 +535,7 @@ impl Application {
 				stack_overflow_guard: Arc::new(ThreadLocal::new()),
 				eval_errors: FxHashMap::default(),
 				parsing_errors: FxHashMap::default(),
-				selected_plot_item: None,
+				selected_plot_line: None,
 				dragging_point: None,
 				dragging_point_i: None,
 				plot_mouese_pos: None,
@@ -865,9 +863,11 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					if let Err(e) = entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard){
-            ui_state.parsing_errors.insert(entry.id, e);
-          }
+					if let Err(e) =
+						entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard)
+					{
+						ui_state.parsing_errors.insert(entry.id, e);
+					}
 				}
 			} else if animating {
 				for entry in state.entries.iter_mut() {
@@ -950,74 +950,116 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 		let id = Id::new(entry.id); //.with("entry_plot_els");
 		if let Err(error) = entry::create_entry_plot_elements(
-			entry, id, ui_state.selected_plot_item, main_context, &plot_params, &mut draw_buffer,
+			entry, id, ui_state.selected_plot_line, main_context, &plot_params, &mut draw_buffer,
 		) {
 			eval_errors.lock().unwrap().insert(entry.id, error);
 		}
 	});
 
-	let mut local_optima_buffer = vec![];
+	let mut flines = vec![];
 	for draw_buffer in ui_state.draw_buffer.iter_mut() {
-		let draw_buffer = draw_buffer.borrow_mut();
-		for fline in draw_buffer.lines.iter() {
-			if Some(fline.id) != ui_state.selected_plot_item {
-				continue;
-			}
+		let draw_buffer = draw_buffer.get_mut();
+		flines.reserve(draw_buffer.lines.len());
+		for fline in draw_buffer.lines.drain(..) {
+			// if Some(fline.id) == ui_state.selected_plot_item {
+			// 	selected_fline = Some(i);
+			// }
+			flines.push(fline);
+		}
+	}
+	if let Some(selected_fline_id) = ui_state.selected_plot_line {
+		flines.par_iter().for_each(|fline| {
 			let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
-				continue;
+				return;
 			};
+			let mut draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new())).borrow_mut();
+			if fline.id == selected_fline_id {
+				// Find local optima
+				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
+				for point in plot_points.iter() {
+					let cur = (point.x, point.y);
+					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+					if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+						if prev_0.1.signum() != prev_1.1.signum() {
+							// intersection with x axis
+							let sum = prev_0.1.abs() + prev_1.1.abs();
+							let x = if sum == 0.0 {
+								(prev_0.0 + prev_1.0) * 0.5
+							} else {
+								let t = prev_0.1.abs() / sum;
+								prev_0.0 + t * (prev_1.0 - prev_0.0)
+							};
+							draw_buffer.points.push((
+								None,
+								Points::new("", [x, 0.0]).color(Color32::GRAY).radius(fline.width),
+							));
+						}
 
-			let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-			for point in plot_points.iter() {
-				let cur = (point.x, point.y);
-				fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-				fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-				if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-					if less_then(prev_0.1, prev_1.1, plot_params.eps)
-						&& greater_then(prev_1.1, cur.1, plot_params.eps)
-					{
-						local_optima_buffer.push(
-							Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
-						);
+						if prev_0.0.signum() != prev_1.0.signum() {
+							// intersection with y axis
+							let sum = prev_0.0.abs() + prev_1.0.abs();
+							let y = if sum == 0.0 {
+								(prev_0.1 + prev_1.1) * 0.5
+							} else {
+								let t = prev_0.0.abs() / sum;
+								prev_0.1 + t * (prev_1.1 - prev_0.1)
+							};
+							draw_buffer.points.push((
+								None,
+								Points::new("", [0.0, y]).color(Color32::GRAY).radius(fline.width),
+							));
+						}
+
+						if less_then(prev_0.1, prev_1.1, plot_params.eps)
+							&& greater_then(prev_1.1, cur.1, plot_params.eps)
+						{
+							// local maximum
+							draw_buffer.points.push((
+								None,
+								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
+							));
+						}
+						if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+							&& less_then(prev_1.1, cur.1, plot_params.eps)
+						{
+							// local minimum
+							draw_buffer.points.push((
+								None,
+								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
+							));
+						}
 					}
-					if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-						&& less_then(prev_1.1, cur.1, plot_params.eps)
-					{
-						local_optima_buffer.push(
-							Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
-						);
+
+					prev[0] = prev[1];
+					prev[1] = Some(cur);
+				}
+			} else {
+				for selected_line in flines.iter().filter(|sel| sel.id == selected_fline_id) {
+					let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
+						continue;
+					};
+					// println!("finding intersections between curent {:?} and selected {:?}", fline.id,
+					// selected_line.id);
+					for plot_seg in plot_points.windows(2) {
+						for sel_seg in sel_points.windows(2) {
+							if let Some(point) = intersect_segs(
+								plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
+							) {
+								// println!("Found intersection {point:?}");
+								draw_buffer.points.push((
+									None,
+									Points::new("", [point.x, point.y])
+										.color(Color32::GRAY)
+										.radius(selected_line.width),
+								));
+							}
+						}
 					}
 				}
-				prev[0] = prev[1];
-				prev[1] = Some(cur);
-
-				// 	let Some(point_before) = plot_points.get(p_i - 1) else {
-				// 		continue;
-				// 	};
-				// 	for (other_implicit, other_line_id, other_line) in ui_state.lines.iter() {
-				// 		if !other_implicit || other_line_id == line_id {
-				// 			continue;
-				// 		}
-				// 		let PlotGeometry::Points(other_points) = other_line.geometry() else {
-				// 			continue;
-				// 		};
-				// 		let (Some(other_point_before), Some(other_point)) =
-				// 			(other_points.get(p_i - 1), other_points.get(p_i))
-				// 		else {
-				// 			continue;
-				// 		};
-				// 		if let Some((t, y)) =
-				// 			implicit_intersects(point_before.y, point.y, other_point_before.y, other_point.y)
-				// 		{
-				// 			ui_state.points.push(
-				// 				Points::new("", [point_before.x + (point.x - point_before.x) * t, y])
-				// 					.color(Color32::GRAY)
-				// 					.radius(3.5),
-				// 			);
-				// 		}
-				// 	}
+				// find intersections
 			}
-		}
+		});
 	}
 
 	egui::CentralPanel::default().show(ctx, |ui| {
@@ -1050,11 +1092,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 					plot_ui.polygon(poly);
 				}
 			}
-			for draw_buffer in ui_state.draw_buffer.iter_mut() {
-				let mut draw_buffer = draw_buffer.borrow_mut();
-				for fline in draw_buffer.lines.drain(..) {
-					plot_ui.line(fline.line);
-				}
+			for fline in flines.drain(..) {
+				plot_ui.line(fline.line);
 			}
 			for draw_buffer in ui_state.draw_buffer.iter_mut() {
 				let mut draw_buffer = draw_buffer.borrow_mut();
@@ -1084,7 +1123,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		ui_state.plot_bounds = *plot_res.transform.bounds();
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos().map(|p| {
 			// let p = plot_res.transform.value_from_position(p);
-			((p.x, p.y), plot_res.transform.clone())
+			((p.x, p.y), plot_res.transform)
 		});
 
 		if let Some(hovered_point) = hovered_point {
@@ -1162,11 +1201,19 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 		if let Some(hovered_id) = plot_res.hovered_plot_item {
 			if ui.input(|i| i.pointer.primary_clicked()) {
-				ui_state.selected_plot_item = Some(hovered_id);
+				if state.entries.iter().any(|e| {
+					if matches!(e.ty, EntryType::Function { .. }) {
+						Id::new(e.id) == hovered_id
+					} else {
+						false
+					}
+				}) {
+					ui_state.selected_plot_line = Some(hovered_id);
+				}
 			}
 		} else if ui_state.dragging_point.is_none() {
 			if ui.input(|i| i.pointer.primary_clicked()) {
-				ui_state.selected_plot_item = None;
+				ui_state.selected_plot_line = None;
 			}
 		}
 	});
@@ -1281,17 +1328,15 @@ fn solve_secant(
 
 		if (y1 - y0) == 0.0 {
 			// div by zero
-      // We do best effort guess here.
-      // TODO: this is not the solution!
-      // The real solution is to disallow dragging of non-injective expressions.
-      if (x0 - cur_x).abs() < (x1 - cur_x).abs() {
-        // x0 is closer to cur_x
-        return Some(x0);
-      } else {
-        // x1 is closer to cur_x
-        return Some(x1);
-      }
-
+			// We do best effort guess here.
+			// TODO: this is not the solution!
+			// The real solution is to disallow dragging of non-injective expressions.
+			if (x0 - cur_x).abs() < (x1 - cur_x).abs() {
+				// x0 is closer to cur_x
+				return Some(x0);
+			}
+			// x1 is closer to cur_x
+			return Some(x1);
 		}
 
 		let x_next = x1 - y1 * (x1 - x0) / (y1 - y0);
@@ -1310,6 +1355,31 @@ fn solve_secant(
 		Some(x1)
 	} else {
 		// Failed to converge
+		None
+	}
+}
+fn intersect_segs(a1: PlotPoint, a2: PlotPoint, b1: PlotPoint, b2: PlotPoint, eps: f64) -> Option<PlotPoint> {
+	let d1x = a2.x - a1.x;
+	let d1y = a2.y - a1.y;
+	let d2x = b2.x - b1.x;
+	let d2y = b2.y - b1.y;
+
+	let denom = d1x * d2y - d1y * d2x;
+
+	if denom.abs() < eps {
+    // parallel
+		return None;
+	}
+
+	let dx = b1.x - a1.x;
+	let dy = b1.y - a1.y;
+
+	let t = (dx * d2y - dy * d2x) / denom;
+	let u = (dx * d1y - dy * d1x) / denom;
+
+	if t >= -eps && t <= 1.0 + eps && u >= -eps && u <= 1.0 + eps {
+		Some(PlotPoint { x: a1.x + t * d1x, y: a1.y + t * d1y })
+	} else {
 		None
 	}
 }
