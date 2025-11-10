@@ -2,7 +2,9 @@ use alloc::sync::Arc;
 use core::cell::Cell;
 use core::mem;
 use core::ops::RangeInclusive;
+use regex::Regex;
 use smallvec::SmallVec;
+use std::sync::LazyLock;
 use thread_local::ThreadLocal;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
@@ -103,22 +105,9 @@ impl<T: EvalexprNumericTypes> Default for Expr<T> {
 	}
 }
 impl<T: EvalexprNumericTypes> Expr<T> {
-	pub fn reparse(&mut self) -> Result<(), String> {
-		if self.text.is_empty() {
-			self.node = None;
-		} else {
-			self.node = match evalexpr::build_operator_tree::<T>(&self.text) {
-				Ok(func) => Some(func),
-				Err(e) => {
-					return Err(e.to_string());
-				},
-			};
-		}
-		Ok(())
-	}
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
-		postfix: Option<&str>,
+		preprocess: bool,
 	) -> Result<bool, String> {
 		ui.horizontal_top(|ui| {
 			let mut changed = false;
@@ -138,7 +127,22 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 				if self.text.is_empty() {
 					self.node = None;
 				} else {
-					self.node = match evalexpr::build_operator_tree::<T>(&self.text) {
+					let temp;
+					let mut txt = &self.text;
+					if preprocess {
+						match preprecess_fn(&self.text) {
+							Ok(Some(new_text)) => {
+								temp = new_text;
+								txt = &temp;
+							},
+							Err(e) => {
+								return Err(e);
+							},
+							_ => {},
+						}
+					}
+
+					self.node = match evalexpr::build_operator_tree::<T>(txt) {
 						Ok(func) => Some(func),
 						Err(e) => {
 							return Err(e.to_string());
@@ -148,9 +152,9 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 
 				changed = true;
 			}
-			if let Some(postfix) = postfix {
-				ui.label(RichText::new(postfix).monospace());
-			}
+			// if let Some(postfix) = postfix {
+			// 	ui.label(RichText::new(postfix).monospace());
+			// }
 			ui.menu_button(RichText::new(self.textbox_type.symbol()), |ui| {
 				ui.selectable_value(
 					&mut self.textbox_type,
@@ -519,8 +523,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			match &mut entry.ty {
 				EntryType::Function { func, range_start, range_end, style, ty, implicit_resolution } => {
 					ui.vertical(|ui| {
-						let postfix = if ty == &FunctionType::Implicit { Some("= 0 ") } else { None };
-						match func.edit_ui(ui, "sin(x)", None, clear_cache, postfix) {
+						match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								result.needs_recompilation |= changed;
@@ -544,7 +547,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							match ty {
 								FunctionType::Ranged => {
 									ui.label("Start:");
-									match range_start.edit_ui(ui, "", Some(30.0), clear_cache, None) {
+									match range_start.edit_ui(ui, "", Some(30.0), clear_cache, false) {
 										Ok(changed) => {
 											result.needs_recompilation |= changed;
 											result.parsed |= changed;
@@ -554,7 +557,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										},
 									}
 									ui.label("End:");
-									match range_end.edit_ui(ui, "", Some(30.0), clear_cache, None) {
+									match range_end.edit_ui(ui, "", Some(30.0), clear_cache, false) {
 										Ok(changed) => {
 											result.needs_recompilation |= changed;
 											result.parsed |= changed;
@@ -584,7 +587,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.label("Lower:");
-							match lower.edit_ui(ui, "lower", Some(50.0), clear_cache, None) {
+							match lower.edit_ui(ui, "lower", Some(50.0), clear_cache, false) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									// needs_recompilation |= changed;
@@ -594,7 +597,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								},
 							}
 							ui.label("Upper:");
-							match upper.edit_ui(ui, "upper", Some(50.0), clear_cache, None) {
+							match upper.edit_ui(ui, "upper", Some(50.0), clear_cache, false) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									// needs_recompilation |= changed;
@@ -605,7 +608,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							}
 						});
 						ui.horizontal(|ui| {
-							match func.edit_ui(ui, "func", None, clear_cache, None) {
+							match func.edit_ui(ui, "func", None, clear_cache, false) {
 								Ok(changed) => {
 									result.parsed |= changed;
 									result.needs_recompilation |= changed;
@@ -625,7 +628,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				},
 				EntryType::Label { x, y, size, underline } => {
 					ui.horizontal(|ui| {
-						match x.edit_ui(ui, "point_x", Some(80.0), clear_cache, None) {
+						match x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -634,7 +637,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match y.edit_ui(ui, "point_y", Some(80.0), clear_cache, None) {
+						match y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -643,7 +646,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 								result.error = Some(format!("Parsing error: {e}"));
 							},
 						}
-						match size.edit_ui(ui, "size", Some(80.0), clear_cache, None) {
+						match size.edit_ui(ui, "size", Some(80.0), clear_cache, false) {
 							Ok(changed) => {
 								result.parsed |= changed;
 								// result.needs_recompilation |= changed;
@@ -660,7 +663,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.vertical(|ui| {
 						for (pi, point) in points.iter_mut().enumerate() {
 							ui.horizontal(|ui| {
-								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, None) {
+								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
 									Ok(changed) => {
 										result.parsed |= changed;
 										result.needs_recompilation |= changed;
@@ -669,7 +672,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
-								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, None) {
+								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
 									Ok(changed) => {
 										result.parsed |= changed;
 										result.needs_recompilation |= changed;
@@ -678,10 +681,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
-                let mut drag_type_changed = false;
+								let mut drag_type_changed = false;
 								if !point.both_drag_dirs_available && point.drag_type == PointDragType::Both {
 									point.both_drag_dirs_available = false;
-                  drag_type_changed = true;
+									drag_type_changed = true;
 								}
 
 								let drag_menu_text = match &point.drag_point {
@@ -709,28 +712,32 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 									},
 									None => point.drag_type.symbol().to_string(),
 								};
-								ui
-									.menu_button(drag_menu_text, |ui| {
-										if point.both_drag_dirs_available {
-											drag_type_changed |= ui.selectable_value(
+								ui.menu_button(drag_menu_text, |ui| {
+									if point.both_drag_dirs_available {
+										drag_type_changed |= ui
+											.selectable_value(
 												&mut point.drag_type,
 												PointDragType::Both,
 												PointDragType::Both.name(),
-											).changed();
-										}
-										drag_type_changed |= ui.selectable_value(
+											)
+											.changed();
+									}
+									drag_type_changed |= ui
+										.selectable_value(
 											&mut point.drag_type,
 											PointDragType::X,
 											PointDragType::X.name(),
-										).changed();
-										drag_type_changed |= ui.selectable_value(
+										)
+										.changed();
+									drag_type_changed |= ui
+										.selectable_value(
 											&mut point.drag_type,
 											PointDragType::Y,
 											PointDragType::Y.name(),
-										).changed();
-									});
-                if drag_type_changed 
-								{
+										)
+										.changed();
+								});
+								if drag_type_changed {
 									result.parsed = true;
 									result.needs_recompilation = true;
 								}
@@ -867,8 +874,8 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
-) {
-	if entry.name != "x" {
+) -> Result<(), String> {
+	if entry.name != "x" && entry.name != "y" {
 		match &mut entry.ty {
 			EntryType::Points(points) => {
 				for point in points {
@@ -986,6 +993,10 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						}
 					}
 					if has_x && has_y {
+						if !func.text.contains('=') {
+							func.node = None;
+							return Err("Implicit function must contain = sign".to_string());
+						}
 						*ty = FunctionType::Implicit;
 					} else if has_y {
 						*ty = FunctionType::Y;
@@ -1053,6 +1064,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 			},
 		}
 	}
+	Ok(())
 }
 
 pub struct PlotParams {
@@ -1334,20 +1346,20 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			if let Some(func_node) = &func.node {
 				let name = if entry.name.is_empty() {
 					match ty {
-						FunctionType::Y => format!("x = {}", func.text.trim()),
+						FunctionType::Y => format!("f(y): {}", func.text.trim()),
 						FunctionType::Ranged | FunctionType::X => {
-							format!("y = {}", func.text.trim())
+							format!("f(x):  {}", func.text.trim())
 						},
-						FunctionType::Implicit => format!("{} = 0.0", func.text.trim()),
+						FunctionType::Implicit => format!("{}", func.text.trim()),
 					}
 				} else {
 					match ty {
-						FunctionType::Y => format!("{}(y) = {}", entry.name.trim(), func.text.trim()),
+						FunctionType::Y => format!("{}(y):  {}", entry.name.trim(), func.text.trim()),
 						FunctionType::Ranged | FunctionType::X => {
-							format!("{}(x) = {}", entry.name.trim(), func.text.trim())
+							format!("{}(x): {}", entry.name.trim(), func.text.trim())
 						},
 						FunctionType::Implicit => {
-							format!("{}(x,y) = {} = 0.0", entry.name.trim(), func.text.trim())
+							format!("{}: {}", entry.name.trim(), func.text.trim())
 						},
 					}
 				};
@@ -1682,4 +1694,41 @@ pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_>
 	}
 
 	NodeAnalysis { is_literal, constants, num_constants }
+}
+pub fn preprecess_fn(text: &String) -> Result<Option<String>, String> {
+	// regex to check if theres an y identifier (single y not surrounded by alphanumerics on either
+	// side)
+	static RE_Y: LazyLock<Regex> =
+		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])y(?:$|[^a-zA-Z0-9])").unwrap());
+	static RE_X: LazyLock<Regex> =
+		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])x(?:$|[^a-zA-Z0-9])").unwrap());
+
+	let Some((left, right)) = text.split_once('=') else {
+		return Ok(None);
+	};
+	let left = left.trim();
+	let right = right.trim();
+	if left.is_empty() || right.is_empty() {
+		return Err("Something is needed on both sides of the = sign".to_string());
+	}
+	if left == "y" {
+		if RE_Y.is_match(right) {
+			return Ok(Some(format!("y - ({right})")));
+		} else {
+			return Ok(Some(right.to_string()));
+		}
+	}
+	if left == "x" {
+		if RE_X.is_match(right) {
+			return Ok(Some(format!("x - ({right})")));
+		} else {
+			if RE_Y.is_match(right) {
+				return Ok(Some(right.to_string()));
+			} else {
+				return Ok(Some(format!("{right} + y*0")));
+			}
+		}
+	}
+	let new = format!("{} - ({})", left, right);
+	Ok(Some(new))
 }

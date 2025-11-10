@@ -9,8 +9,7 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
-  PointDragType,
-	Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, TextboxType
+  Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, TextboxType, preprecess_fn
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -43,9 +42,15 @@ impl ExprSer {
 	pub fn from_expr<T: EvalexprNumericTypes>(expr: &Expr<T>) -> Self {
 		Self { text: expr.text.clone(), textbox_type: expr.textbox_type }
 	}
-	pub fn into_expr<T: EvalexprNumericTypes>(self) -> Expr<T> {
+	pub fn into_expr<T: EvalexprNumericTypes>(self, preprocess:bool) -> Expr<T> {
+    let temp;
+    let mut txt = &self.text;
+    if preprocess && let Ok(Some(new_text)) = preprecess_fn(&self.text) {
+      temp = new_text;
+      txt = &temp;
+    };
 		Expr {
-			node:         evalexpr::build_operator_tree::<T>(&self.text).ok(),
+			node:         evalexpr::build_operator_tree::<T>(txt).ok(),
 			text:         self.text,
 			textbox_type: self.textbox_type,
 		}
@@ -221,11 +226,11 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 					style,
 					implicit_resolution,
 				} => EntryType::Function {
-					func: func.into_expr(),
+					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
-					range_start: range_start.into_expr(),
-					range_end: range_end.into_expr(),
+					range_start: range_start.into_expr(false),
+					range_end: range_end.into_expr(false),
 					implicit_resolution: implicit_resolution
 						.clamp(MIN_IMPLICIT_RESOLUTION, MAX_IMPLICIT_RESOLUTION),
 
@@ -238,8 +243,8 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 					let mut points_deserialized = Vec::new();
 					for point in points {
 						let point_deserialized = PointEntry {
-							x:               point.x.into_expr(),
-							y:               point.y.into_expr(),
+							x:               point.x.into_expr(false),
+							y:               point.y.into_expr(false),
 							drag_point: None,
               drag_type: point.drag_type,
               both_drag_dirs_available: true,
@@ -250,18 +255,18 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 				},
 				EntryTypeSerialized::Integral { func: f, lower: l, upper: u, resolution: r } => {
 					EntryType::Integral {
-						func:  f.into_expr(),
-						lower: l.into_expr(),
-						upper: u.into_expr(),
+						func:  f.into_expr(false),
+						lower: l.into_expr(false),
+						upper: u.into_expr(false),
 
 						calculated: None,
 						resolution: r.max(10),
 					}
 				},
 				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {
-					x: text_x.into_expr(),
-					y: text_y.into_expr(),
-					size: size.into_expr(),
+					x: text_x.into_expr(false),
+					y: text_y.into_expr(false),
+					size: size.into_expr(false),
 					underline,
 				},
 			},

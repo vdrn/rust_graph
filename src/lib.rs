@@ -865,12 +865,14 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard);
+					if let Err(e) = entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard){
+            ui_state.parsing_errors.insert(entry.id, e);
+          }
 				}
 			} else if animating {
 				for entry in state.entries.iter_mut() {
 					scope!("entry_process");
-					if entry.name != "x" {
+					if entry.name != "x" && entry.name != "y" {
 						if let EntryType::Constant { value, .. } = &mut entry.ty {
 							if !entry.name.is_empty() {
 								state
