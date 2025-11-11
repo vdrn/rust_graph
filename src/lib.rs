@@ -707,7 +707,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 			#[cfg(not(target_arch = "wasm32"))]
 			ui.hyperlink_to("View Online", {
-				let mut base_url = "https://vdrn.github.io/rust_graph/".to_string();
+				let mut base_url = "https://rust-graph.netlify.app/".to_string();
 				base_url.push_str(ui_state.permalink_string.as_str());
 
 				base_url
@@ -1143,7 +1143,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			if let DrawPointType::Draggable { i } = dragging_point_i.ty {
 				if let Some((name, points)) =
 					state.entries.iter_mut().find(|e| Id::new(e.id) == i.0).and_then(|e| {
-						if let EntryType::Points(points) = &mut e.ty { Some((&e.name, points)) } else { None }
+						if let EntryType::Points{points, ..} = &mut e.ty { Some((&e.name, points)) } else { None }
 					}) {
 					let point = &mut points[i.1 as usize];
 

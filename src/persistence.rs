@@ -9,7 +9,7 @@ use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
-	Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, TextboxType, preprecess_fn
+	Expr, FunctionType, GLineStyle, IntegralStyle, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, TextboxType, preprecess_fn
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -67,7 +67,7 @@ pub enum EntryTypeSerialized {
 		#[serde(default)]
 		range_end:           ExprSer,
 		#[serde(default)]
-		style:               FunctionStyle,
+		style:               GLineStyle,
 		#[serde(default)]
 		implicit_resolution: usize,
 	},
@@ -76,7 +76,11 @@ pub enum EntryTypeSerialized {
 		step:  f64,
 		ty:    ConstantType,
 	},
-	Points(Vec<EntryPointSerialized>),
+	Points {
+		points: Vec<EntryPointSerialized>,
+		#[serde(default)]
+		style:  PointStyle,
+	},
 	Integral {
 		#[serde(default)]
 		func:  ExprSer,
@@ -84,6 +88,8 @@ pub enum EntryTypeSerialized {
 		lower: ExprSer,
 		#[serde(default)]
 		upper: ExprSer,
+		#[serde(default)]
+		style: IntegralStyle,
 
 		resolution: usize,
 	},
@@ -134,7 +140,7 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(
 				EntryType::Constant { value, step, ty } => {
 					EntryTypeSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
 				},
-				EntryType::Points(points) => {
+				EntryType::Points { points, style } => {
 					let mut points_serialized = Vec::new();
 					for point in points {
 						let point_serialized = EntryPointSerialized {
@@ -144,13 +150,16 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(
 						};
 						points_serialized.push(point_serialized);
 					}
-					EntryTypeSerialized::Points(points_serialized)
+					EntryTypeSerialized::Points { points: points_serialized, style: style.clone() }
 				},
-				EntryType::Integral { func, lower, upper, resolution, .. } => EntryTypeSerialized::Integral {
-					func:       ExprSer::from_expr(func),
-					lower:      ExprSer::from_expr(lower),
-					upper:      ExprSer::from_expr(upper),
-					resolution: *resolution,
+				EntryType::Integral { func, lower, upper, resolution, style, .. } => {
+					EntryTypeSerialized::Integral {
+						func:       ExprSer::from_expr(func),
+						lower:      ExprSer::from_expr(lower),
+						upper:      ExprSer::from_expr(upper),
+						resolution: *resolution,
+						style:      style.clone(),
+					}
 				},
 				EntryType::Label { x, y, size, underline, .. } => EntryTypeSerialized::Label {
 					x:         ExprSer::from_expr(x),
@@ -243,7 +252,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 				EntryTypeSerialized::Constant { value, step, ty } => {
 					EntryType::Constant { value: T::Float::f64_to_float(value), step, ty }
 				},
-				EntryTypeSerialized::Points(points) => {
+				EntryTypeSerialized::Points { points, style } => {
 					let mut points_deserialized = Vec::new();
 					for point in points {
 						let point_deserialized = PointEntry {
@@ -252,20 +261,21 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 							drag_point:               None,
 							drag_type:                point.drag_type,
 							both_drag_dirs_available: true,
-							val:                    None,
+							val:                      None,
 						};
 						points_deserialized.push(point_deserialized);
 					}
-					EntryType::Points(points_deserialized)
+					EntryType::Points { points: points_deserialized, style }
 				},
-				EntryTypeSerialized::Integral { func: f, lower: l, upper: u, resolution: r } => {
+				EntryTypeSerialized::Integral { func, lower, upper, resolution, style } => {
 					EntryType::Integral {
-						func:  f.into_expr(false),
-						lower: l.into_expr(false),
-						upper: u.into_expr(false),
+						func: func.into_expr(false),
+						lower: lower.into_expr(false),
+						upper: upper.into_expr(false),
 
 						calculated: None,
-						resolution: r.max(10),
+						resolution: resolution.max(10),
+						style,
 					}
 				},
 				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {

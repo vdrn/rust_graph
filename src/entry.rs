@@ -7,9 +7,9 @@ use smallvec::SmallVec;
 use std::sync::LazyLock;
 use thread_local::ThreadLocal;
 
-use eframe::egui::containers::menu::{MenuButton, MenuConfig};
+use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
 use eframe::egui::{
-	self, Align, Button, Color32, DragValue, Id, RichText, Slider, Stroke, TextEdit, Widget, vec2
+	self, Align, Button, Color32, DragValue, Id, PopupCloseBehavior, RichText, Slider, Stroke, TextEdit, Widget, vec2
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
@@ -66,6 +66,7 @@ pub struct SelectablePoint {
 #[derive(Clone)]
 pub enum DrawPointType {
 	Draggable { i: (Id, u32) },
+  // todo
 	Other,
 }
 pub struct DrawPoint {
@@ -260,7 +261,7 @@ pub enum FunctionType {
 pub enum EntryType<T: EvalexprNumericTypes> {
 	Function {
 		func:  Expr<T>,
-		style: FunctionStyle,
+		style: GLineStyle,
 		ty:    FunctionType,
 
 		/// used for `RangedFunction`
@@ -275,13 +276,17 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		step:  f64,
 		ty:    ConstantType,
 	},
-	Points(Vec<PointEntry<T>>),
+	Points {
+		points: Vec<PointEntry<T>>,
+		style:  PointStyle,
+	},
 	Integral {
 		func:       Expr<T>,
 		lower:      Expr<T>,
 		upper:      Expr<T>,
 		calculated: Option<T::Float>,
 		resolution: usize,
+		style:      IntegralStyle,
 	},
 	Label {
 		x:         Expr<T>,
@@ -290,66 +295,68 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		underline: bool,
 	},
 }
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct PointStyle {
+	show_lines:  bool,
+	show_points: bool,
+	line_style:  GLineStyle,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct IntegralStyle {
+	show_function:    bool,
+	show_integral_fn: bool,
+	show_area:        bool,
+}
+impl Default for IntegralStyle {
+	fn default() -> Self { Self { show_function: false, show_integral_fn: true, show_area: true } }
+}
+
+impl Default for PointStyle {
+	fn default() -> Self { Self { show_lines: true, show_points: true, line_style: GLineStyle::default() } }
+}
+
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
-pub enum LineStyle {
+pub enum LineStyleType {
 	#[default]
 	Solid,
 	Dotted,
 	Dashed,
 }
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub struct FunctionStyle {
+pub struct GLineStyle {
 	line_width:      f32,
 	#[serde(default)]
-	line_style:      LineStyle,
+	line_style:      LineStyleType,
 	line_style_size: f32,
 }
-impl Default for FunctionStyle {
-	fn default() -> Self { Self { line_width: 1.5, line_style: LineStyle::Solid, line_style_size: 3.5 } }
+impl Default for GLineStyle {
+	fn default() -> Self { Self { line_width: 1.5, line_style: LineStyleType::Solid, line_style_size: 5.5 } }
 }
-impl FunctionStyle {
-	fn ui(&mut self, ui: &mut egui::Ui) {
-		MenuButton::new("Style")
-			.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-			.ui(ui, |ui| {
-				Slider::new(&mut self.line_width, 0.1..=10.0).text("Line Width").ui(ui);
-				ui.separator();
-				ui.horizontal(|ui| {
-					ui.selectable_value(&mut self.line_style, LineStyle::Solid, "Solid");
-					ui.selectable_value(&mut self.line_style, LineStyle::Dotted, "Dotted");
-					ui.selectable_value(&mut self.line_style, LineStyle::Dashed, "Dashed");
-				});
-				match &mut self.line_style {
-					LineStyle::Solid => {},
-					LineStyle::Dotted => {
-						ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Spacing"));
-					},
-					LineStyle::Dashed => {
-						ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Length"));
-					},
-				}
-				ui.separator();
-				egui::Sides::new().show(
-					ui,
-					|_ui| {},
-					|ui| {
-						if ui.button("Close").clicked() {
-							ui.close();
-						}
-						if ui.button("Reset").clicked() {
-							*self = Default::default();
-							ui.close();
-						}
-					},
-				);
-			});
-	}
-
+impl GLineStyle {
 	fn egui_line_style(&self) -> egui_plot::LineStyle {
 		match self.line_style {
-			LineStyle::Solid => egui_plot::LineStyle::Solid,
-			LineStyle::Dotted => egui_plot::LineStyle::Dotted { spacing: self.line_style_size },
-			LineStyle::Dashed => egui_plot::LineStyle::Dashed { length: self.line_style_size },
+			LineStyleType::Solid => egui_plot::LineStyle::Solid,
+			LineStyleType::Dotted => egui_plot::LineStyle::Dotted { spacing: self.line_style_size },
+			LineStyleType::Dashed => egui_plot::LineStyle::Dashed { length: self.line_style_size },
+		}
+	}
+	fn ui(&mut self, ui: &mut egui::Ui) {
+		Slider::new(&mut self.line_width, 0.1..=10.0).text("Line Width").ui(ui);
+		ui.separator();
+		ui.horizontal(|ui| {
+			ui.selectable_value(&mut self.line_style, LineStyleType::Solid, "Solid");
+			ui.selectable_value(&mut self.line_style, LineStyleType::Dotted, "Dotted");
+			ui.selectable_value(&mut self.line_style, LineStyleType::Dashed, "Dashed");
+		});
+		match &mut self.line_style {
+			LineStyleType::Solid => {},
+			LineStyleType::Dotted => {
+				ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Spacing"));
+			},
+			LineStyleType::Dashed => {
+				ui.add(Slider::new(&mut self.line_style_size, 0.1..=20.0).text("Length"));
+			},
 		}
 	}
 }
@@ -365,7 +372,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 					"⏵"
 				}
 			},
-			EntryType::Points(_) => "◊",
+			EntryType::Points { .. } => "◊",
 			EntryType::Integral { .. } => "∫",
 			EntryType::Label { .. } => "📃",
 		}
@@ -374,7 +381,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 		match self.ty {
 			EntryType::Function { .. } => "λ   Function",
 			EntryType::Constant { .. } => "⏵ Constant",
-			EntryType::Points(_) => "◊ Points",
+			EntryType::Points { .. } => "◊ Points",
 			EntryType::Integral { .. } => "∫   Integral",
 			EntryType::Label { .. } => "📃 Label",
 		}
@@ -395,7 +402,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 				range_start:         Expr::default(),
 				range_end:           Expr::default(),
 				ty:                  FunctionType::X,
-				style:               FunctionStyle::default(),
+				style:               GLineStyle::default(),
 				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},
 		}
@@ -419,7 +426,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			visible: true,
 			name: String::new(),
-			ty: EntryType::Points(vec![PointEntry::default()]),
+			ty: EntryType::Points { points: vec![PointEntry::default()], style: PointStyle::default() },
 		}
 	}
 	pub fn new_integral(id: u64) -> Self {
@@ -435,6 +442,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 
 				calculated: None,
 				resolution: 500,
+				style:      IntegralStyle::default(),
 			},
 		}
 	}
@@ -568,13 +576,72 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			result.remove = true;
 			result.needs_recompilation = true;
 		}
-		let mut color_picker = MenuButton::new(RichText::new("🎨").color(Color32::BLACK));
-		color_picker.button = color_picker.button.fill(entry.color());
-		color_picker.ui(ui, |ui| {
-			for i in 0..COLORS.len() {
-				if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
-					entry.color = i;
+
+		let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
+			.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
+		style_button.button = style_button.button.fill(entry.color());
+		style_button.ui(ui, |ui| {
+			let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
+			color_button.button = color_button.button.fill(entry.color());
+
+			color_button.ui(ui, |ui| {
+				for i in 0..COLORS.len() {
+					if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
+						entry.color = i;
+					}
 				}
+			});
+			match &mut entry.ty {
+				EntryType::Function { style, .. } => {
+					ui.separator();
+
+					style.ui(ui);
+					ui.separator();
+					egui::Sides::new().show(
+						ui,
+						|_ui| {},
+						|ui| {
+							if ui.button("Close").clicked() {
+								ui.close();
+							}
+							if ui.button("Reset").clicked() {
+								*style = Default::default();
+								ui.close();
+							}
+						},
+					);
+				},
+				EntryType::Points { style, .. } => {
+					ui.separator();
+					ui.checkbox(&mut style.show_lines, "Show Lines");
+					if style.show_lines {
+						ui.label("Line Style:");
+						style.line_style.ui(ui);
+					}
+					ui.separator();
+					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
+
+					egui::Sides::new().show(
+						ui,
+						|_ui| {},
+						|ui| {
+							if ui.button("Close").clicked() {
+								ui.close();
+							}
+							if ui.button("Reset").clicked() {
+								*style = Default::default();
+								ui.close();
+							}
+						},
+					);
+				},
+				EntryType::Integral { style, .. } => {
+					ui.checkbox(&mut style.show_function, "Show Function being integrated");
+					ui.checkbox(&mut style.show_integral_fn, "Show Integral Function");
+					ui.checkbox(&mut style.show_area, "Show Area");
+				},
+				EntryType::Constant { .. } => {},
+				EntryType::Label { .. } => {},
 			}
 		});
 		ui.with_layout(egui::Layout::left_to_right(Align::LEFT), |ui| {
@@ -602,7 +669,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			}
 			let color = entry.color();
 			match &mut entry.ty {
-				EntryType::Function { func, range_start, range_end, style, ty, implicit_resolution } => {
+				EntryType::Function { func, range_start, range_end, ty, implicit_resolution, .. } => {
 					ui.vertical(|ui| {
 						match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
 							Ok(changed) => {
@@ -615,7 +682,6 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						}
 
 						ui.horizontal(|ui| {
-							style.ui(ui);
 							match ty {
 								FunctionType::X | FunctionType::Ranged => {
 									let mut is_ranged = *ty == FunctionType::Ranged;
@@ -664,7 +730,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						}
 					});
 				},
-				EntryType::Integral { func, lower, upper, calculated, resolution } => {
+				EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
 							ui.label("Lower:");
@@ -739,7 +805,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 						ui.checkbox(underline, "Underline");
 					});
 				},
-				EntryType::Points(points) => {
+				EntryType::Points { points, .. } => {
 					let mut remove_point = None;
 					ui.vertical(|ui| {
 						for (pi, point) in points.iter_mut().enumerate() {
@@ -976,7 +1042,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 		return Ok(());
 	}
 	match &mut entry.ty {
-		EntryType::Points(points) => {
+		EntryType::Points { points, .. } => {
 			for point in points {
 				if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
 					let x_state = analyze_node(x);
@@ -1196,7 +1262,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 	match &mut entry.ty {
 		EntryType::Constant { .. } => {},
-		EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
+		EntryType::Integral { func, lower, upper, calculated, resolution, style, .. } => {
 			let mut draw_buffer = draw_buffer.borrow_mut();
 			let (Some(lower_node), Some(upper_node), Some(func_node)) = (&lower.node, &upper.node, &func.node)
 			else {
@@ -1279,7 +1345,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let diff = (prev_y_f64 - cur_y).abs();
 						let t = prev_y_f64.abs() / diff;
 						let x_midpoint = (cur_x - step) + step * t;
-						if visible {
+						if visible && style.show_area {
 							let triangle1 = Polygon::new(
 								entry.name.clone(),
 								PlotPoints::Owned(vec![
@@ -1314,7 +1380,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						result = result + b1 * T::Float::HALF;
 						result = result + b2 * T::Float::HALF;
 					} else {
-						if visible {
+						if visible && style.show_area {
 							let poly = Polygon::new(
 								entry.name.clone(),
 								if prev_y_f64 > 0.0 {
@@ -1349,8 +1415,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				}
 
 				if visible {
-					int_lines.push(PlotPoint::new(cur_x, result.to_f64()));
-					fun_lines.push(PlotPoint::new(cur_x, cur_y));
+					if style.show_integral_fn {
+						int_lines.push(PlotPoint::new(cur_x, result.to_f64()));
+					}
+					if style.show_function {
+						fun_lines.push(PlotPoint::new(cur_x, cur_y));
+					}
 				}
 				prev_y = Some(y);
 				// x += step;
@@ -1403,7 +1473,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				_ => {},
 			}
 		},
-		EntryType::Points(ps) => {
+		EntryType::Points { points, style } => {
 			let mut draw_buffer = draw_buffer.borrow_mut();
 			// main_context
 			// 	.write()
@@ -1414,7 +1484,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			let color_rgba = color.to_array();
 			let color_outer =
 				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
-			for (i, p) in ps.iter_mut().enumerate() {
+			for (i, p) in points.iter_mut().enumerate() {
 				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some((x, y))) => {
 						p.val = Some((f64_to_float::<T>(x), f64_to_float::<T>(y)));
@@ -1423,31 +1493,35 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let radius = if selected { 6.5 } else { 4.5 };
 						let radius_outer = if selected { 12.5 } else { 7.5 };
 
-						draw_buffer.points.push(DrawPoint::new(
-							sorting_idx,
-							i as u32,
-							None,
-							Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
-						));
-						if p.drag_point.is_some() {
-							let selectable_point = SelectablePoint {
-								ty: DrawPointType::Draggable { i: (id, i as u32) },
-								x,
-								y,
-								radius: radius_outer,
-							};
+						if style.show_points || p.drag_point.is_some() {
 							draw_buffer.points.push(DrawPoint::new(
 								sorting_idx,
 								i as u32,
-								Some(selectable_point),
-								Points::new(entry.name.clone(), [x, y])
-									.id(point_id)
-									.color(color_outer)
-									.radius(radius_outer),
+								None,
+								Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
 							));
+							if p.drag_point.is_some() {
+								let selectable_point = SelectablePoint {
+									ty: DrawPointType::Draggable { i: (id, i as u32) },
+									x,
+									y,
+									radius: radius_outer,
+								};
+								draw_buffer.points.push(DrawPoint::new(
+									sorting_idx,
+									i as u32,
+									Some(selectable_point),
+									Points::new(entry.name.clone(), [x, y])
+										.id(point_id)
+										.color(color_outer)
+										.radius(radius_outer),
+								));
+							}
 						}
 
-						line_buffer.push([x, y]);
+						if style.show_lines {
+							line_buffer.push([x, y]);
+						}
 					},
 					Err(e) => {
 						return Err(e);
@@ -1459,8 +1533,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// let width = if selected { 3.5 } else { 1.0 };
 			let width = 1.0;
 
-			if line_buffer.len() > 1 {
-				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(width);
+			if line_buffer.len() > 1 && style.show_lines {
+				let line = Line::new(entry.name.clone(), line_buffer)
+					.color(color)
+					.id(id)
+					.width(style.line_style.line_width)
+					.style(style.line_style.egui_line_style());
 				draw_buffer.lines.push(DrawLine::new(sorting_idx, id, width, line));
 				// plot_ui.line(line);
 			}
