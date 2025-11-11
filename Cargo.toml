@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -34,6 +34,9 @@ lto = "thin"
 eframe = { version = "0.33",features=["persistence"] }
 cfg-if = "1"
 egui_plot="0.34"
+
+egui_extras={version = "0.33", features=["syntect"]}
+syntect = { version = "5.3", default-features = false}
 evalexpr = { git = "https://github.com/vdrn/evalexpr" }
 
 rustc-hash = "2"
@@ -51,7 +54,7 @@ regex = "1"
 
 # [patch."https://github.com/vdrn/evalexpr"]
 # evalexpr = { path = "../../contrib/evalexpr" }
-# [patch.crates-io]
+[patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
 # puffin = { path = "../../contrib/puffin/puffin" }
 # puffin_http = { path = "../../contrib/puffin/puffin_http" }

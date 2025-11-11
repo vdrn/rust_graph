@@ -27,7 +27,7 @@ mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, DrawPoint, DrawPointType, Entry, EntryType, PointEntry, f64_to_float, f64_to_value
+	ConstantType, DragPoint, DrawPoint, PointInteractionType, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, f64_to_float, f64_to_value
 };
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -365,7 +365,7 @@ struct UiState {
 
 	selected_plot_line:   Option<Id>,
 	dragging_point:       Option<Id>,
-	dragging_point_i:     Option<entry::SelectablePoint>,
+	dragging_point_i:     Option<entry::PointInteraction>,
 	plot_mouese_pos:      Option<((f32, f32), PlotTransform)>,
 	showing_custom_label: bool,
 
@@ -964,7 +964,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							draw_buffer.points.push(DrawPoint::new(
 								fline.sorting_index,
 								pi as u32,
-								None,
+								PointInteraction {
+									x,
+									y: 0.0,
+									radius: fline.width,
+									ty: PointInteractionType::Other(OtherPointType::IntersectionWithXAxis),
+								},
 								Points::new("", [x, 0.0]).color(Color32::GRAY).radius(fline.width),
 							));
 						}
@@ -981,7 +986,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							draw_buffer.points.push(DrawPoint::new(
 								fline.sorting_index,
 								pi as u32,
-								None,
+								PointInteraction {
+									x: 0.0,
+									y,
+									radius: fline.width,
+									ty: PointInteractionType::Other(OtherPointType::IntersectionWithYAxis),
+								},
 								Points::new("", [0.0, y]).color(Color32::GRAY).radius(fline.width),
 							));
 						}
@@ -993,7 +1003,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							draw_buffer.points.push(DrawPoint::new(
 								fline.sorting_index,
 								pi as u32,
-								None,
+								PointInteraction {
+									x:      prev_1.0,
+									y:      prev_1.1,
+									radius: fline.width,
+									ty:     PointInteractionType::Other(OtherPointType::Maxima),
+								},
 								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
 							));
 						}
@@ -1004,7 +1019,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							draw_buffer.points.push(DrawPoint::new(
 								fline.sorting_index,
 								pi as u32,
-								None,
+								PointInteraction {
+									x:      prev_1.0,
+									y:      prev_1.1,
+									radius: fline.width,
+									ty:     PointInteractionType::Other(OtherPointType::Minima),
+								},
 								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
 							));
 						}
@@ -1030,7 +1050,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								draw_buffer.points.push(DrawPoint::new(
 									fline.sorting_index,
 									pi as u32,
-									None,
+									PointInteraction {
+										x:      point.x,
+										y:      point.y,
+										radius: fline.width,
+										ty:     PointInteractionType::Other(OtherPointType::Intersection),
+									},
 									Points::new("", [point.x, point.y])
 										.color(Color32::GRAY)
 										.radius(selected_line.width),
@@ -1102,15 +1127,14 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 				plot_ui.line(draw_line.line);
 			}
 			for draw_point in draw_points {
-				if let (Some(sel), Some((mouse_pos, transform))) =
-					(draw_point.selectable, ui_state.plot_mouese_pos)
-				{
+				if let Some((mouse_pos, transform)) = ui_state.plot_mouese_pos {
+          let sel = &draw_point.interaction;
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
 					let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
 					if dist_sq < sel.radius * sel.radius {
 						// ui_state.plot_custom_labels.push(((sel.x,sel.y), format!("Point {} {}",
 						// sel.x,sel.y)));
-						hovered_point = Some(sel);
+						hovered_point = Some(sel.clone());
 					}
 				}
 				plot_ui.points(draw_point.points);
@@ -1140,10 +1164,14 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		if let Some(dragging_point_i) = &ui_state.dragging_point_i {
-			if let DrawPointType::Draggable { i } = dragging_point_i.ty {
+			if let PointInteractionType::Draggable { i } = dragging_point_i.ty {
 				if let Some((name, points)) =
 					state.entries.iter_mut().find(|e| Id::new(e.id) == i.0).and_then(|e| {
-						if let EntryType::Points{points, ..} = &mut e.ty { Some((&e.name, points)) } else { None }
+						if let EntryType::Points { points, .. } = &mut e.ty {
+							Some((&e.name, points))
+						} else {
+							None
+						}
 					}) {
 					let point = &mut points[i.1 as usize];
 
@@ -1170,22 +1198,22 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 						match drag_point_type {
 							DragPoint::BothCoordLiterals => {
-								point.x.text = format!("{}", pos.x);
-								point.y.text = format!("{}", pos.y);
+								point.x.text = format!("{}", f64_to_float::<T>(pos.x));
+								point.y.text = format!("{}", f64_to_float::<T>(pos.y));
 							},
 							DragPoint::XLiteral => {
-								point.x.text = format!("{}", pos.x);
+								point.x.text = format!("{}", f64_to_float::<T>(pos.x));
 							},
 							DragPoint::YLiteral => {
-								point.y.text = format!("{}", pos.y);
+								point.y.text = format!("{}", f64_to_float::<T>(pos.y));
 							},
 							DragPoint::XLiteralYConstant(y_const) => {
-								point.x.text = format!("{}", pos.x);
+								point.x.text = format!("{}", f64_to_float::<T>(pos.x));
 								let y_node = point.y.node.clone();
 								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
 							},
 							DragPoint::YLiteralXConstant(x_const) => {
-								point.y.text = format!("{}", pos.y);
+								point.y.text = format!("{}", f64_to_float::<T>(pos.y));
 								let x_node = point.x.node.clone();
 								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
 							},
@@ -1248,7 +1276,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		if !ui_state.showing_custom_label
-			&& let Some(hovered_point) = hovered_point
+			&& let Some(hovered_point) = &hovered_point
 		{
 			let screen_x = plot_res.transform.position_from_point_x(hovered_point.x);
 			let screen_y = plot_res.transform.position_from_point_y(hovered_point.y);
@@ -1257,7 +1285,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 				ui,
 				Id::new("point_popup"),
 				format!(
-					"Point\nx:{}\ny: {}",
+					"{}\nx:{}\ny: {}",
+					hovered_point.name(),
 					f64_to_float::<T>(hovered_point.x),
 					f64_to_float::<T>(hovered_point.y)
 				),

@@ -1,10 +1,10 @@
-use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
 use core::mem;
 use core::ops::RangeInclusive;
+use egui_extras::syntax_highlighting::{CodeTheme, SyntectSettings};
 use regex::Regex;
 use smallvec::SmallVec;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use thread_local::ThreadLocal;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
@@ -57,28 +57,48 @@ impl DrawLine {
 	}
 }
 #[derive(Clone)]
-pub struct SelectablePoint {
-	pub ty:     DrawPointType,
+pub struct PointInteraction {
+	pub ty:     PointInteractionType,
 	pub x:      f64,
 	pub y:      f64,
 	pub radius: f32,
 }
+impl PointInteraction {
+	pub fn name(&self) -> &'static str {
+		match self.ty {
+			PointInteractionType::Draggable { .. } | PointInteractionType::Other(OtherPointType::Point) => {
+				"Point"
+			},
+			PointInteractionType::Other(OtherPointType::IntersectionWithXAxis) => "Intersection with x axis",
+			PointInteractionType::Other(OtherPointType::IntersectionWithYAxis) => "Intersection with y axis",
+			PointInteractionType::Other(OtherPointType::Intersection) => "Intersection",
+			PointInteractionType::Other(OtherPointType::Minima) => "Minima",
+			PointInteractionType::Other(OtherPointType::Maxima) => "Maxima",
+		}
+	}
+}
 #[derive(Clone)]
-pub enum DrawPointType {
+pub enum OtherPointType {
+	Point,
+	Minima,
+	Maxima,
+	Intersection,
+	IntersectionWithXAxis,
+	IntersectionWithYAxis,
+}
+#[derive(Clone)]
+pub enum PointInteractionType {
 	Draggable { i: (Id, u32) },
-  // todo
-	Other,
+	Other(OtherPointType),
 }
 pub struct DrawPoint {
 	pub sorting_index: u64,
-	pub selectable:    Option<SelectablePoint>,
+	pub interaction:   PointInteraction,
 	pub points:        egui_plot::Points<'static>,
 }
 impl DrawPoint {
-	pub fn new(
-		i1: u32, i2: u32, selectable: Option<SelectablePoint>, points: egui_plot::Points<'static>,
-	) -> Self {
-		Self { sorting_index: ((i1 as u64) << 32) | i2 as u64, selectable, points }
+	pub fn new(i1: u32, i2: u32, selectable: PointInteraction, points: egui_plot::Points<'static>) -> Self {
+		Self { sorting_index: ((i1 as u64) << 32) | i2 as u64, interaction: selectable, points }
 	}
 }
 pub struct DrawPolygonGroup {
@@ -191,7 +211,19 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 				TextboxType::MultiLine => TextEdit::multiline(&mut self.text).desired_rows(2),
 			};
 
-			text_edit = text_edit.hint_text(hint_text).code_editor();
+			let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+				let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
+					ui.ctx(),
+					ui.style(),
+					&CodeTheme::dark(12.0),
+					buf.as_str(),
+					"Rust",
+				);
+				layout_job.wrap.max_width = wrap_width;
+				ui.fonts_mut(|f| f.layout_job(layout_job))
+			};
+			text_edit = text_edit.layouter(&mut layouter);
+			text_edit = text_edit.hint_text(hint_text);//.font(egui::TextStyle::Monospace);
 			if let Some(width) = desired_width {
 				text_edit = text_edit.desired_width(width);
 			}
@@ -1497,12 +1529,17 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							draw_buffer.points.push(DrawPoint::new(
 								sorting_idx,
 								i as u32,
-								None,
+								PointInteraction {
+									x,
+									y,
+									radius,
+									ty: PointInteractionType::Other(OtherPointType::Point),
+								},
 								Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
 							));
 							if p.drag_point.is_some() {
-								let selectable_point = SelectablePoint {
-									ty: DrawPointType::Draggable { i: (id, i as u32) },
+								let selectable_point = PointInteraction {
+									ty: PointInteractionType::Draggable { i: (id, i as u32) },
 									x,
 									y,
 									radius: radius_outer,
@@ -1510,7 +1547,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								draw_buffer.points.push(DrawPoint::new(
 									sorting_idx,
 									i as u32,
-									Some(selectable_point),
+									selectable_point,
 									Points::new(entry.name.clone(), [x, y])
 										.id(point_id)
 										.color(color_outer)
