@@ -18,14 +18,16 @@ use egui_plot::{
 use evalexpr::{
 	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Node, Value
 };
-use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{
+	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
+};
 use serde::{Deserialize, Serialize};
 
 mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, Entry, EntryType, FunctionLine, PointEntry, f64_to_float, f64_to_value
+	ConstantType, DragPoint, DrawPoint, DrawPointType, Entry, EntryType, PointEntry, f64_to_float, f64_to_value
 };
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -347,33 +349,6 @@ impl Default for AppConfig {
 	}
 }
 
-struct SelectablePoint {
-	i:      (Id, u32),
-	x:      f64,
-	y:      f64,
-	radius: f32,
-}
-impl DrawBuffer {
-	fn new() -> Self {
-		Self {
-			lines:    Vec::with_capacity(512),
-			points:   Vec::with_capacity(512),
-			polygons: Vec::with_capacity(512),
-			texts:    Vec::with_capacity(8),
-		}
-	}
-}
-struct DrawBuffer {
-	lines:    Vec<FunctionLine>,
-	points:   Vec<(Option<SelectablePoint>, egui_plot::Points<'static>)>,
-	polygons: Vec<egui_plot::Polygon<'static>>,
-	texts:    Vec<egui_plot::Text>,
-}
-#[allow(clippy::non_send_fields_in_send_ty)]
-/// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
-/// We dont use those so we're fine.
-unsafe impl Send for DrawBuffer {}
-
 struct UiState {
 	conf:        AppConfig,
 	next_id:     u64,
@@ -388,10 +363,11 @@ struct UiState {
 	eval_errors:          FxHashMap<u64, String>,
 	parsing_errors:       FxHashMap<u64, String>,
 
-	selected_plot_line: Option<Id>,
-	dragging_point:     Option<Id>,
-	dragging_point_i:   Option<SelectablePoint>,
-	plot_mouese_pos:    Option<((f32, f32), PlotTransform)>,
+	selected_plot_line:   Option<Id>,
+	dragging_point:       Option<Id>,
+	dragging_point_i:     Option<entry::SelectablePoint>,
+	plot_mouese_pos:      Option<((f32, f32), PlotTransform)>,
+	showing_custom_label: bool,
 
 	f32_epsilon:          f64,
 	f64_epsilon:          f64,
@@ -400,7 +376,7 @@ struct UiState {
 	last_url_update:      f64,
 	file_to_remove:       Option<String>,
 
-	draw_buffer:  Box<ThreadLocal<RefCell<DrawBuffer>>>,
+	draw_buffer:  Box<ThreadLocal<RefCell<entry::DrawBuffer>>>,
 	showing_help: bool,
 
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -537,6 +513,7 @@ impl Application {
 				eval_errors: FxHashMap::default(),
 				parsing_errors: FxHashMap::default(),
 				selected_plot_line: None,
+				showing_custom_label: false,
 				dragging_point: None,
 				dragging_point_i: None,
 				plot_mouese_pos: None,
@@ -942,40 +919,35 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	scope!("graph");
 
 	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
-	state.entries.par_iter_mut().for_each(|entry| {
+	state.entries.par_iter_mut().enumerate().for_each(|(i, entry)| {
 		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.get_or_default().set(0);
-		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
+		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(entry::DrawBuffer::new()));
 
 		let id = Id::new(entry.id);
 		if let Err(error) = entry::create_entry_plot_elements(
-			entry, id, ui_state.selected_plot_line, main_context, &plot_params, draw_buffer,
+			entry, id, i as u32, ui_state.selected_plot_line, main_context, &plot_params, draw_buffer,
 		) {
 			eval_errors.lock().unwrap().insert(entry.id, error);
 		}
 	});
 
-	let mut flines = vec![];
+	let mut draw_lines = vec![];
 	for draw_buffer in ui_state.draw_buffer.iter_mut() {
 		let draw_buffer = draw_buffer.get_mut();
-		flines.reserve(draw_buffer.lines.len());
-		for fline in draw_buffer.lines.drain(..) {
-			// if Some(fline.id) == ui_state.selected_plot_item {
-			// 	selected_fline = Some(i);
-			// }
-			flines.push(fline);
-		}
+		draw_lines.append(&mut draw_buffer.lines);
 	}
 	if let Some(selected_fline_id) = ui_state.selected_plot_line {
-		flines.par_iter().for_each(|fline| {
+		draw_lines.par_iter().for_each(|fline| {
 			let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
 				return;
 			};
-			let mut draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new())).borrow_mut();
+			let mut draw_buffer =
+				ui_state.draw_buffer.get_or(|| RefCell::new(entry::DrawBuffer::new())).borrow_mut();
 			if fline.id == selected_fline_id {
 				// Find local optima
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-				for point in plot_points.iter() {
+				for (pi, point) in plot_points.iter().enumerate() {
 					let cur = (point.x, point.y);
 					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
 					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
@@ -989,7 +961,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								let t = prev_0.1.abs() / sum;
 								prev_0.0 + t * (prev_1.0 - prev_0.0)
 							};
-							draw_buffer.points.push((
+							draw_buffer.points.push(DrawPoint::new(
+								fline.sorting_index,
+								pi as u32,
 								None,
 								Points::new("", [x, 0.0]).color(Color32::GRAY).radius(fline.width),
 							));
@@ -1004,7 +978,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								let t = prev_0.0.abs() / sum;
 								prev_0.1 + t * (prev_1.1 - prev_0.1)
 							};
-							draw_buffer.points.push((
+							draw_buffer.points.push(DrawPoint::new(
+								fline.sorting_index,
+								pi as u32,
 								None,
 								Points::new("", [0.0, y]).color(Color32::GRAY).radius(fline.width),
 							));
@@ -1014,7 +990,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							&& greater_then(prev_1.1, cur.1, plot_params.eps)
 						{
 							// local maximum
-							draw_buffer.points.push((
+							draw_buffer.points.push(DrawPoint::new(
+								fline.sorting_index,
+								pi as u32,
 								None,
 								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
 							));
@@ -1023,7 +1001,9 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							&& less_then(prev_1.1, cur.1, plot_params.eps)
 						{
 							// local minimum
-							draw_buffer.points.push((
+							draw_buffer.points.push(DrawPoint::new(
+								fline.sorting_index,
+								pi as u32,
 								None,
 								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
 							));
@@ -1034,7 +1014,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 					prev[1] = Some(cur);
 				}
 			} else {
-				for selected_line in flines.iter().filter(|sel| sel.id == selected_fline_id) {
+				let mut pi = 0;
+				for selected_line in draw_lines.iter().filter(|sel| sel.id == selected_fline_id) {
 					let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
 						continue;
 					};
@@ -1046,12 +1027,15 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
 							) {
 								// println!("Found intersection {point:?}");
-								draw_buffer.points.push((
+								draw_buffer.points.push(DrawPoint::new(
+									fline.sorting_index,
+									pi as u32,
 									None,
 									Points::new("", [point.x, point.y])
 										.color(Color32::GRAY)
 										.radius(selected_line.width),
 								));
+								pi += 1;
 							}
 						}
 					}
@@ -1060,6 +1044,21 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			}
 		});
 	}
+
+	let mut draw_points = vec![];
+	let mut draw_polygons = vec![];
+	let mut draw_texts = vec![];
+	for draw_buffer in ui_state.draw_buffer.iter_mut() {
+		let draw_buffer = draw_buffer.get_mut();
+		draw_polygons.append(&mut draw_buffer.polygons);
+		draw_points.append(&mut draw_buffer.points);
+		draw_texts.append(&mut draw_buffer.texts);
+	}
+
+	draw_lines.sort_unstable_by_key(|draw_line| draw_line.sorting_index);
+	draw_points.sort_unstable_by_key(|draw_point| draw_point.sorting_index);
+	draw_polygons.sort_unstable_by_key(|draw_poly_group| draw_poly_group.sorting_index);
+	draw_texts.sort_unstable_by_key(|draw_text| draw_text.sorting_index);
 
 	egui::CentralPanel::default().show(ctx, |ui| {
 		let plot_id = ui.make_persistent_id("Plot");
@@ -1079,39 +1078,45 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		plot = plot
 			.default_x_bounds(bounds.min()[0], bounds.max()[0])
 			.default_y_bounds(bounds.min()[1], bounds.max()[1]);
+		if ui_state.showing_custom_label {
+			// plot = plot.label_formatter(|_, _| String::new());
+			plot = plot.show_x(false);
+			plot = plot.show_y(false);
 
+			ui_state.showing_custom_label = false;
+		}
+
+		// plot.center_y_axis
 		let mut hovered_point = None;
+
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
-			for draw_buffer in ui_state.draw_buffer.iter_mut() {
-				let mut draw_buffer = draw_buffer.borrow_mut();
-				for poly in draw_buffer.polygons.drain(..) {
+			for draw_poly_group in draw_polygons {
+				for poly in draw_poly_group.polygons {
 					plot_ui.polygon(poly);
 				}
 			}
-			for fline in flines.drain(..) {
-				plot_ui.line(fline.line);
+			for draw_line in draw_lines {
+				plot_ui.line(draw_line.line);
 			}
-			for draw_buffer in ui_state.draw_buffer.iter_mut() {
-				let mut draw_buffer = draw_buffer.borrow_mut();
-				for (sel, point) in draw_buffer.points.drain(..) {
-					if let (Some(sel), Some((mouse_pos, transform))) = (sel, ui_state.plot_mouese_pos) {
-						let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
-						let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
-						if dist_sq < sel.radius * sel.radius {
-							hovered_point = Some(sel);
-						}
+			for draw_point in draw_points {
+				if let (Some(sel), Some((mouse_pos, transform))) =
+					(draw_point.selectable, ui_state.plot_mouese_pos)
+				{
+					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
+					let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
+					if dist_sq < sel.radius * sel.radius {
+						// ui_state.plot_custom_labels.push(((sel.x,sel.y), format!("Point {} {}",
+						// sel.x,sel.y)));
+						hovered_point = Some(sel);
 					}
-					plot_ui.points(point);
 				}
+				plot_ui.points(draw_point.points);
 			}
-			for draw_buffer in ui_state.draw_buffer.iter_mut() {
-				let mut draw_buffer = draw_buffer.borrow_mut();
-				for text in draw_buffer.texts.drain(..) {
-					plot_ui.text(text);
-				}
+			for draw_text in draw_texts {
+				plot_ui.text(draw_text.text);
 			}
 		});
 
@@ -1125,109 +1130,139 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			((p.x, p.y), plot_res.transform)
 		});
 
-		if let Some(hovered_point) = hovered_point {
-			// println!("hovered {:?}", hovered_point.i);
-			if plot_res.response.drag_started() {
-				// println!("drag started {:?}", hovered_point.i);
-				ui_state.dragging_point_i = Some(hovered_point);
+		if let Some(hovered_point) = &hovered_point {
+			if plot_res.response.drag_started() || plot_res.response.dragged() {
+				ui_state.dragging_point_i = Some(hovered_point.clone());
 			}
 		}
 		if plot_res.response.drag_stopped() {
-			// if let Some(dragging_point_i) = &ui_state.dragging_point_i {
-			// 	println!("drag stopped {:?}", dragging_point_i.i);
-			// }
 			ui_state.dragging_point_i = None;
 		}
 
 		if let Some(dragging_point_i) = &ui_state.dragging_point_i {
-			if let Some(points) = state
-				.entries
-				.iter_mut()
-				.find(|e| Id::new(e.id) == dragging_point_i.i.0)
-				.and_then(|e| if let EntryType::Points(points) = &mut e.ty { Some(points) } else { None })
-			{
-				let point = &mut points[dragging_point_i.i.1 as usize];
+			if let DrawPointType::Draggable { i } = dragging_point_i.ty {
+				if let Some((name, points)) =
+					state.entries.iter_mut().find(|e| Id::new(e.id) == i.0).and_then(|e| {
+						if let EntryType::Points(points) = &mut e.ty { Some((&e.name, points)) } else { None }
+					}) {
+					let point = &mut points[i.1 as usize];
 
-				let point_x = dragging_point_i.x;
-				let point_y = dragging_point_i.y;
+					let point_x = dragging_point_i.x;
+					let point_y = dragging_point_i.y;
 
-				if let (Some(drag_point_type), Some(screen_pos)) =
-					(point.drag_point.clone(), plot_res.response.hover_pos())
-				{
-					let pos = plot_res.transform.value_from_position(screen_pos);
+					if let Some((x, y)) = point.val {
+						let screen_x = plot_res.transform.position_from_point_x(x.to_f64());
+						let screen_y = plot_res.transform.position_from_point_y(y.to_f64());
 
-					match drag_point_type {
-						DragPoint::BothCoordLiterals => {
-							point.x.text = format!("{}", pos.x);
-							point.y.text = format!("{}", pos.y);
-						},
-						DragPoint::XLiteral => {
-							point.x.text = format!("{}", pos.x);
-						},
-						DragPoint::YLiteral => {
-							point.y.text = format!("{}", pos.y);
-						},
-						DragPoint::XLiteralYConstant(y_const) => {
-							point.x.text = format!("{}", pos.x);
-							let x_node = point.x.node.clone();
-							drag(state, &y_const, x_node, point_y, pos.y, plot_params.eps);
-						},
-						DragPoint::YLiteralXConstant(x_const) => {
-							point.y.text = format!("{}", pos.y);
-							let x_node = point.x.node.clone();
-							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
-						},
-						DragPoint::BothCoordConstants(x_const, y_const) => {
-							let x_node = point.x.node.clone();
-							let y_node = point.y.node.clone();
+						ui_state.showing_custom_label = true;
+						show_popup_label(
+							ui,
+							Id::new("drag_point_popup"),
+							format!("Point {name}\nx: {x}\ny: {y}"),
+							[screen_x, screen_y],
+						);
+					}
 
-							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
-							drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
-						},
-						DragPoint::XConstant(x_const) => {
-							let x_node = point.x.node.clone();
-							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
-						},
-						DragPoint::YConstant(y_const) => {
-							let y_node = point.y.node.clone();
-							drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
-						},
-						DragPoint::SameConstantBothCoords(x_const) => {
-							let x_node = point.x.node.clone();
-							let y_node = point.y.node.clone();
-							if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
-								if let Some(c_idx) = state.entries.iter().position(|e| e.name == x_const) {
-									if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
-										let new_value = solve_minimize(
-											value.to_f64(),
-											(pos.x, pos.y),
-											plot_params.eps,
-											|x| {
-												state.ctx.set_value(&x_const, f64_to_value::<T>(x)).unwrap();
-												(
-													x_node
-														.eval_float_with_context(&state.ctx)
-														.unwrap()
-														.to_f64(),
-													y_node
-														.eval_float_with_context(&state.ctx)
-														.unwrap()
-														.to_f64(),
-												)
-											},
-										);
-										if let EntryType::Constant { value, .. } = &mut state.entries[c_idx].ty
-										{
-											*value = f64_to_float::<T>(new_value);
+					if let (Some(drag_point_type), Some(screen_pos)) =
+						(point.drag_point.clone(), plot_res.response.hover_pos())
+					{
+						let pos = plot_res.transform.value_from_position(screen_pos);
+
+						match drag_point_type {
+							DragPoint::BothCoordLiterals => {
+								point.x.text = format!("{}", pos.x);
+								point.y.text = format!("{}", pos.y);
+							},
+							DragPoint::XLiteral => {
+								point.x.text = format!("{}", pos.x);
+							},
+							DragPoint::YLiteral => {
+								point.y.text = format!("{}", pos.y);
+							},
+							DragPoint::XLiteralYConstant(y_const) => {
+								point.x.text = format!("{}", pos.x);
+								let y_node = point.y.node.clone();
+								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+							},
+							DragPoint::YLiteralXConstant(x_const) => {
+								point.y.text = format!("{}", pos.y);
+								let x_node = point.x.node.clone();
+								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+							},
+							DragPoint::BothCoordConstants(x_const, y_const) => {
+								let x_node = point.x.node.clone();
+								let y_node = point.y.node.clone();
+
+								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+							},
+							DragPoint::XConstant(x_const) => {
+								let x_node = point.x.node.clone();
+								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+							},
+							DragPoint::YConstant(y_const) => {
+								let y_node = point.y.node.clone();
+								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+							},
+							DragPoint::SameConstantBothCoords(x_const) => {
+								let x_node = point.x.node.clone();
+								let y_node = point.y.node.clone();
+								if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
+									if let Some(c_idx) = state.entries.iter().position(|e| e.name == x_const) {
+										if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
+											let new_value = solve_minimize(
+												value.to_f64(),
+												(pos.x, pos.y),
+												plot_params.eps,
+												|x| {
+													state
+														.ctx
+														.set_value(&x_const, f64_to_value::<T>(x))
+														.unwrap();
+													(
+														x_node
+															.eval_float_with_context(&state.ctx)
+															.unwrap()
+															.to_f64(),
+														y_node
+															.eval_float_with_context(&state.ctx)
+															.unwrap()
+															.to_f64(),
+													)
+												},
+											);
+											if let EntryType::Constant { value, .. } =
+												&mut state.entries[c_idx].ty
+											{
+												*value = f64_to_float::<T>(new_value);
+											}
 										}
 									}
 								}
-							}
-						},
+							},
+						}
+						state.clear_cache = true;
 					}
-					state.clear_cache = true;
 				}
 			}
+		}
+
+		if !ui_state.showing_custom_label
+			&& let Some(hovered_point) = hovered_point
+		{
+			let screen_x = plot_res.transform.position_from_point_x(hovered_point.x);
+			let screen_y = plot_res.transform.position_from_point_y(hovered_point.y);
+			ui_state.showing_custom_label = true;
+			show_popup_label(
+				ui,
+				Id::new("point_popup"),
+				format!(
+					"Point\nx:{}\ny: {}",
+					f64_to_float::<T>(hovered_point.x),
+					f64_to_float::<T>(hovered_point.y)
+				),
+				[screen_x, screen_y],
+			);
 		}
 
 		if let Some(hovered_id) = plot_res.hovered_plot_item {
@@ -1343,7 +1378,7 @@ fn drag<T: EvalexprNumericTypes>(
 fn solve_secant(
 	cur_x: f64, cur_y: f64, target_y: f64, eps: f64, mut f: impl FnMut(f64) -> f64,
 ) -> Option<f64> {
-	println!("secant cur_x: {cur_x} cur_y: {cur_y} target_y: {target_y}");
+	// println!("secant cur_x: {cur_x} cur_y: {cur_y} target_y: {target_y}");
 	// find root f(x) - target_y = 0
 	let max_iterations = 40;
 	let h = 0.0001; // small step for second point
@@ -1390,8 +1425,8 @@ fn solve_secant(
 	if y1.abs() < eps {
 		Some(x1)
 	} else {
-    // failed to converge
-    // println!("failed to converge x0: {x0} x1: {x1} y0: {y0} y1: {y1}");
+		// failed to converge
+		// println!("failed to converge x0: {x0} x1: {x1} y0: {y0} y1: {y1}");
 		None
 	}
 }
@@ -1437,12 +1472,12 @@ fn solve_minimize(
 
 		let error = residual_x * residual_x + residual_y * residual_y;
 
-		if error < eps * eps {
+		if error < eps {
 			// success
 			return t;
 		}
 
-		let h = 1e-7;
+		let h = eps * 100.0;
 		let (fx_h, fy_h) = f(t + h);
 
 		// first derivative
@@ -1459,7 +1494,7 @@ fn solve_minimize(
 		let hessian =
 			2.0 * (df_dt_x * df_dt_x + df_dt_y * df_dt_y + residual_x * d2f_dt2_x + residual_y * d2f_dt2_y);
 
-		let damping = 1e-6;
+		let damping = eps * 1000.0;
 		let step = -gradient / (hessian.abs() + damping);
 
 		// line search
@@ -1478,7 +1513,7 @@ fn solve_minimize(
 			}
 		}
 
-		if (best_t - t).abs() < 1e-12 {
+		if (best_t - t).abs() < eps {
 			// we're stuck
 			return t;
 		}
@@ -1487,4 +1522,13 @@ fn solve_minimize(
 	}
 
 	t
+}
+
+fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
+	egui::Area::new(id).fixed_pos(pos).interactable(false).show(ui.ctx(), |ui| {
+		egui::Frame::popup(ui.style()).show(ui, |ui| {
+			ui.horizontal(|ui| ui.label(label));
+			// ui.set_min_width(100.0);
+		});
+	});
 }

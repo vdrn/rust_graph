@@ -17,19 +17,88 @@ use evalexpr::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{DrawBuffer, MAX_FUNCTION_NESTING, SelectablePoint, marching_squares};
+use crate::{MAX_FUNCTION_NESTING, marching_squares};
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
 pub const MIN_IMPLICIT_RESOLUTION: usize = 10;
 
-pub struct FunctionLine {
-	pub line:  egui_plot::Line<'static>,
-	pub id:    egui::Id,
-	pub width: f32,
+pub struct DrawBuffer {
+	pub lines:    Vec<DrawLine>,
+	pub points:   Vec<DrawPoint>,
+	pub polygons: Vec<DrawPolygonGroup>,
+	pub texts:    Vec<DrawText>,
 }
+#[allow(clippy::non_send_fields_in_send_ty)]
+/// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
+/// We dont use those so we're fine.
+unsafe impl Send for DrawBuffer {}
+
+impl DrawBuffer {
+	pub fn new() -> Self {
+		Self {
+			lines:    Vec::with_capacity(32),
+			points:   Vec::with_capacity(32),
+			polygons: Vec::with_capacity(4),
+			texts:    Vec::with_capacity(4),
+		}
+	}
+}
+
+pub struct DrawLine {
+	pub sorting_index: u32,
+	pub line:          egui_plot::Line<'static>,
+	pub id:            egui::Id,
+	pub width:         f32,
+}
+impl DrawLine {
+	pub fn new(sorting_index: u32, id: Id, width: f32, line: egui_plot::Line<'static>) -> Self {
+		Self { sorting_index, id, width, line }
+	}
+}
+#[derive(Clone)]
+pub struct SelectablePoint {
+	pub ty:     DrawPointType,
+	pub x:      f64,
+	pub y:      f64,
+	pub radius: f32,
+}
+#[derive(Clone)]
+pub enum DrawPointType {
+	Draggable { i: (Id, u32) },
+	Other,
+}
+pub struct DrawPoint {
+	pub sorting_index: u64,
+	pub selectable:    Option<SelectablePoint>,
+	pub points:        egui_plot::Points<'static>,
+}
+impl DrawPoint {
+	pub fn new(
+		i1: u32, i2: u32, selectable: Option<SelectablePoint>, points: egui_plot::Points<'static>,
+	) -> Self {
+		Self { sorting_index: ((i1 as u64) << 32) | i2 as u64, selectable, points }
+	}
+}
+pub struct DrawPolygonGroup {
+	pub sorting_index: u32,
+	pub polygons:      Vec<egui_plot::Polygon<'static>>,
+}
+impl DrawPolygonGroup {
+	pub fn new(sorting_index: u32, polygons: Vec<egui_plot::Polygon<'static>>) -> Self {
+		Self { sorting_index, polygons }
+	}
+}
+pub struct DrawText {
+	pub sorting_index: u32,
+	pub text:          egui_plot::Text,
+}
+impl DrawText {
+	pub fn new(sorting_index: u32, text: egui_plot::Text) -> Self { Self { sorting_index, text } }
+}
+
 /// SAFETY: Not Sync because of `ExplicitGenerator` callbacks, but we dont use those.
-unsafe impl Sync for FunctionLine {}
+unsafe impl Sync for DrawLine {}
 
 pub const COLORS: &[Color32; 20] = &[
 	Color32::from_rgb(255, 107, 107), // Bright coral red
@@ -418,6 +487,7 @@ pub struct PointEntry<T: EvalexprNumericTypes> {
 	pub drag_point:               Option<DragPoint>,
 	pub drag_type:                PointDragType,
 	pub both_drag_dirs_available: bool,
+	pub val:                      Option<(T::Float, T::Float)>,
 }
 
 impl<T: EvalexprNumericTypes> Default for PointEntry<T> {
@@ -428,6 +498,7 @@ impl<T: EvalexprNumericTypes> Default for PointEntry<T> {
 			drag_point:               None,
 			drag_type:                PointDragType::default(),
 			both_drag_dirs_available: true,
+			val:                      None,
 		}
 	}
 }
@@ -466,6 +537,7 @@ impl ConstantType {
 	}
 }
 
+static RESERVED_NAMES: [&str; 2] = ["x", "y"];
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
 	pub animating:           bool,
@@ -518,8 +590,15 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				entry.visible = !entry.visible;
 			}
 
+			let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
 			if ui.add(TextEdit::singleline(&mut entry.name).desired_width(30.0).hint_text("name")).changed() {
 				result.needs_recompilation = true;
+			}
+			if RESERVED_NAMES.contains(&entry.name.trim()) {
+				result.error = Some("\"x\" and \"y\" are reserved names".to_string());
+				// return;
+			} else if !name_was_ok {
+				result.parsed = true;
 			}
 			let color = entry.color();
 			match &mut entry.ty {
@@ -893,204 +972,204 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
 ) -> Result<(), String> {
-	if entry.name != "x" && entry.name != "y" {
-		match &mut entry.ty {
-			EntryType::Points(points) => {
-				for point in points {
-					if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
-						let x_state = analyze_node(x);
-						let y_state = analyze_node(y);
+	if RESERVED_NAMES.contains(&entry.name.trim()) {
+		return Ok(());
+	}
+	match &mut entry.ty {
+		EntryType::Points(points) => {
+			for point in points {
+				if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
+					let x_state = analyze_node(x);
+					let y_state = analyze_node(y);
 
-						let both_dirs_available =
-							x_state.constants.iter().all(|c| !y_state.constants.contains(c));
-						if !both_dirs_available && point.both_drag_dirs_available {
-							point.drag_type = PointDragType::X;
-						}
-						point.both_drag_dirs_available = both_dirs_available;
+					let both_dirs_available = x_state.constants.iter().all(|c| !y_state.constants.contains(c));
+					if !both_dirs_available && point.both_drag_dirs_available {
+						point.drag_type = PointDragType::X;
+					}
+					point.both_drag_dirs_available = both_dirs_available;
 
-						match point.drag_type {
-							PointDragType::NoDrag => {
-								point.drag_point = None;
-							},
-							PointDragType::Both => {
-								if x_state.is_literal && y_state.is_literal {
-									point.drag_point = Some(DragPoint::BothCoordLiterals);
-								} else if x_state.is_literal
-									&& let Some(y_const) = y_state.constants.first()
-								{
-									point.drag_point = Some(DragPoint::XLiteralYConstant(y_const.to_string()));
-								} else if y_state.is_literal
-									&& let Some(x_const) = x_state.constants.first()
-								{
-									point.drag_point = Some(DragPoint::YLiteralXConstant(x_const.to_string()));
-								} else if let (Some(x_const), Some(y_const)) =
-									(x_state.constants.first(), y_state.constants.first())
-								{
-									// todo:
-									if x_const == y_const {
-										if let Some(y_const) = y_state.constants.get(1) {
-											point.drag_point = Some(DragPoint::BothCoordConstants(
-												x_const.to_string(),
-												y_const.to_string(),
-											));
-										} else if let Some(x_const) = x_state.constants.get(1) {
-											point.drag_point = Some(DragPoint::BothCoordConstants(
-												x_const.to_string(),
-												y_const.to_string(),
-											));
-										} else {
-											point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
-										}
-									} else {
+					match point.drag_type {
+						PointDragType::NoDrag => {
+							point.drag_point = None;
+						},
+						PointDragType::Both => {
+							if x_state.is_literal && y_state.is_literal {
+								point.drag_point = Some(DragPoint::BothCoordLiterals);
+							} else if x_state.is_literal
+								&& let Some(y_const) = y_state.constants.first()
+							{
+								point.drag_point = Some(DragPoint::XLiteralYConstant(y_const.to_string()));
+							} else if y_state.is_literal
+								&& let Some(x_const) = x_state.constants.first()
+							{
+								point.drag_point = Some(DragPoint::YLiteralXConstant(x_const.to_string()));
+							} else if let (Some(x_const), Some(y_const)) =
+								(x_state.constants.first(), y_state.constants.first())
+							{
+								// todo:
+								if x_const == y_const {
+									if let Some(y_const) = y_state.constants.get(1) {
 										point.drag_point = Some(DragPoint::BothCoordConstants(
 											x_const.to_string(),
 											y_const.to_string(),
 										));
-									}
-								} else if let Some(x_const) = x_state.constants.first()
-								// && y_state.first_constant.is_none()
-								{
-									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
-								} else if let Some(y_const) = y_state.constants.first() {
-									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
-								} else {
-									point.drag_point = None;
-								}
-							},
-							PointDragType::X => {
-								if x_state.is_literal {
-									point.drag_point = Some(DragPoint::XLiteral);
-								} else if let Some(x_const) = x_state.constants.first() {
-									if y_state.constants.iter().any(|c| c == x_const) {
-										point.drag_point =
-											Some(DragPoint::SameConstantBothCoords(x_const.to_string()));
+									} else if let Some(x_const) = x_state.constants.get(1) {
+										point.drag_point = Some(DragPoint::BothCoordConstants(
+											x_const.to_string(),
+											y_const.to_string(),
+										));
 									} else {
 										point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
 									}
-								}
-							},
-							PointDragType::Y => {
-								if y_state.is_literal {
-									point.drag_point = Some(DragPoint::YLiteral);
-								} else if let Some(y_const) = y_state.constants.first() {
-									if x_state.constants.iter().any(|c| c == y_const) {
-										point.drag_point =
-											Some(DragPoint::SameConstantBothCoords(y_const.to_string()));
-									} else {
-										point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
-									}
-								}
-							},
-						}
-					} else {
-						point.drag_point = None;
-					}
-				}
-			},
-			EntryType::Integral { .. } => {},
-			EntryType::Label { .. } => {},
-			EntryType::Constant { value, .. } => {
-				if !entry.name.is_empty() {
-					ctx.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value)).unwrap();
-				}
-			},
-			EntryType::Function { func, ty, .. } => {
-				if let Some(func_node) = func.node.clone() {
-					// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
-					// impl Clone for LocalCache {
-					// 	fn clone(&self) -> Self {
-					// 		Self(Mutex::new(self.0.lock().unwrap().clone()))
-					// 	}
-					// }
-					// impl LocalCache {
-					// 	fn lock(&self) -> MutexGuard<'_, AHashMap<CacheKey, f64>> {
-					// 		self.0.lock().unwrap()
-					// 	}
-					// }
-					// let local_cache: LocalCache = LocalCache(Mutex::new(
-					// 	AHashMap::with_capacity(ui_state.conf.resolution),
-					// ));
-					// let animating = ui_state.animating.clone();
-					let mut has_x = false;
-					let mut has_y = false;
-					for ident in func_node.iter_identifiers() {
-						if ident == "x" {
-							has_x = true;
-						} else if ident == "y" {
-							has_y = true;
-						}
-					}
-					if has_x && has_y {
-						if !func.text.contains('=') {
-							func.node = None;
-							return Err("Implicit function must contain = sign".to_string());
-						}
-						*ty = FunctionType::Implicit;
-					} else if has_y {
-						*ty = FunctionType::Y;
-					} else if matches!(ty, FunctionType::Implicit | FunctionType::Y) {
-						*ty = FunctionType::X;
-					}
-
-					let stack_overflow_guard = stack_overflow_guard.clone();
-					let ty = *ty;
-					let fun = Function::new(move |context, v| {
-						// puffin::profile_scope!("eval_function");
-						let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
-						let stack_depth = stack_overflow_guard.get() + 1;
-						stack_overflow_guard.set(stack_depth);
-						if stack_depth > MAX_FUNCTION_NESTING {
-							return Err(EvalexprError::CustomMessage(format!(
-								"Max function nesting reached ({MAX_FUNCTION_NESTING})"
-							)));
-						}
-
-						let res = match ty {
-							FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
-								let v = match v {
-									Value::Float(x) => *x,
-									Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
-									Value::String(_) => T::Float::ZERO,
-									// Value::Int(x) => T::int_as_float(x),
-									Value::Tuple(values) => values[0]
-										.as_float()
-										.or_else(|_| {
-											values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
-										})
-										.unwrap_or(T::Float::ZERO),
-									Value::Empty => T::Float::ZERO,
-								};
-								let vv = Value::<T>::Float(v);
-
-								if ty == FunctionType::Y {
-									func_node.eval_with_context_and_y(context, &vv)
 								} else {
-									func_node.eval_with_context_and_x(context, &vv)
+									point.drag_point = Some(DragPoint::BothCoordConstants(
+										x_const.to_string(),
+										y_const.to_string(),
+									));
 								}
-							},
-							FunctionType::Implicit => {
-								let v = v.as_tuple_ref()?;
-								let x = v.first().ok_or_else(|| {
-									EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
-								})?;
-								let y = v.get(1).ok_or_else(|| {
-									EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
-								})?;
-
-								func_node.eval_with_context_and_xy(context, x, y)
-							},
-						};
-
-						stack_overflow_guard.set(stack_depth - 1);
-						res
-					});
-
-					let name = if entry.name.is_empty() { func.text.clone() } else { entry.name.clone() };
-
-					ctx.set_function(name, fun).unwrap();
+							} else if let Some(x_const) = x_state.constants.first()
+							// && y_state.first_constant.is_none()
+							{
+								point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+							} else if let Some(y_const) = y_state.constants.first() {
+								point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+							} else {
+								point.drag_point = None;
+							}
+						},
+						PointDragType::X => {
+							if x_state.is_literal {
+								point.drag_point = Some(DragPoint::XLiteral);
+							} else if let Some(x_const) = x_state.constants.first() {
+								if y_state.constants.iter().any(|c| c == x_const) {
+									point.drag_point =
+										Some(DragPoint::SameConstantBothCoords(x_const.to_string()));
+								} else {
+									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+								}
+							}
+						},
+						PointDragType::Y => {
+							if y_state.is_literal {
+								point.drag_point = Some(DragPoint::YLiteral);
+							} else if let Some(y_const) = y_state.constants.first() {
+								if x_state.constants.iter().any(|c| c == y_const) {
+									point.drag_point =
+										Some(DragPoint::SameConstantBothCoords(y_const.to_string()));
+								} else {
+									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+								}
+							}
+						},
+					}
+				} else {
+					point.drag_point = None;
 				}
-			},
-		}
+			}
+		},
+		EntryType::Integral { .. } => {},
+		EntryType::Label { .. } => {},
+		EntryType::Constant { value, .. } => {
+			if !entry.name.is_empty() {
+				ctx.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value)).unwrap();
+			}
+		},
+		EntryType::Function { func, ty, .. } => {
+			if let Some(func_node) = func.node.clone() {
+				// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
+				// impl Clone for LocalCache {
+				// 	fn clone(&self) -> Self {
+				// 		Self(Mutex::new(self.0.lock().unwrap().clone()))
+				// 	}
+				// }
+				// impl LocalCache {
+				// 	fn lock(&self) -> MutexGuard<'_, AHashMap<CacheKey, f64>> {
+				// 		self.0.lock().unwrap()
+				// 	}
+				// }
+				// let local_cache: LocalCache = LocalCache(Mutex::new(
+				// 	AHashMap::with_capacity(ui_state.conf.resolution),
+				// ));
+				// let animating = ui_state.animating.clone();
+				let mut has_x = false;
+				let mut has_y = false;
+				for ident in func_node.iter_identifiers() {
+					if ident == "x" {
+						has_x = true;
+					} else if ident == "y" {
+						has_y = true;
+					}
+				}
+				if has_x && has_y {
+					if !func.text.contains('=') {
+						func.node = None;
+						return Err("Implicit function must contain = sign".to_string());
+					}
+					*ty = FunctionType::Implicit;
+				} else if has_y {
+					*ty = FunctionType::Y;
+				} else if matches!(ty, FunctionType::Implicit | FunctionType::Y) {
+					*ty = FunctionType::X;
+				}
+
+				let stack_overflow_guard = stack_overflow_guard.clone();
+				let ty = *ty;
+				let fun = Function::new(move |context, v| {
+					// puffin::profile_scope!("eval_function");
+					let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
+					let stack_depth = stack_overflow_guard.get() + 1;
+					stack_overflow_guard.set(stack_depth);
+					if stack_depth > MAX_FUNCTION_NESTING {
+						return Err(EvalexprError::CustomMessage(format!(
+							"Max function nesting reached ({MAX_FUNCTION_NESTING})"
+						)));
+					}
+
+					let res = match ty {
+						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
+							let v = match v {
+								Value::Float(x) => *x,
+								Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
+								Value::String(_) => T::Float::ZERO,
+								// Value::Int(x) => T::int_as_float(x),
+								Value::Tuple(values) => values[0]
+									.as_float()
+									.or_else(|_| {
+										values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
+									})
+									.unwrap_or(T::Float::ZERO),
+								Value::Empty => T::Float::ZERO,
+							};
+							let vv = Value::<T>::Float(v);
+
+							if ty == FunctionType::Y {
+								func_node.eval_with_context_and_y(context, &vv)
+							} else {
+								func_node.eval_with_context_and_x(context, &vv)
+							}
+						},
+						FunctionType::Implicit => {
+							let v = v.as_tuple_ref()?;
+							let x = v.first().ok_or_else(|| {
+								EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
+							})?;
+							let y = v.get(1).ok_or_else(|| {
+								EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
+							})?;
+
+							func_node.eval_with_context_and_xy(context, x, y)
+						},
+					};
+
+					stack_overflow_guard.set(stack_depth - 1);
+					res
+				});
+
+				let name = if entry.name.is_empty() { func.text.clone() } else { entry.name.clone() };
+
+				ctx.set_function(name, fun).unwrap();
+			}
+		},
 	}
 	Ok(())
 }
@@ -1106,8 +1185,8 @@ pub struct PlotParams {
 }
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
-	entry: &mut Entry<T>, id: Id, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
-	plot_params: &PlotParams, draw_buffer: &RefCell<DrawBuffer>,
+	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
+	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams, draw_buffer: &RefCell<DrawBuffer>,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -1150,8 +1229,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			}
 			*calculated = None;
 
-			let mut int_lines = vec![];
-			let mut fun_lines = vec![];
+			let mut polygons = Vec::with_capacity(resolution);
+			let mut int_lines = Vec::with_capacity(resolution);
+			let mut fun_lines = Vec::with_capacity(resolution);
+
 			let stroke_color = color;
 			let rgba_color = stroke_color.to_srgba_unmultiplied();
 			let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1], 128);
@@ -1209,7 +1290,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							draw_buffer.polygons.push(triangle1);
+							polygons.push(triangle1);
 							let triangle2 = Polygon::new(
 								entry.name.clone(),
 								PlotPoints::Owned(vec![
@@ -1220,7 +1301,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							draw_buffer.polygons.push(triangle2);
+							polygons.push(triangle2);
 						}
 
 						let t = f64_to_float::<T>(t);
@@ -1254,7 +1335,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							)
 							.fill_color(fill_color)
 							.stroke(Stroke::new(eps, fill_color));
-							draw_buffer.polygons.push(poly);
+							polygons.push(poly);
 						}
 						let dy = y - prev_y;
 						let step = f64_to_float::<T>(step);
@@ -1274,22 +1355,22 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				prev_y = Some(y);
 				// x += step;
 			}
+			draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, polygons));
 			let int_name = if entry.name.is_empty() { func.text.as_str() } else { entry.name.as_str() };
-			draw_buffer.lines.push(FunctionLine {
-				width: 1.0,
-				id:    Id::NULL,
-				line:  Line::new(
-					format!("∫[{},x]({})dx", lower, int_name.trim()),
-					PlotPoints::Owned(int_lines),
-				)
-				.color(stroke_color),
-			});
+			draw_buffer.lines.push(DrawLine::new(
+				sorting_idx,
+				Id::NULL,
+				1.0,
+				Line::new(format!("∫[{},x]({})dx", lower, int_name.trim()), PlotPoints::Owned(int_lines))
+					.color(stroke_color),
+			));
 
-			draw_buffer.lines.push(FunctionLine {
-				width: 1.0,
-				id:    Id::NULL,
-				line:  Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color),
-			});
+			draw_buffer.lines.push(DrawLine::new(
+				sorting_idx,
+				id,
+				1.0,
+				Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color),
+			));
 			*calculated = Some(result);
 		},
 		EntryType::Label { x, y, size, underline, .. } => {
@@ -1314,7 +1395,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 					let text = Text::new(entry.name.clone(), PlotPoint { x, y }, label_text).color(color);
 
-					draw_buffer.texts.push(text);
+					draw_buffer.texts.push(DrawText::new(sorting_idx, text));
 				},
 				Err(e) => {
 					return Err(e);
@@ -1333,21 +1414,31 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			let color_rgba = color.to_array();
 			let color_outer =
 				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
-			for (i, p) in ps.iter().enumerate() {
+			for (i, p) in ps.iter_mut().enumerate() {
 				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some((x, y))) => {
+						p.val = Some((f64_to_float::<T>(x), f64_to_float::<T>(y)));
 						let point_id = id.with(i);
 						let selected = selected_id == Some(id);
 						let radius = if selected { 6.5 } else { 4.5 };
 						let radius_outer = if selected { 12.5 } else { 7.5 };
 
-						draw_buffer
-							.points
-							.push((None, Points::new(entry.name.clone(), [x, y]).color(color).radius(radius)));
+						draw_buffer.points.push(DrawPoint::new(
+							sorting_idx,
+							i as u32,
+							None,
+							Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
+						));
 						if p.drag_point.is_some() {
-							let selectable_point =
-								SelectablePoint { i: (id, i as u32), x, y, radius: radius_outer };
-							draw_buffer.points.push((
+							let selectable_point = SelectablePoint {
+								ty: DrawPointType::Draggable { i: (id, i as u32) },
+								x,
+								y,
+								radius: radius_outer,
+							};
+							draw_buffer.points.push(DrawPoint::new(
+								sorting_idx,
+								i as u32,
 								Some(selectable_point),
 								Points::new(entry.name.clone(), [x, y])
 									.id(point_id)
@@ -1370,7 +1461,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 			if line_buffer.len() > 1 {
 				let line = Line::new(entry.name.clone(), line_buffer).color(color).id(id).width(width);
-				draw_buffer.lines.push(FunctionLine { width, id, line });
+				draw_buffer.lines.push(DrawLine::new(sorting_idx, id, width, line));
 				// plot_ui.line(line);
 			}
 		},
@@ -1406,15 +1497,16 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// });
 				let add_line = |line: Vec<PlotPoint>| {
 					let mut draw_buffer = draw_buffer.borrow_mut();
-					draw_buffer.lines.push(FunctionLine {
-						width,
+					draw_buffer.lines.push(DrawLine::new(
+						sorting_idx,
 						id,
-						line: Line::new(&name, PlotPoints::Owned(line))
+						width,
+						Line::new(&name, PlotPoints::Owned(line))
 							.id(id)
 							.width(width)
 							.style(style.egui_line_style())
 							.color(color),
-					});
+					));
 				};
 
 				match ty {

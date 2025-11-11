@@ -252,6 +252,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 							drag_point:               None,
 							drag_type:                point.drag_type,
 							both_drag_dirs_available: true,
+							val:                    None,
 						};
 						points_deserialized.push(point_deserialized);
 					}
