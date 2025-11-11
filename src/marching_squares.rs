@@ -1,9 +1,10 @@
-use crate::scope;
 use arrayvec::ArrayVec;
 use egui_plot::PlotPoint;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+
+use crate::scope;
 
 pub fn marching_squares(
 	f: impl Fn(f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64), bounds_max: (f64, f64),
@@ -150,114 +151,7 @@ fn interpolate_edge(edge: Edge, x: f64, y: f64, dx: f64, dy: f64, vals: &[f64; 4
 	}
 }
 
-// fn add_segment_to_polylines(polylines: &mut Vec<Vec<PlotPoint>>, p1: PlotPoint, p2: PlotPoint, eps: f64) {
-// 	// scope!("add_segment_to_polylines");
-// 	// Find polylines that this segment connects to
-// 	let mut matches: ArrayVec<(usize, ConnectType), 2> = ArrayVec::new();
-
-// 	for (idx, polyline) in polylines.iter().enumerate() {
-// 		let start = polyline.first().unwrap();
-// 		let end = polyline.last().unwrap();
-
-// 		if equals(end, &p1, eps) {
-// 			matches.push((idx, ConnectType::EndToP1));
-// 		} else if equals(end, &p2, eps) {
-// 			matches.push((idx, ConnectType::EndToP2));
-// 		} else if equals(start, &p1, eps) {
-// 			matches.push((idx, ConnectType::StartToP1));
-// 		} else if equals(start, &p2, eps) {
-// 			matches.push((idx, ConnectType::StartToP2));
-// 		}
-// 		if matches.len() == 2 {
-// 			break;
-// 		}
-// 	}
-
-// 	match matches.len() {
-// 		0 => {
-// 			polylines.push(vec![p1, p2]);
-// 		},
-// 		1 => {
-// 			// append to existing polyline
-// 			let (idx, connect_type) = matches[0];
-// 			match connect_type {
-// 				ConnectType::EndToP1 => polylines[idx].push(p2),
-// 				ConnectType::EndToP2 => polylines[idx].push(p1),
-// 				ConnectType::StartToP1 => polylines[idx].insert(0, p2),
-// 				ConnectType::StartToP2 => polylines[idx].insert(0, p1),
-// 			}
-// 		},
-// 		2 => {
-// 			// 2 matches - either close a loop or merge them
-// 			let (idx1, type1) = matches[0];
-// 			let (idx2, type2) = matches[1];
-
-// 			if idx1 == idx2 {
-// 				// the polyline connected to itself - nothing more to do
-// 			} else {
-// 				// scope!("merge_polylines");
-
-// 				// Merge two polylines
-// 				let polyline2 = polylines.remove(idx2.max(idx1));
-// 				let polyline1 = polylines.remove(idx1.min(idx2));
-
-// 				// Determine correct merge order based on connection types
-// 				let merged = merge_polylines(polyline1, polyline2, type1, type2);
-// 				polylines.push(merged);
-// 			}
-// 		},
-// 		_ => {
-// 			unreachable!();
-// 			// polylines.push(vec![p1, p2]);
-// 		},
-// 	}
-// }
-
-// #[derive(Debug, Clone, Copy)]
-// enum ConnectType {
-// 	EndToP1,
-// 	EndToP2,
-// 	StartToP1,
-// 	StartToP2,
-// }
-
-// fn merge_polylines(
-// 	mut p1: Vec<PlotPoint>, mut p2: Vec<PlotPoint>, type1: ConnectType, type2: ConnectType,
-// ) -> Vec<PlotPoint> {
-// 	use ConnectType as CT;
-
-// 	match (type1, type2) {
-// 		(CT::EndToP1, CT::StartToP2) | (CT::EndToP2, CT::StartToP1) => {
-// 			// p1.end connects to segment, p2.start connects to segment
-// 			p1.extend(p2);
-// 			p1
-// 		},
-// 		(CT::EndToP1, CT::EndToP2) | (CT::EndToP2, CT::EndToP1) => {
-// 			// Both ends connect - reverse p2
-// 			p2.reverse();
-// 			p1.extend(p2);
-// 			p1
-// 		},
-// 		(CT::StartToP1, CT::StartToP2) | (CT::StartToP2, CT::StartToP1) => {
-// 			// Both starts connect - reverse p1
-// 			p1.reverse();
-// 			p1.extend(p2);
-// 			p1
-// 		},
-// 		(CT::StartToP1, CT::EndToP2) | (CT::StartToP2, CT::EndToP1) => {
-// 			// p2.end connects to segment, p1.start connects to segment
-// 			p2.extend(p1);
-// 			p2
-// 		},
-// 		_ => {
-// 			// Shouldn't happen, but just concatenate
-// 			p1.extend(p2);
-// 			p1
-// 		},
-// 	}
-// }
-
-fn equals(p1: &PlotPoint, p2: &PlotPoint, eps: f64) -> bool {
+fn equals(p1: PlotPoint, p2: PlotPoint, eps: f64) -> bool {
 	(p1.x - p2.x).abs() < eps && (p1.y - p2.y).abs() < eps
 }
 
@@ -268,7 +162,7 @@ struct HashablePoint {
 }
 
 impl HashablePoint {
-	fn from_point(p: &PlotPoint, precision_recip: f64) -> Self {
+	fn from_point(p: PlotPoint, precision_recip: f64) -> Self {
 		// quantize to grid
 		HashablePoint { x: (p.x * precision_recip).round() as i64, y: (p.y * precision_recip).round() as i64 }
 	}
@@ -306,8 +200,8 @@ impl PolylineBuilder {
 	}
 
 	fn add_segment(&mut self, start: PlotPoint, end: PlotPoint) {
-		let start_hash = HashablePoint::from_point(&start, self.precision_recip);
-		let end_hash = HashablePoint::from_point(&end, self.precision_recip);
+		let start_hash = HashablePoint::from_point(start, self.precision_recip);
+		let end_hash = HashablePoint::from_point(end, self.precision_recip);
 
 		let mut connects_at_start: Option<(usize, bool)> = None;
 		let mut connects_at_end: Option<(usize, bool)> = None;
@@ -321,9 +215,9 @@ impl PolylineBuilder {
 					continue;
 				}
 				let endpoint =
-					if is_start { &self.polylines[idx][0] } else { self.polylines[idx].last().unwrap() };
+					if is_start { self.polylines[idx][0] } else { *self.polylines[idx].last().unwrap() };
 
-				if equals(endpoint, &start, self.eps) {
+				if equals(endpoint, start, self.eps) {
 					connects_at_start = Some((idx, is_start));
 					break;
 				}
@@ -339,9 +233,9 @@ impl PolylineBuilder {
 					continue;
 				}
 				let endpoint =
-					if is_start { &self.polylines[idx][0] } else { self.polylines[idx].last().unwrap() };
+					if is_start { self.polylines[idx][0] } else { *self.polylines[idx].last().unwrap() };
 
-				if equals(endpoint, &end, self.eps) {
+				if equals(endpoint, end, self.eps) {
 					connects_at_end = Some((idx, is_start));
 					break;
 				}
@@ -349,61 +243,61 @@ impl PolylineBuilder {
 		}
 
 		match (connects_at_start, connects_at_end) {
-			// Segment connects two different polylines
-			(Some((idx1, at_start1)), Some((idx2, at_start2))) if idx1 != idx2 => {
-				self.merge_polylines(idx1, at_start1, idx2, at_start2);
+			// segment connects to 2 points
+			(Some((idx1, at_start1)), Some((idx2, at_start2))) => {
+				if idx1 != idx2 {
+					// Segment connects 2 different polylines
+
+					self.merge_polylines(idx1, at_start1, idx2, at_start2);
+				} else {
+					// Segment closes a loop in 1 polyline
+
+					// connect the start and end
+					if at_start1 {
+						self.polylines[idx1].push(start);
+					} else {
+						self.polylines[idx1].push(end);
+					}
+					// loop closed, no more endpoints
+					self.remove_endpoint(start, idx1, at_start1);
+					self.remove_endpoint(end, idx2, at_start2);
+				}
 			},
 
-			// Segment closes a loop
-			(Some((idx, _)), Some((_, _))) => {
-				self.remove_endpoint(&start, idx, false);
-				self.remove_endpoint(&end, idx, true);
-			},
+			// segment connects to 1 polyline at 1 point
+			(Some((idx, at_start)), None) | (None, Some((idx, at_start))) => {
+				// if segment connects at start, add its end point. or vice versa
+				let point = if connects_at_start.is_some() { end } else { start };
 
-			// Segment extends polyline at its end
-			(Some((idx, false)), None) => {
-				self.remove_endpoint(&start, idx, false);
-				self.polylines[idx].push(end);
-				self.add_endpoint(&end, idx, false);
-			},
-
-			// Segment extends polyline at its start
-			(Some((idx, true)), None) => {
-				self.remove_endpoint(&start, idx, true);
-				self.polylines[idx].insert(0, end);
-				self.add_endpoint(&end, idx, true);
-			},
-
-			// Segment prepends to polyline start
-			(None, Some((idx, true))) => {
-				self.remove_endpoint(&end, idx, true);
-				self.polylines[idx].insert(0, start);
-				self.add_endpoint(&start, idx, true);
-			},
-
-			// Segment appends to polyline end
-			(None, Some((idx, false))) => {
-				self.remove_endpoint(&end, idx, false);
-				self.polylines[idx].push(start);
-				self.add_endpoint(&start, idx, false);
+				if at_start {
+					// add to polyline start
+					self.remove_endpoint(point, idx, true);
+					self.polylines[idx].insert(0, point);
+					self.add_endpoint(point, idx, true);
+				} else {
+					// push to polyline end
+					self.remove_endpoint(start, idx, false);
+					self.polylines[idx].push(point);
+					self.add_endpoint(point, idx, false);
+				}
 			},
 
 			// New disconnected polyline
 			(None, None) => {
 				let idx = self.polylines.len();
 				self.polylines.push(vec![start, end]);
-				self.add_endpoint(&start, idx, true);
-				self.add_endpoint(&end, idx, false);
+				self.add_endpoint(start, idx, true);
+				self.add_endpoint(end, idx, false);
 			},
 		}
 	}
 
-	fn add_endpoint(&mut self, point: &PlotPoint, polyline_idx: usize, is_start: bool) {
+	fn add_endpoint(&mut self, point: PlotPoint, polyline_idx: usize, is_start: bool) {
 		let hash = HashablePoint::from_point(point, self.precision_recip);
 		self.endpoint_map.entry(hash).or_default().push((polyline_idx as u32, is_start));
 	}
 
-	fn remove_endpoint(&mut self, point: &PlotPoint, polyline_idx: usize, is_start: bool) {
+	fn remove_endpoint(&mut self, point: PlotPoint, polyline_idx: usize, is_start: bool) {
 		let hash = HashablePoint::from_point(point, self.precision_recip);
 		if let Some(entries) = self.endpoint_map.get_mut(&hash) {
 			entries.retain(|&mut (idx, start)| idx as usize != polyline_idx || start != is_start);
@@ -417,8 +311,8 @@ impl PolylineBuilder {
 		let p1 = if at_start1 { self.polylines[idx1][0] } else { *self.polylines[idx1].last().unwrap() };
 		let p2 = if at_start2 { self.polylines[idx2][0] } else { *self.polylines[idx2].last().unwrap() };
 
-		self.remove_endpoint(&p1, idx1, at_start1);
-		self.remove_endpoint(&p2, idx2, at_start2);
+		self.remove_endpoint(p1, idx1, at_start1);
+		self.remove_endpoint(p2, idx2, at_start2);
 
 		let (keep_idx, remove_idx) = if idx1 < idx2 { (idx1, idx2) } else { (idx2, idx1) };
 
@@ -492,8 +386,8 @@ impl PolylineBuilder {
 
 		let new_start = self.polylines[keep_idx][0];
 		let new_end = *self.polylines[keep_idx].last().unwrap();
-		self.add_endpoint(&new_start, keep_idx, true);
-		self.add_endpoint(&new_end, keep_idx, false);
+		self.add_endpoint(new_start, keep_idx, true);
+		self.add_endpoint(new_end, keep_idx, false);
 	}
 	fn update_polyline_index(&mut self, old_idx: usize, new_idx: usize) {
 		for entries in self.endpoint_map.values_mut() {
