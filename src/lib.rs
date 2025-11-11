@@ -1,4 +1,5 @@
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
 use rustc_hash::FxHashMap;
@@ -352,12 +353,6 @@ struct SelectablePoint {
 	y:      f64,
 	radius: f32,
 }
-struct DrawBuffer {
-	lines:    Vec<FunctionLine>,
-	points:   Vec<(Option<SelectablePoint>, egui_plot::Points<'static>)>,
-	polygons: Vec<egui_plot::Polygon<'static>>,
-	texts:    Vec<egui_plot::Text>,
-}
 impl DrawBuffer {
 	fn new() -> Self {
 		Self {
@@ -367,6 +362,12 @@ impl DrawBuffer {
 			texts:    Vec::with_capacity(8),
 		}
 	}
+}
+struct DrawBuffer {
+	lines:    Vec<FunctionLine>,
+	points:   Vec<(Option<SelectablePoint>, egui_plot::Points<'static>)>,
+	polygons: Vec<egui_plot::Polygon<'static>>,
+	texts:    Vec<egui_plot::Text>,
 }
 #[allow(clippy::non_send_fields_in_send_ty)]
 /// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
@@ -382,7 +383,7 @@ struct UiState {
 
 	cur_dir:              String,
 	serialization_error:  Option<String>,
-	web_storage:          FxHashMap<String, String>,
+	serialized_states:    BTreeMap<String, String>,
 	stack_overflow_guard: Arc<ThreadLocal<Cell<isize>>>,
 	eval_errors:          FxHashMap<u64, String>,
 	parsing_errors:       FxHashMap<u64, String>,
@@ -433,7 +434,7 @@ impl Application {
 		let mut default_bounds_d = None;
 
 		// TODO
-		let mut web_storage = FxHashMap::default();
+		let mut serialized_states = BTreeMap::default();
 
 		let mut serialization_error = None;
 
@@ -454,7 +455,7 @@ impl Application {
         // 	let error: Option<String> = web::get_data_from_url(&mut data);
         if let Some(storage) = cc.storage{
           if let Some(data) = storage.get_string(DATA_KEY) {
-            web_storage = serde_json::from_str(&data).unwrap();
+            serialized_states = serde_json::from_str(&data).unwrap();
           }
         }
 
@@ -483,7 +484,7 @@ impl Application {
         let cur_dir = env::home_dir()
           .and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
           .unwrap_or_default();
-        persistence::load_file_entries(&cur_dir, &mut web_storage);
+        persistence::load_file_entries(&cur_dir, &mut serialized_states);
       }
 		}
 
@@ -525,7 +526,7 @@ impl Application {
 				conf,
 				scheduled_url_update: false,
 				last_url_update: 0.0,
-				web_storage,
+				serialized_states,
 				next_id,
 				plot_bounds: PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]),
 				reset_graph: false,
@@ -607,7 +608,7 @@ impl App for Application {
 	}
 
 	fn save(&mut self, storage: &mut dyn eframe::Storage) {
-		storage.set_string(DATA_KEY, serde_json::to_string(&self.ui.web_storage).unwrap());
+		storage.set_string(DATA_KEY, serde_json::to_string(&self.ui.serialized_states).unwrap());
 		storage.set_string(CONF_KEY, serde_json::to_string(&self.ui.conf).unwrap());
 	}
 
@@ -942,15 +943,13 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
 	state.entries.par_iter_mut().for_each(|entry| {
-		// for entry in state.entries.iter_mut() {
 		scope!("entry_draw", entry.name.clone());
 		ui_state.stack_overflow_guard.get_or_default().set(0);
 		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
-		let mut draw_buffer = draw_buffer.borrow_mut();
 
-		let id = Id::new(entry.id); //.with("entry_plot_els");
+		let id = Id::new(entry.id);
 		if let Err(error) = entry::create_entry_plot_elements(
-			entry, id, ui_state.selected_plot_line, main_context, &plot_params, &mut draw_buffer,
+			entry, id, ui_state.selected_plot_line, main_context, &plot_params, draw_buffer,
 		) {
 			eval_errors.lock().unwrap().insert(entry.id, error);
 		}
@@ -1171,27 +1170,59 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 						DragPoint::XLiteralYConstant(y_const) => {
 							point.x.text = format!("{}", pos.x);
 							let x_node = point.x.node.clone();
-							drag(state, y_const, x_node, point_y, pos.y, plot_params.eps);
+							drag(state, &y_const, x_node, point_y, pos.y, plot_params.eps);
 						},
 						DragPoint::YLiteralXConstant(x_const) => {
 							point.y.text = format!("{}", pos.y);
 							let x_node = point.x.node.clone();
-							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
+							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
 						},
 						DragPoint::BothCoordConstants(x_const, y_const) => {
 							let x_node = point.x.node.clone();
 							let y_node = point.y.node.clone();
 
-							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
-							drag(state, y_const, y_node, point_y, pos.y, plot_params.eps);
+							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+							drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
 						},
 						DragPoint::XConstant(x_const) => {
 							let x_node = point.x.node.clone();
-							drag(state, x_const, x_node, point_x, pos.x, plot_params.eps);
+							drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
 						},
 						DragPoint::YConstant(y_const) => {
 							let y_node = point.y.node.clone();
-							drag(state, y_const, y_node, point_y, pos.y, plot_params.eps);
+							drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+						},
+						DragPoint::SameConstantBothCoords(x_const) => {
+							let x_node = point.x.node.clone();
+							let y_node = point.y.node.clone();
+							if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
+								if let Some(c_idx) = state.entries.iter().position(|e| e.name == x_const) {
+									if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
+										let new_value = solve_minimize(
+											value.to_f64(),
+											(pos.x, pos.y),
+											plot_params.eps,
+											|x| {
+												state.ctx.set_value(&x_const, f64_to_value::<T>(x)).unwrap();
+												(
+													x_node
+														.eval_float_with_context(&state.ctx)
+														.unwrap()
+														.to_f64(),
+													y_node
+														.eval_float_with_context(&state.ctx)
+														.unwrap()
+														.to_f64(),
+												)
+											},
+										);
+										if let EntryType::Constant { value, .. } = &mut state.entries[c_idx].ty
+										{
+											*value = f64_to_float::<T>(new_value);
+										}
+									}
+								}
+							}
 						},
 					}
 					state.clear_cache = true;
@@ -1287,28 +1318,32 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 // }
 //
 fn drag<T: EvalexprNumericTypes>(
-	state: &mut State<T>, name: String, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
-) {
+	state: &mut State<T>, name: &str, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
+) -> bool {
 	if let Some(point_node) = node {
 		if let Some(c_idx) = state.entries.iter().position(|e| e.name == name) {
 			if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
 				let value = *value;
 				if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
-					state.ctx.set_value(&name, f64_to_value::<T>(x)).unwrap();
+					state.ctx.set_value(name, f64_to_value::<T>(x)).unwrap();
 					point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
 				}) {
 					if let EntryType::Constant { value, .. } = &mut state.entries[c_idx].ty {
 						*value = f64_to_float::<T>(new_value);
 					}
+				} else {
+					return false;
 				}
 			}
 		}
 	}
+	true
 }
 
 fn solve_secant(
 	cur_x: f64, cur_y: f64, target_y: f64, eps: f64, mut f: impl FnMut(f64) -> f64,
 ) -> Option<f64> {
+	println!("secant cur_x: {cur_x} cur_y: {cur_y} target_y: {target_y}");
 	// find root f(x) - target_y = 0
 	let max_iterations = 40;
 	let h = 0.0001; // small step for second point
@@ -1342,6 +1377,7 @@ fn solve_secant(
 		let x_next = x1 - y1 * (x1 - x0) / (y1 - y0);
 		if !x_next.is_finite() {
 			// nan or inf
+			// println!("nan or inf");
 			return None;
 		}
 
@@ -1354,7 +1390,8 @@ fn solve_secant(
 	if y1.abs() < eps {
 		Some(x1)
 	} else {
-		// Failed to converge
+    // failed to converge
+    // println!("failed to converge x0: {x0} x1: {x1} y0: {y0} y1: {y1}");
 		None
 	}
 }
@@ -1367,7 +1404,7 @@ fn intersect_segs(a1: PlotPoint, a2: PlotPoint, b1: PlotPoint, b2: PlotPoint, ep
 	let denom = d1x * d2y - d1y * d2x;
 
 	if denom.abs() < eps {
-    // parallel
+		// parallel
 		return None;
 	}
 
@@ -1382,4 +1419,72 @@ fn intersect_segs(a1: PlotPoint, a2: PlotPoint, b1: PlotPoint, b2: PlotPoint, ep
 	} else {
 		None
 	}
+}
+
+fn solve_minimize(
+	cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> (f64, f64),
+) -> f64 {
+	// Levenberg-Marquardt
+	// minimizing abs(f(val) - mouse_pos)^2
+
+	let mut t = cur_value;
+	let max_iterations = 100;
+
+	for _ in 0..max_iterations {
+		let (fx, fy) = f(t);
+		let residual_x = fx - mouse_pos.0;
+		let residual_y = fy - mouse_pos.1;
+
+		let error = residual_x * residual_x + residual_y * residual_y;
+
+		if error < eps * eps {
+			// success
+			return t;
+		}
+
+		let h = 1e-7;
+		let (fx_h, fy_h) = f(t + h);
+
+		// first derivative
+		let df_dt_x = (fx_h - fx) / h;
+		let df_dt_y = (fy_h - fy) / h;
+
+		let gradient = 2.0 * (residual_x * df_dt_x + residual_y * df_dt_y);
+
+		// second derivative (hessian)
+		let (fx_2h, fy_2h) = f(t + 2.0 * h);
+		let d2f_dt2_x = (fx_2h - 2.0 * fx_h + fx) / (h * h);
+		let d2f_dt2_y = (fy_2h - 2.0 * fy_h + fy) / (h * h);
+		// Hessian of dist sq
+		let hessian =
+			2.0 * (df_dt_x * df_dt_x + df_dt_y * df_dt_y + residual_x * d2f_dt2_x + residual_y * d2f_dt2_y);
+
+		let damping = 1e-6;
+		let step = -gradient / (hessian.abs() + damping);
+
+		// line search
+		let mut best_t = t;
+
+		for scale in [1.0, 0.5, 0.25, 0.1] {
+			let t_new = t + scale * step;
+			let (fx_new, fy_new) = f(t_new);
+			let rx_new = fx_new - mouse_pos.0;
+			let ry_new = fy_new - mouse_pos.1;
+			let error_new = rx_new * rx_new + ry_new * ry_new;
+
+			if error_new < error {
+				best_t = t_new;
+				break;
+			}
+		}
+
+		if (best_t - t).abs() < 1e-12 {
+			// we're stuck
+			return t;
+		}
+
+		t = best_t;
+	}
+
+	t
 }

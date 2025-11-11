@@ -1,3 +1,4 @@
+use alloc::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -5,11 +6,10 @@ use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
 use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
-use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
-  Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, TextboxType, preprecess_fn
+	Expr, FunctionStyle, FunctionType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, TextboxType, preprecess_fn
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -42,13 +42,13 @@ impl ExprSer {
 	pub fn from_expr<T: EvalexprNumericTypes>(expr: &Expr<T>) -> Self {
 		Self { text: expr.text.clone(), textbox_type: expr.textbox_type }
 	}
-	pub fn into_expr<T: EvalexprNumericTypes>(self, preprocess:bool) -> Expr<T> {
-    let temp;
-    let mut txt = &self.text;
-    if preprocess && let Ok(Some(new_text)) = preprecess_fn(&self.text) {
-      temp = new_text;
-      txt = &temp;
-    };
+	pub fn into_expr<T: EvalexprNumericTypes>(self, preprocess: bool) -> Expr<T> {
+		let temp;
+		let mut txt = &self.text;
+		if preprocess && let Ok(Some(new_text)) = preprecess_fn(&self.text) {
+			temp = new_text;
+			txt = &temp;
+		};
 		Expr {
 			node:         evalexpr::build_operator_tree::<T>(txt).ok(),
 			text:         self.text,
@@ -101,14 +101,16 @@ pub enum EntryTypeSerialized {
 #[derive(Serialize, Deserialize)]
 pub struct EntryPointSerialized {
 	#[serde(default)]
-	x: ExprSer,
+	x:         ExprSer,
 	#[serde(default)]
-	y: ExprSer,
+	y:         ExprSer,
 	#[serde(default)]
-  drag_type: PointDragType,
+	drag_type: PointDragType,
 }
 
-pub fn entries_to_ser<T: EvalexprNumericTypes>(entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>) -> StateSerialized {
+pub fn entries_to_ser<T: EvalexprNumericTypes>(
+	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
+) -> StateSerialized {
 	let mut state_serialized = StateSerialized {
 		entries:        Vec::with_capacity(entries.len()),
 		default_bounds: plot_bounds.map(|b| [b.min()[0], b.min()[1], b.max()[0], b.max()[1]]),
@@ -136,9 +138,9 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(entries: &[Entry<T>], plot_bounds
 					let mut points_serialized = Vec::new();
 					for point in points {
 						let point_serialized = EntryPointSerialized {
-							x: ExprSer::from_expr(&point.x),
-							y: ExprSer::from_expr(&point.y),
-              drag_type: point.drag_type,
+							x:         ExprSer::from_expr(&point.x),
+							y:         ExprSer::from_expr(&point.y),
+							drag_type: point.drag_type,
 						};
 						points_serialized.push(point_serialized);
 					}
@@ -169,7 +171,9 @@ pub fn serialize_to_json<T: EvalexprNumericTypes>(
 	serde_json::to_writer(writer, &ser)?;
 	Ok(())
 }
-pub fn serialize_to_url<T: EvalexprNumericTypes>(entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>) -> Result<String, String> {
+pub fn serialize_to_url<T: EvalexprNumericTypes>(
+	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
+) -> Result<String, String> {
 	let ser = entries_to_ser(entries, plot_bounds);
 	let bincoded =
 		bincode::serde::encode_to_vec(&ser, bincode::config::standard()).map_err(|e| e.to_string())?;
@@ -190,10 +194,10 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>() -> Result<(Vec<Entry<T>>,
 	// let href = "";
 
 	if !href.contains('#') {
-		return Ok((Vec::new(),None));
+		return Ok((Vec::new(), None));
 	}
 	let Some(without_prefix) = href.split('#').last() else {
-		return Ok((Vec::new(),None));
+		return Ok((Vec::new(), None));
 	};
 
 	let base64_decoded =
@@ -243,11 +247,11 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(ser: StateSerialized) -> (Vec<E
 					let mut points_deserialized = Vec::new();
 					for point in points {
 						let point_deserialized = PointEntry {
-							x:               point.x.into_expr(false),
-							y:               point.y.into_expr(false),
-							drag_point: None,
-              drag_type: point.drag_type,
-              both_drag_dirs_available: true,
+							x:                        point.x.into_expr(false),
+							y:                        point.y.into_expr(false),
+							drag_point:               None,
+							drag_type:                point.drag_type,
+							both_drag_dirs_available: true,
 						};
 						points_deserialized.push(point_deserialized);
 					}
@@ -293,7 +297,7 @@ pub fn save_file<T: EvalexprNumericTypes>(
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
-		ui_state.web_storage.insert(file, String::from_utf8(output).unwrap());
+		ui_state.serialized_states.insert(file, String::from_utf8(output).unwrap());
 		if let Some(storage) = frame.storage_mut() {
 			storage.flush();
 		}
@@ -318,15 +322,15 @@ pub fn save_file<T: EvalexprNumericTypes>(
 		ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
 		return;
 	};
-	if let Err(e) = serialize_to_json(&mut file, &state.entries, Some(&ui_state.plot_bounds) ){
+	if let Err(e) = serialize_to_json(&mut file, &state.entries, Some(&ui_state.plot_bounds)) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
-		load_file_entries(&ui_state.cur_dir, &mut ui_state.web_storage);
+		load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
 	}
 }
-pub fn load_file_entries(cur_dir: &str, web_st: &mut FxHashMap<String, String>) {
-	web_st.clear();
+pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String>) {
+	ser_states.clear();
 	let Ok(entries) = std::fs::read_dir(PathBuf::from(cur_dir)) else {
 		// ui.label("No entries found");
 		return;
@@ -343,17 +347,17 @@ pub fn load_file_entries(cur_dir: &str, web_st: &mut FxHashMap<String, String>) 
 			continue;
 		}
 
-		web_st.insert(file_name.to_string(), String::new());
+		ser_states.insert(file_name.to_string(), String::new());
 	}
 }
 #[cfg(target_arch = "wasm32")]
 pub fn load_file<T: EvalexprNumericTypes>(
-	cur_dir: &str, web_st: &FxHashMap<String, String>, file_name: &str, state: &mut State<T>,
+	cur_dir: &str, ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
 ) -> Result<(), String> {
-	if let Some(file) = web_st.get(file_name) {
-		let (entries,bounds) = deserialize_from_json::<T>(file.as_bytes())?;
+	if let Some(file) = ser_states.get(file_name) {
+		let (entries, bounds) = deserialize_from_json::<T>(file.as_bytes())?;
 		state.entries = entries;
-    state.default_bounds = bounds;
+		state.default_bounds = bounds;
 
 		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 		state.clear_cache = true;
@@ -362,7 +366,7 @@ pub fn load_file<T: EvalexprNumericTypes>(
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file<T: EvalexprNumericTypes>(
-	cur_dir: &str, _web_st: &FxHashMap<String, String>, file_name: &str, state: &mut State<T>,
+	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
 ) -> Result<(), String> {
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
@@ -397,20 +401,21 @@ pub fn persistence_ui<T: EvalexprNumericTypes>(
 			let changed = ui.text_edit_singleline(&mut ui_state.cur_dir).changed();
 
 			if ui.button("⟳").clicked() || changed {
-				load_file_entries(&ui_state.cur_dir, &mut ui_state.web_storage);
+				load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
 			}
 		});
 	}
 
-	if !ui_state.web_storage.is_empty() {
+	if !ui_state.serialized_states.is_empty() {
 		ui.separator();
 	}
 	ui.horizontal(|ui| {
 		Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
-			for file_name in ui_state.web_storage.keys() {
+			for file_name in ui_state.serialized_states.keys() {
 				ui.label(file_name);
 				if ui.button("Load").clicked() {
-					if let Err(e) = load_file(&ui_state.cur_dir, &ui_state.web_storage, file_name, state) {
+					if let Err(e) = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name, state)
+					{
 						ui_state.serialization_error = Some(format!("Could not open file: {}", e));
 						return;
 					};
@@ -446,12 +451,12 @@ fn confirm_remove_dialog(ui: &egui::Ui, _frame: &mut eframe::Frame, ui_state: &m
 							if let Some(storage) = _frame.storage_mut() {
 								storage.flush();
 							}
-							ui_state.web_storage.remove(file);
+							ui_state.serialized_states.remove(file);
 						}
 						#[cfg(not(target_arch = "wasm32"))]
 						{
 							if let Ok(()) = std::fs::remove_file(PathBuf::from(&ui_state.cur_dir).join(file)) {
-								ui_state.web_storage.remove(file);
+								ui_state.serialized_states.remove(file);
 							}
 						}
 						ui.close();

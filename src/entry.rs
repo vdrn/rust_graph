@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::mem;
 use core::ops::RangeInclusive;
 use regex::Regex;
@@ -711,10 +711,20 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										DragPoint::BothCoordConstants(x, y) => {
 											format!("{}({}, {})", point.drag_type.symbol(), x, y,)
 										},
+										DragPoint::SameConstantBothCoords(x) => {
+											format!("{}({})", point.drag_type.symbol(), x)
+										},
 									},
 									None => point.drag_type.symbol().to_string(),
 								};
 								ui.menu_button(drag_menu_text, |ui| {
+									drag_type_changed |= ui
+										.selectable_value(
+											&mut point.drag_type,
+											PointDragType::NoDrag,
+											PointDragType::NoDrag.name(),
+										)
+										.changed();
 									if point.both_drag_dirs_available {
 										drag_type_changed |= ui
 											.selectable_value(
@@ -766,6 +776,12 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					let range = ty.range();
 					let start = *range.start();
 					let end = *range.end();
+
+					if v > end {
+						v -= end - start;
+					} else if v < start {
+						v += end - start;
+					}
 					v = v.clamp(start, end);
 
 					ui.vertical(|ui| {
@@ -945,14 +961,24 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								if x_state.is_literal {
 									point.drag_point = Some(DragPoint::XLiteral);
 								} else if let Some(x_const) = x_state.constants.first() {
-									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+									if y_state.constants.iter().any(|c| c == x_const) {
+										point.drag_point =
+											Some(DragPoint::SameConstantBothCoords(x_const.to_string()));
+									} else {
+										point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+									}
 								}
 							},
 							PointDragType::Y => {
 								if y_state.is_literal {
 									point.drag_point = Some(DragPoint::YLiteral);
 								} else if let Some(y_const) = y_state.constants.first() {
-									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+									if x_state.constants.iter().any(|c| c == y_const) {
+										point.drag_point =
+											Some(DragPoint::SameConstantBothCoords(y_const.to_string()));
+									} else {
+										point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+									}
 								}
 							},
 						}
@@ -1081,7 +1107,7 @@ pub struct PlotParams {
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
-	plot_params: &PlotParams, draw_buffer: &mut DrawBuffer,
+	plot_params: &PlotParams, draw_buffer: &RefCell<DrawBuffer>,
 ) -> Result<(), String> {
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
@@ -1092,6 +1118,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	match &mut entry.ty {
 		EntryType::Constant { .. } => {},
 		EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
+			let mut draw_buffer = draw_buffer.borrow_mut();
 			let (Some(lower_node), Some(upper_node), Some(func_node)) = (&lower.node, &upper.node, &func.node)
 			else {
 				return Ok(());
@@ -1266,6 +1293,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			*calculated = Some(result);
 		},
 		EntryType::Label { x, y, size, underline, .. } => {
+			let mut draw_buffer = draw_buffer.borrow_mut();
+
 			match eval_point(ctx, x.node.as_ref(), y.node.as_ref()) {
 				Ok(Some((x, y))) => {
 					let size = if let Some(size) = &size.node {
@@ -1294,6 +1323,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			}
 		},
 		EntryType::Points(ps) => {
+			let mut draw_buffer = draw_buffer.borrow_mut();
 			// main_context
 			// 	.write()
 			// 	.unwrap()
@@ -1374,7 +1404,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// 		.entry(text.clone())
 				// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 				// });
-				let mut add_line = |line: Vec<PlotPoint>| {
+				let add_line = |line: Vec<PlotPoint>| {
+					let mut draw_buffer = draw_buffer.borrow_mut();
 					draw_buffer.lines.push(FunctionLine {
 						width,
 						id,
@@ -1671,6 +1702,7 @@ pub enum DragPoint {
 	XLiteralYConstant(String),
 	YLiteralXConstant(String),
 	BothCoordConstants(String, String),
+	SameConstantBothCoords(String),
 }
 
 pub struct NodeAnalysis<'a> {
