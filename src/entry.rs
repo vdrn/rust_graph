@@ -57,7 +57,7 @@ impl DrawLine {
 		Self { sorting_index, id, width, line }
 	}
 }
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct PointInteraction {
 	pub ty:     PointInteractionType,
 	pub x:      f64,
@@ -78,7 +78,7 @@ impl PointInteraction {
 		}
 	}
 }
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub enum OtherPointType {
 	Point,
 	Minima,
@@ -87,7 +87,7 @@ pub enum OtherPointType {
 	IntersectionWithXAxis,
 	IntersectionWithYAxis,
 }
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub enum PointInteractionType {
 	Draggable { i: (Id, u32) },
 	Other(OtherPointType),
@@ -720,8 +720,6 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			match &mut entry.ty {
 				EntryType::Folder { .. } => {
 					// handled in outer scope
-
-
 				},
 				EntryType::Function { func, range_start, range_end, ty, implicit_resolution, .. } => {
 					ui.vertical(|ui| {
@@ -978,8 +976,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 					if v > end {
 						v -= end - start;
+						result.animating = true;
 					} else if v < start {
 						v += end - start;
+						result.animating = true;
 					}
 					v = v.clamp(start, end);
 
@@ -1108,7 +1108,10 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					let y_state = analyze_node(y);
 
 					let both_dirs_available = x_state.constants.iter().all(|c| !y_state.constants.contains(c));
-					if !both_dirs_available && point.both_drag_dirs_available {
+					if !both_dirs_available
+						&& point.both_drag_dirs_available
+						&& !matches!(point.drag_type, PointDragType::NoDrag)
+					{
 						point.drag_type = PointDragType::X;
 					}
 					point.both_drag_dirs_available = both_dirs_available;
@@ -1317,7 +1320,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	stack_overflow_guard.get_or_default().set(0);
 
 	let visible = entry.visible;
-	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
+	if !visible && !matches!(entry.ty, EntryType::Folder { .. } | EntryType::Integral { .. }) {
 		return Ok(());
 	}
 	let color = entry.color();
@@ -1714,7 +1717,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								},
 								Ok(Value::Empty) => {},
 								Ok(_) => {
-									return Err(vec![(entry.id, "Function must return float or empty".to_string())]);
+									return Err(vec![(
+										entry.id,
+										"Function must return float or empty".to_string(),
+									)]);
 								},
 
 								Err(e) => {
@@ -1768,7 +1774,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								},
 								Ok(Value::Empty) => {},
 								Ok(_) => {
-									return Err(vec![(entry.id, "Function must return float or empty".to_string())]);
+									return Err(vec![(
+										entry.id,
+										"Function must return float or empty".to_string(),
+									)]);
 								},
 
 								Err(e) => {
@@ -1790,7 +1799,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref()) {
 							Ok(Some((start, end))) => {
 								if start > end {
-									return Err(vec![(entry.id, "Range start must be less than range end".to_string())]);
+									return Err(vec![(
+										entry.id,
+										"Range start must be less than range end".to_string(),
+									)]);
 								}
 								let range = end - start;
 								let step = range / plot_params.resolution as f64;
@@ -1812,13 +1824,21 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 										Ok(Value::Empty) => {},
 										Ok(Value::Tuple(values)) => {
 											if values.len() != 2 {
-												return Err(vec![(entry.id, format!(
-													"Ranged function must return 1 or 2 float values, got {}",
-													values.len()
-												))]);
+												return Err(vec![(
+													entry.id,
+													format!(
+														"Ranged function must return 1 or 2 float values, \
+														 got {}",
+														values.len()
+													),
+												)]);
 											}
-											let x = values[0].as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
-											let y = values[1].as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
+											let x = values[0]
+												.as_float()
+												.map_err(|e| vec![(entry.id, e.to_string())])?;
+											let y = values[1]
+												.as_float()
+												.map_err(|e| vec![(entry.id, e.to_string())])?;
 											if y.is_nan() {
 												if !pp_buffer.is_empty() {
 													add_line(mem::take(&mut pp_buffer));
@@ -1828,9 +1848,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											}
 										},
 										Ok(_) => {
-											return Err(
-												vec![(entry.id, "Ranged function must return 1 or 2 float values".to_string())]
-											);
+											return Err(vec![(
+												entry.id,
+												"Ranged function must return 1 or 2 float values".to_string(),
+											)]);
 										},
 										Err(e) => {
 											return Err(vec![(entry.id, e.to_string())]);
@@ -1859,7 +1880,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							maxs,
 							*implicit_resolution,
 							// plot_params.eps
-						).map_err(|e| vec![(entry.id, e)])? {
+						)
+						.map_err(|e| vec![(entry.id, e)])?
+						{
 							add_line(line);
 						}
 					},
@@ -1994,7 +2017,21 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	static RE_X: LazyLock<Regex> =
 		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])x(?:$|[^a-zA-Z0-9])").unwrap());
 
-	let Some((left, right)) = text.split_once('=') else {
+	let text_b = text.as_bytes();
+	let mut split = None;
+	for (i, &c) in text_b.iter().enumerate() {
+		if c == b'=' {
+			let prev = text_b.get(i - 1).copied();
+			let next = text_b.get(i + 1).copied();
+			static IGNORE_PREV: &[u8] = b"!=<>+-*/%^|&";
+			if next != Some(b'=') && IGNORE_PREV.iter().all(|&c| Some(c) != prev) {
+				split = Some((&text[0..i], text.get(i + 1..).unwrap_or("")));
+				break;
+			}
+		}
+	}
+
+	let Some((left, right)) = split else {
 		return Ok(None);
 	};
 	let left = left.trim();

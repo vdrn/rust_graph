@@ -193,6 +193,39 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	add_function_2!(atan2);
 	add_function_2!(hypot);
 
+	macro_rules! add_function_3 {
+		($ident:ident) => {
+			ctx.set_function(
+				stringify!($ident).to_string(),
+				evalexpr::Function::new(move |_, v| {
+					let v = v.as_tuple_ref()?;
+					let v1: T::Float = v
+						.first()
+						.ok_or_else(|| {
+							EvalexprError::CustomMessage("Expected 3 arguments, got 0.".to_string())
+						})?
+						.as_float()?;
+					let v2: T::Float = v
+						.get(1)
+						.ok_or_else(|| {
+							EvalexprError::CustomMessage("Expected 3 arguments, got 1.".to_string())
+						})?
+						.as_float()?;
+					let v3: T::Float = v
+						.get(2)
+						.ok_or_else(|| {
+							EvalexprError::CustomMessage("Expected 3 arguments, got 2.".to_string())
+						})?
+						.as_float()?;
+
+					Ok(Value::Float(v1.$ident(&v2, &v3)))
+				}),
+			)
+			.unwrap();
+		};
+	}
+	add_function_3!(clamp);
+
 	ctx.set_function(
 		"normaldist".to_string(),
 		evalexpr::Function::new(move |_, v| {
@@ -363,10 +396,9 @@ struct UiState {
 	eval_errors:          FxHashMap<u64, String>,
 	parsing_errors:       FxHashMap<u64, String>,
 
-	selected_plot_line:   Option<Id>,
-	dragging_point:       Option<Id>,
+	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<entry::PointInteraction>,
-	plot_mouese_pos:      Option<((f32, f32), PlotTransform)>,
+	plot_mouese_pos:      Option<(egui::Pos2, PlotTransform)>,
 	showing_custom_label: bool,
 
 	f32_epsilon:          f64,
@@ -512,7 +544,6 @@ impl Application {
 				parsing_errors: FxHashMap::default(),
 				selected_plot_line: None,
 				showing_custom_label: false,
-				dragging_point: None,
 				dragging_point_i: None,
 				plot_mouese_pos: None,
 				f32_epsilon: f32::EPSILON as f64,
@@ -779,16 +810,12 @@ fn side_panel<T: EvalexprNumericTypes>(
 				}
 				ui.separator();
 			});
-			// for n in 0..state.entries.len() {
-			// 	let entry = &mut state.entries[n];
-			// }
 
 			if let Some(id) = remove {
 				if let Some(index) = state.entries.iter().position(|e| e.id == id) {
 					state.entries.remove(index);
 				}
 			}
-			// ui_state.animating.store(animating, Ordering::Relaxed);
 
 			#[cfg(not(target_arch = "wasm32"))]
 			ui.hyperlink_to("View Online", {
@@ -935,15 +962,31 @@ fn side_panel<T: EvalexprNumericTypes>(
 			} else if animating {
 				for entry in state.entries.iter_mut() {
 					scope!("entry_process");
-					if entry.name != "x" && entry.name != "y" {
-						if let EntryType::Constant { value, .. } = &mut entry.ty {
+					match &mut entry.ty {
+						EntryType::Constant { value, .. } => {
 							if !entry.name.is_empty() {
 								state
 									.ctx
 									.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value))
 									.unwrap();
 							}
-						}
+						},
+						EntryType::Folder { entries } => {
+							for entry in entries {
+								if let EntryType::Constant { value, .. } = &mut entry.ty {
+									if !entry.name.is_empty() {
+										state
+											.ctx
+											.set_value(
+												entry.name.as_str(),
+												evalexpr::Value::<T>::Float(*value),
+											)
+											.unwrap();
+									}
+								}
+							}
+						},
+						_ => {},
 					}
 				}
 			}
@@ -1007,7 +1050,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			entry,
 			id,
 			i as u32 * 1000,
-			ui_state.selected_plot_line,
+			ui_state.selected_plot_line.map(|(id, _)| id),
 			main_context,
 			&plot_params,
 			&ui_state.draw_buffer,
@@ -1024,7 +1067,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		let draw_buffer = draw_buffer.get_mut();
 		draw_lines.append(&mut draw_buffer.lines);
 	}
-	if let Some(selected_fline_id) = ui_state.selected_plot_line {
+	let final_closest_point_to_mouse: Mutex<Option<((f64, f64), f64)>> = Mutex::new(None);
+	let mouse_pos_in_graph = ui_state.plot_mouese_pos.map(|(pos, trans)| {
+		let p = trans.value_from_position(pos);
+		(p.x, p.y)
+	});
+	if let Some((selected_fline_id, show_closest_point_to_mouse)) = ui_state.selected_plot_line {
 		draw_lines.par_iter().for_each(|fline| {
 			let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
 				return;
@@ -1032,6 +1080,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			let mut draw_buffer =
 				ui_state.draw_buffer.get_or(|| RefCell::new(entry::DrawBuffer::new())).borrow_mut();
 			if fline.id == selected_fline_id {
+				let mut closest_point_to_mouse: Option<((f64, f64), f64)> = None;
+
 				// Find local optima
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
 				for (pi, point) in plot_points.iter().enumerate() {
@@ -1039,6 +1089,23 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
 					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
 					if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
+						// Find closest point to mouse
+						if show_closest_point_to_mouse && let Some(mouse_pos_in_graph) = mouse_pos_in_graph {
+							let mouse_on_seg = closest_point_on_segment(
+								(prev_0.0, prev_0.1),
+								(prev_1.0, prev_1.1),
+								mouse_pos_in_graph,
+							);
+							let dist_sq = dist_sq(mouse_on_seg, mouse_pos_in_graph);
+							if let Some(cur_closest_point_to_mouse) = closest_point_to_mouse {
+								if dist_sq < cur_closest_point_to_mouse.1 {
+									closest_point_to_mouse = Some((mouse_on_seg, dist_sq));
+								}
+							} else {
+								closest_point_to_mouse = Some((mouse_on_seg, dist_sq));
+							}
+						}
+
 						if prev_0.1.signum() != prev_1.1.signum() {
 							// intersection with x axis
 							let sum = prev_0.1.abs() + prev_1.1.abs();
@@ -1120,6 +1187,18 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 					prev[0] = prev[1];
 					prev[1] = Some(cur);
 				}
+				if show_closest_point_to_mouse {
+					if let Some((closest_point, dist_sq)) = closest_point_to_mouse {
+						let mut final_closest_point_to_mouse = final_closest_point_to_mouse.lock().unwrap();
+						if let Some(cur_closest_point) = *final_closest_point_to_mouse {
+							if dist_sq < cur_closest_point.1 {
+								*final_closest_point_to_mouse = Some((closest_point, dist_sq));
+							}
+						} else {
+							*final_closest_point_to_mouse = Some((closest_point, dist_sq));
+						}
+					}
+				}
 			} else {
 				let mut pi = 0;
 				for selected_line in draw_lines.iter().filter(|sel| sel.id == selected_fline_id) {
@@ -1167,6 +1246,23 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		draw_texts.append(&mut draw_buffer.texts);
 	}
 
+	let closest_point_to_mouse = final_closest_point_to_mouse.into_inner().unwrap();
+	if let Some(closest_point_to_mouse) = closest_point_to_mouse {
+		draw_points.push(DrawPoint::new(
+			0,
+			0,
+			PointInteraction {
+				x:      closest_point_to_mouse.0.0,
+				y:      closest_point_to_mouse.0.1,
+				radius: 5.0,
+				ty:     PointInteractionType::Other(OtherPointType::Point),
+			},
+			Points::new("", [closest_point_to_mouse.0.0, closest_point_to_mouse.0.1])
+				.color(Color32::GRAY)
+				.radius(5.0),
+		));
+	}
+
 	draw_lines.sort_unstable_by_key(|draw_line| draw_line.sorting_index);
 	draw_points.sort_unstable_by_key(|draw_point| draw_point.sorting_index);
 	draw_polygons.sort_unstable_by_key(|draw_poly_group| draw_poly_group.sorting_index);
@@ -1177,7 +1273,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		let mut plot = Plot::new(plot_id)
 			.id(plot_id)
 			.legend(Legend::default().text_style(TextStyle::Body))
-			.allow_drag(ui_state.dragging_point_i.is_none());
+			.allow_drag(ui_state.dragging_point_i.is_none() && closest_point_to_mouse.is_none());
 
 		let mut bounds = ui_state.plot_bounds;
 		if ui_state.reset_graph {
@@ -1190,7 +1286,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		plot = plot
 			.default_x_bounds(bounds.min()[0], bounds.max()[0])
 			.default_y_bounds(bounds.min()[1], bounds.max()[1]);
-		if ui_state.showing_custom_label {
+		if ui_state.showing_custom_label || closest_point_to_mouse.is_some() {
 			// plot = plot.label_formatter(|_, _| String::new());
 			plot = plot.show_x(false);
 			plot = plot.show_y(false);
@@ -1199,7 +1295,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		// plot.center_y_axis
-		let mut hovered_point = None;
+		let mut hovered_point: Option<(bool, PointInteraction)> = None;
 
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
@@ -1216,12 +1312,20 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			for draw_point in draw_points {
 				if let Some((mouse_pos, transform)) = ui_state.plot_mouese_pos {
 					let sel = &draw_point.interaction;
+					let is_draggable = matches!(sel.ty, PointInteractionType::Draggable { .. });
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
-					let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
+					let dist_sq = (sel_p.x - mouse_pos.x).powf(2.0) + (sel_p.y - mouse_pos.y).powf(2.0);
+
 					if dist_sq < sel.radius * sel.radius {
 						// ui_state.plot_custom_labels.push(((sel.x,sel.y), format!("Point {} {}",
 						// sel.x,sel.y)));
-						hovered_point = Some(sel.clone());
+						if let Some(current_hovered) = &hovered_point {
+							if !current_hovered.0 {
+								hovered_point = Some((is_draggable, sel.clone()));
+							}
+						} else {
+							hovered_point = Some((is_draggable, sel.clone()));
+						}
 					}
 				}
 				plot_ui.points(draw_point.points);
@@ -1238,11 +1342,11 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		ui_state.plot_bounds = *plot_res.transform.bounds();
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos().map(|p| {
 			// let p = plot_res.transform.value_from_position(p);
-			((p.x, p.y), plot_res.transform)
+			(p, plot_res.transform)
 		});
 
-		if let Some(hovered_point) = &hovered_point {
-			if plot_res.response.drag_started() || plot_res.response.dragged() {
+		if let Some((is_draggable, hovered_point)) = &hovered_point {
+			if *is_draggable && plot_res.response.drag_started() {
 				ui_state.dragging_point_i = Some(hovered_point.clone());
 			}
 		}
@@ -1359,8 +1463,20 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			}
 		}
 
+		if let Some((closest_point, _dist_sq)) = closest_point_to_mouse {
+			let screen_x = plot_res.transform.position_from_point_x(closest_point.0);
+			let screen_y = plot_res.transform.position_from_point_y(closest_point.1);
+			// ui_state.showing_custom_label = true;
+			show_popup_label(
+				ui,
+				Id::new("point_on_fn"),
+				format!("x:{}\ny: {}", f64_to_float::<T>(closest_point.0), f64_to_float::<T>(closest_point.1)),
+				[screen_x, screen_y],
+			);
+		}
+
 		if !ui_state.showing_custom_label
-			&& let Some(hovered_point) = &hovered_point
+			&& let Some((_, hovered_point)) = &hovered_point
 		{
 			let screen_x = plot_res.transform.position_from_point_x(hovered_point.x);
 			let screen_y = plot_res.transform.position_from_point_y(hovered_point.y);
@@ -1379,19 +1495,26 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		if let Some(hovered_id) = plot_res.hovered_plot_item {
-			if ui.input(|i| i.pointer.primary_clicked()) {
+			if plot_res.response.is_pointer_button_down_on() {
+				// if ui.input(|i| i.pointer.primary_clicked()) {
 				if state.entries.iter().any(|e| match &e.ty {
 					EntryType::Function { .. } => Id::new(e.id) == hovered_id,
 					EntryType::Folder { entries } => entries.iter().any(|e| Id::new(e.id) == hovered_id),
 					_ => false,
 				}) {
-					ui_state.selected_plot_line = Some(hovered_id);
+					ui_state.selected_plot_line = Some((hovered_id, false));
 				}
 			}
-		} else if ui_state.dragging_point.is_none() {
+		} else {
+			//if ui_state.dragging_point.is_none() {
 			if ui.input(|i| i.pointer.primary_clicked()) {
 				ui_state.selected_plot_line = None;
 			}
+		}
+
+		if let Some(selected_plot_line) = &mut ui_state.selected_plot_line {
+			selected_plot_line.1 =
+				!ui_state.showing_custom_label && plot_res.response.is_pointer_button_down_on();
 		}
 	});
 }
@@ -1640,7 +1763,7 @@ fn solve_minimize(
 }
 
 fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
-	egui::Area::new(id).fixed_pos(pos).interactable(false).show(ui.ctx(), |ui| {
+	egui::Area::new(id).fixed_pos([pos[0] + 5.0, pos[1] + 5.0]).interactable(false).show(ui.ctx(), |ui| {
 		egui::Frame::popup(ui.style()).show(ui, |ui| {
 			ui.horizontal(|ui| ui.label(label));
 			// ui.set_min_width(100.0);
@@ -1690,4 +1813,35 @@ fn get_entry_mut_by_id<T: EvalexprNumericTypes>(entries: &mut [Entry<T>], id: Id
 		}
 	}
 	None
+}
+fn closest_point_on_segment(a: (f64, f64), b: (f64, f64), point: (f64, f64)) -> (f64, f64) {
+	let (ax, ay) = a;
+	let (bx, by) = b;
+	let (px, py) = point;
+
+	let ab_x = bx - ax;
+	let ab_y = by - ay;
+
+	let ap_x = px - ax;
+	let ap_y = py - ay;
+
+	let ab_len_sq = ab_x * ab_x + ab_y * ab_y;
+
+	if ab_len_sq == 0.0 {
+		// a == b
+		return a;
+	}
+
+	let t = (ap_x * ab_x + ap_y * ab_y) / ab_len_sq;
+
+	let t = t.clamp(0.0, 1.0);
+
+	(ax + t * ab_x, ay + t * ab_y)
+}
+fn dist_sq(a: (f64, f64), b: (f64, f64)) -> f64 {
+	let (ax, ay) = a;
+	let (bx, by) = b;
+	let a = ax - bx;
+	let b = ay - by;
+	a * a + b * b
 }

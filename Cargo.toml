@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
