@@ -34,9 +34,10 @@ lto = "thin"
 eframe = { version = "0.33",features=["persistence"] }
 cfg-if = "1"
 egui_plot="0.34"
+# enum-map="2.7"
 
-egui_extras={version = "0.33", features=["syntect"]}
-syntect = { version = "5.3", default-features = false}
+# egui_extras={version = "0.33", features=["syntect"]}
+# syntect = { version = "5.3", default-features = false, features = ["default-fancy"]}
 evalexpr = { git = "https://github.com/vdrn/evalexpr" }
 
 rustc-hash = "2"

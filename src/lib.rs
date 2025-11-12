@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use thread_local::ThreadLocal;
 
 use eframe::egui::{
-	self, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextStyle, Visuals, Window
+	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextEdit, TextStyle, Visuals, Window
 };
 use eframe::epaint::Color32;
 use eframe::{App, CreationContext};
@@ -27,7 +27,7 @@ mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, DrawPoint, PointInteractionType, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, f64_to_float, f64_to_value
+	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, f64_to_float, f64_to_value
 };
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -435,22 +435,20 @@ impl Application {
           }
         }
 
-        match persistence::deserialize_from_url::<F32NumericTypes>() {
+        match persistence::deserialize_from_url::<F32NumericTypes>(&mut next_id) {
           Ok((data, bounds))=>{
             entries_s = data;
             default_bounds_s = bounds;
-            next_id += entries_s.len() as u64;
 
           },
           Err(e)=>{
             serialization_error = Some(e);
           }
         }
-        match persistence::deserialize_from_url::<DefaultNumericTypes>() {
+        match persistence::deserialize_from_url::<DefaultNumericTypes>(&mut next_id) {
           Ok((data,bounds))=>{
             entries_d = data;
             default_bounds_d = bounds;
-            next_id += entries_s.len() as u64;
           },
           Err(e)=>{
             serialization_error = Some(e);
@@ -554,12 +552,12 @@ impl App for Application {
 				)
 				.is_ok()
 				{
-					let (entries, default_bounds) = persistence::deserialize_from_json(&output).unwrap();
+					let (entries, default_bounds) =
+						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
 					self.state_f64.entries = entries;
 					self.state_f64.default_bounds = default_bounds;
 					self.state_f64.clear_cache = true;
 					self.state_f64.name = self.state_f32.name.clone();
-					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			} else {
 				let mut output = Vec::with_capacity(1024);
@@ -570,12 +568,12 @@ impl App for Application {
 				)
 				.is_ok()
 				{
-					let (entries, default_bounds) = persistence::deserialize_from_json(&output).unwrap();
+					let (entries, default_bounds) =
+						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
 					self.state_f32.entries = entries;
 					self.state_f32.default_bounds = default_bounds;
 					self.state_f32.clear_cache = true;
 					self.state_f32.name = self.state_f64.name.clone();
-					self.ui.next_id += self.state_f32.entries.len() as u64;
 				}
 			}
 		}
@@ -600,6 +598,55 @@ impl App for Application {
 	fn persist_egui_memory(&self) -> bool { true }
 
 	fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
+}
+
+fn add_new_entry_btn<T: EvalexprNumericTypes>(
+	ui: &mut egui::Ui, next_id: &mut u64, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
+) -> bool {
+	let mut needs_recompilation = false;
+
+	if entries.len() >= 1000 {
+		return false;
+	}
+	ui.menu_button("➕ Add", |ui| {
+		let new_function = Entry::new_function(*next_id, String::new());
+		if ui.button(new_function.type_name()).clicked() {
+			entries.push(new_function);
+			*next_id += 1;
+			needs_recompilation = true;
+		}
+		let new_constant = Entry::new_constant(*next_id);
+		if ui.button(new_constant.type_name()).clicked() {
+			entries.push(new_constant);
+			*next_id += 1;
+			needs_recompilation = true;
+		}
+		let new_points = Entry::new_points(*next_id);
+		if ui.button(new_points.type_name()).clicked() {
+			entries.push(new_points);
+			*next_id += 1;
+			needs_recompilation = true;
+		}
+		let new_integral = Entry::new_integral(*next_id);
+		if ui.button(new_integral.type_name()).clicked() {
+			entries.push(new_integral);
+			*next_id += 1;
+		}
+		let new_label = Entry::new_label(*next_id);
+		if ui.button(new_label.type_name()).clicked() {
+			entries.push(new_label);
+			*next_id += 1;
+		}
+		if can_add_folder {
+			let new_folder = Entry::new_folder(*next_id);
+			if ui.button(new_folder.type_name()).clicked() {
+				entries.push(new_folder);
+				*next_id += 1;
+			}
+		}
+	});
+
+	needs_recompilation
 }
 fn side_panel<T: EvalexprNumericTypes>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
@@ -627,36 +674,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 			let mut needs_recompilation = false;
 
 			ui.horizontal_top(|ui| {
-				ui.menu_button("➕ Add", |ui| {
-					let new_function = Entry::new_function(ui_state.next_id, String::new());
-					if ui.button(new_function.type_name()).clicked() {
-						state.entries.push(new_function);
-						ui_state.next_id += 1;
-						needs_recompilation = true;
-					}
-					let new_constant = Entry::new_constant(ui_state.next_id);
-					if ui.button(new_constant.type_name()).clicked() {
-						state.entries.push(new_constant);
-						ui_state.next_id += 1;
-						needs_recompilation = true;
-					}
-					let new_points = Entry::new_points(ui_state.next_id);
-					if ui.button(new_points.type_name()).clicked() {
-						state.entries.push(new_points);
-						ui_state.next_id += 1;
-						needs_recompilation = true;
-					}
-					let new_integral = Entry::new_integral(ui_state.next_id);
-					if ui.button(new_integral.type_name()).clicked() {
-						state.entries.push(new_integral);
-						ui_state.next_id += 1;
-					}
-					let new_label = Entry::new_label(ui_state.next_id);
-					if ui.button(new_label.type_name()).clicked() {
-						state.entries.push(new_label);
-						ui_state.next_id += 1;
-					}
-				});
+				if add_new_entry_btn(ui, &mut ui_state.next_id, &mut state.entries, true) {
+					needs_recompilation = true;
+				}
 
 				if ui.button("❌ Clear all").clicked() {
 					state.entries.clear();
@@ -669,24 +689,89 @@ fn side_panel<T: EvalexprNumericTypes>(
 			let mut remove = None;
 			let mut animating = false;
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
-				ui.horizontal(|ui| {
-					handle.ui(ui, |ui| {
-						ui.label("||");
+				if let EntryType::Folder { entries } = &mut entry.ty {
+					ui.vertical(|ui| {
+						ui.horizontal(|ui| {
+							handle.ui(ui, |ui| {
+								ui.label("||");
+							});
+							let folder_symbol = if entry.visible { "📂" } else { "📁" };
+							if ui
+								.add(
+									Button::new(RichText::new(folder_symbol).strong().monospace())
+										.corner_radius(10),
+								)
+								.clicked()
+							{
+								entry.visible = !entry.visible;
+							}
+
+							ui.add(TextEdit::singleline(&mut entry.name).hint_text("name")).changed();
+							ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
+								if entries.is_empty() {
+									if ui.button("X").clicked() {
+										remove = Some(entry.id);
+									}
+								}
+								if add_new_entry_btn(ui, &mut ui_state.next_id, entries, false) {
+									needs_recompilation = true;
+								}
+							});
+						});
+						if entry.visible {
+							let mut remove_from_folder = None;
+
+							// ui.horizontal(|ui| {
+							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
+								ui.horizontal(|ui| {
+									// ui.allocate_space(Vec2::new(2.0, 0.0));
+
+									handle.ui(ui, |ui| {
+										ui.label("    |");
+									});
+									ui.horizontal(|ui| {
+										let fe_result = entry::edit_entry_ui(ui, entry, state.clear_cache);
+										if fe_result.remove {
+											remove_from_folder = Some(entry.id);
+										}
+										animating |= fe_result.animating;
+										needs_recompilation |= fe_result.needs_recompilation;
+										if let Some(error) = fe_result.error {
+											ui_state.parsing_errors.insert(entry.id, error);
+										} else if fe_result.parsed {
+											ui_state.parsing_errors.remove(&entry.id);
+										}
+									});
+								});
+							});
+							// });
+							if let Some(id) = remove_from_folder {
+								if let Some(index) = entries.iter().position(|e| e.id == id) {
+									entries.remove(index);
+								}
+							}
+						}
 					});
+				} else {
 					ui.horizontal(|ui| {
-						let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
-						if result.remove {
-							remove = Some(entry.id);
-						}
-						animating |= result.animating;
-						needs_recompilation |= result.needs_recompilation;
-						if let Some(error) = result.error {
-							ui_state.parsing_errors.insert(entry.id, error);
-						} else if result.parsed {
-							ui_state.parsing_errors.remove(&entry.id);
-						}
+						handle.ui(ui, |ui| {
+							ui.label("||");
+						});
+						ui.horizontal(|ui| {
+							let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
+							if result.remove {
+								remove = Some(entry.id);
+							}
+							animating |= result.animating;
+							needs_recompilation |= result.needs_recompilation;
+							if let Some(error) = result.error {
+								ui_state.parsing_errors.insert(entry.id, error);
+							} else if result.parsed {
+								ui_state.parsing_errors.remove(&entry.id);
+							}
+						});
 					});
-				});
+				}
 				if let Some(parsing_error) = ui_state.parsing_errors.get(&entry.id) {
 					ui.label(RichText::new(parsing_error).color(Color32::RED));
 				} else if let Some(eval_error) = ui_state.eval_errors.get(&entry.id) {
@@ -889,11 +974,6 @@ fn side_panel<T: EvalexprNumericTypes>(
 	ui_state.eval_errors.clear();
 }
 fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
-	// ui_state.lines.clear();
-	// ui_state.points.clear();
-	// ui_state.polygons.clear();
-	// ui_state.texts.clear();
-
 	let main_context = &state.ctx;
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
@@ -921,14 +1001,21 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
 	state.entries.par_iter_mut().enumerate().for_each(|(i, entry)| {
 		scope!("entry_draw", entry.name.clone());
-		ui_state.stack_overflow_guard.get_or_default().set(0);
-		let draw_buffer = ui_state.draw_buffer.get_or(|| RefCell::new(entry::DrawBuffer::new()));
 
 		let id = Id::new(entry.id);
-		if let Err(error) = entry::create_entry_plot_elements(
-			entry, id, i as u32, ui_state.selected_plot_line, main_context, &plot_params, draw_buffer,
+		if let Err(errors) = entry::create_entry_plot_elements(
+			entry,
+			id,
+			i as u32 * 1000,
+			ui_state.selected_plot_line,
+			main_context,
+			&plot_params,
+			&ui_state.draw_buffer,
+			&ui_state.stack_overflow_guard,
 		) {
-			eval_errors.lock().unwrap().insert(entry.id, error);
+			for (id, error) in errors {
+				eval_errors.lock().unwrap().insert(id, error);
+			}
 		}
 	});
 
@@ -1128,7 +1215,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			}
 			for draw_point in draw_points {
 				if let Some((mouse_pos, transform)) = ui_state.plot_mouese_pos {
-          let sel = &draw_point.interaction;
+					let sel = &draw_point.interaction;
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
 					let dist_sq = (sel_p.x - mouse_pos.0).powf(2.0) + (sel_p.y - mouse_pos.1).powf(2.0);
 					if dist_sq < sel.radius * sel.radius {
@@ -1165,14 +1252,12 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 		if let Some(dragging_point_i) = &ui_state.dragging_point_i {
 			if let PointInteractionType::Draggable { i } = dragging_point_i.ty {
-				if let Some((name, points)) =
-					state.entries.iter_mut().find(|e| Id::new(e.id) == i.0).and_then(|e| {
-						if let EntryType::Points { points, .. } = &mut e.ty {
-							Some((&e.name, points))
-						} else {
-							None
-						}
-					}) {
+				if let Some((name, points)) = get_entry_mut_by_id(&mut state.entries, i.0).and_then(|entry| {
+					let EntryType::Points { points, .. } = &mut entry.ty else {
+						return None;
+					};
+					Some((&entry.name, points))
+				}) {
 					let point = &mut points[i.1 as usize];
 
 					let point_x = dragging_point_i.x;
@@ -1236,8 +1321,11 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								let x_node = point.x.node.clone();
 								let y_node = point.y.node.clone();
 								if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
-									if let Some(c_idx) = state.entries.iter().position(|e| e.name == x_const) {
-										if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
+									if let Some(c_idx) = entry_position(&state.entries, |e| e.name == x_const)
+									{
+										if let EntryType::Constant { value, .. } =
+											&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
+										{
 											let new_value = solve_minimize(
 												value.to_f64(),
 												(pos.x, pos.y),
@@ -1259,11 +1347,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 													)
 												},
 											);
-											if let EntryType::Constant { value, .. } =
-												&mut state.entries[c_idx].ty
-											{
-												*value = f64_to_float::<T>(new_value);
-											}
+											*value = f64_to_float::<T>(new_value);
 										}
 									}
 								}
@@ -1296,12 +1380,10 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 		if let Some(hovered_id) = plot_res.hovered_plot_item {
 			if ui.input(|i| i.pointer.primary_clicked()) {
-				if state.entries.iter().any(|e| {
-					if matches!(e.ty, EntryType::Function { .. }) {
-						Id::new(e.id) == hovered_id
-					} else {
-						false
-					}
+				if state.entries.iter().any(|e| match &e.ty {
+					EntryType::Function { .. } => Id::new(e.id) == hovered_id,
+					EntryType::Folder { entries } => entries.iter().any(|e| Id::new(e.id) == hovered_id),
+					_ => false,
 				}) {
 					ui_state.selected_plot_line = Some(hovered_id);
 				}
@@ -1385,16 +1467,20 @@ fn drag<T: EvalexprNumericTypes>(
 	state: &mut State<T>, name: &str, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
 ) -> bool {
 	if let Some(point_node) = node {
-		if let Some(c_idx) = state.entries.iter().position(|e| e.name == name) {
-			if let EntryType::Constant { value, .. } = &state.entries[c_idx].ty {
-				let value = *value;
+		if let Some(c_idx) = entry_position(&state.entries, |e| e.name == name) {
+			if let EntryType::Constant { value, .. } =
+				&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
+			{
+				// let value = *value;
 				if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
 					state.ctx.set_value(name, f64_to_value::<T>(x)).unwrap();
 					point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
 				}) {
-					if let EntryType::Constant { value, .. } = &mut state.entries[c_idx].ty {
-						*value = f64_to_float::<T>(new_value);
-					}
+					// if let EntryType::Constant { value, .. } =
+					// 	&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
+					// {
+					*value = f64_to_float::<T>(new_value);
+					// }
 				} else {
 					return false;
 				}
@@ -1560,4 +1646,48 @@ fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
 			// ui.set_min_width(100.0);
 		});
 	});
+}
+
+fn get_entry_mut<T: EvalexprNumericTypes>(
+	entries: &mut [Entry<T>], idx: (Option<usize>, usize),
+) -> Option<&mut Entry<T>> {
+	if let Some(idx_2) = idx.0 {
+		if let Some(entry) = entries.get_mut(idx.1) {
+			if let EntryType::Folder { entries } = &mut entry.ty {
+				return entries.get_mut(idx_2);
+			}
+		}
+		return None;
+	}
+	entries.get_mut(idx.1)
+}
+fn entry_position<T: EvalexprNumericTypes>(
+	entries: &[Entry<T>], pos_cb: impl Fn(&Entry<T>) -> bool,
+) -> Option<(Option<usize>, usize)> {
+	for (i, entry) in entries.iter().enumerate() {
+		if pos_cb(entry) {
+			return Some((None, i));
+		} else if let EntryType::Folder { entries } = &entry.ty {
+			for (j, sub_entry) in entries.iter().enumerate() {
+				if pos_cb(sub_entry) {
+					return Some((Some(j), i));
+				}
+			}
+		}
+	}
+	None
+}
+fn get_entry_mut_by_id<T: EvalexprNumericTypes>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
+	for entry in entries.iter_mut() {
+		if Id::new(entry.id) == id {
+			return Some(entry);
+		} else if let EntryType::Folder { entries } = &mut entry.ty {
+			for sub_entry in entries.iter_mut() {
+				if Id::new(sub_entry.id) == id {
+					return Some(sub_entry);
+				}
+			}
+		}
+	}
+	None
 }

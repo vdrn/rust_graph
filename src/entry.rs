@@ -1,11 +1,9 @@
+use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
 use core::mem;
 use core::ops::RangeInclusive;
-use egui_extras::syntax_highlighting::{CodeTheme, SyntectSettings};
-use regex::Regex;
-use smallvec::SmallVec;
-use std::sync::{Arc, LazyLock};
-use thread_local::ThreadLocal;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use std::sync::LazyLock;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
 use eframe::egui::{
@@ -15,7 +13,10 @@ use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
 	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, Node, Value
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+use thread_local::ThreadLocal;
 
 use crate::{MAX_FUNCTION_NESTING, marching_squares};
 
@@ -56,7 +57,7 @@ impl DrawLine {
 		Self { sorting_index, id, width, line }
 	}
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct PointInteraction {
 	pub ty:     PointInteractionType,
 	pub x:      f64,
@@ -77,7 +78,7 @@ impl PointInteraction {
 		}
 	}
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum OtherPointType {
 	Point,
 	Minima,
@@ -86,7 +87,7 @@ pub enum OtherPointType {
 	IntersectionWithXAxis,
 	IntersectionWithYAxis,
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum PointInteractionType {
 	Draggable { i: (Id, u32) },
 	Other(OtherPointType),
@@ -211,19 +212,20 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 				TextboxType::MultiLine => TextEdit::multiline(&mut self.text).desired_rows(2),
 			};
 
-			let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-				let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
-					ui.ctx(),
-					ui.style(),
-					&CodeTheme::dark(12.0),
-					buf.as_str(),
-					"Rust",
-				);
-				layout_job.wrap.max_width = wrap_width;
-				ui.fonts_mut(|f| f.layout_job(layout_job))
-			};
-			text_edit = text_edit.layouter(&mut layouter);
-			text_edit = text_edit.hint_text(hint_text);//.font(egui::TextStyle::Monospace);
+			// let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+			// 	let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
+			// 		ui.ctx(),
+			// 		ui.style(),
+			// 		&CodeTheme::dark(12.0),
+			// 		buf.as_str(),
+			// 		"Rust",
+			// 	);
+			// 	layout_job.wrap.max_width = wrap_width;
+			// 	ui.fonts_mut(|f| f.layout_job(layout_job))
+			// };
+			// text_edit = text_edit.layouter(&mut layouter);
+
+			text_edit = text_edit.hint_text(hint_text); //.font(egui::TextStyle::Monospace);
 			if let Some(width) = desired_width {
 				text_edit = text_edit.desired_width(width);
 			}
@@ -326,6 +328,9 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		size:      Expr<T>,
 		underline: bool,
 	},
+	Folder {
+		entries: Vec<Entry<T>>,
+	},
 }
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PointStyle {
@@ -407,6 +412,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			EntryType::Points { .. } => "◊",
 			EntryType::Integral { .. } => "∫",
 			EntryType::Label { .. } => "📃",
+			EntryType::Folder { .. } => "📂",
 		}
 	}
 	pub fn type_name(&self) -> &'static str {
@@ -416,6 +422,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			EntryType::Points { .. } => "◊ Points",
 			EntryType::Integral { .. } => "∫   Integral",
 			EntryType::Label { .. } => "📃 Label",
+			EntryType::Folder { .. } => "📂 Folder",
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
@@ -490,6 +497,15 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 				size:      Expr::default(),
 				underline: false,
 			},
+		}
+	}
+	pub fn new_folder(id: u64) -> Self {
+		Self {
+			id,
+			color: id as usize % NUM_COLORS,
+			visible: true,
+			name: String::new(),
+			ty: EntryType::Folder { entries: Vec::new() },
 		}
 	}
 }
@@ -674,6 +690,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				},
 				EntryType::Constant { .. } => {},
 				EntryType::Label { .. } => {},
+				EntryType::Folder { .. } => {},
 			}
 		});
 		ui.with_layout(egui::Layout::left_to_right(Align::LEFT), |ui| {
@@ -701,6 +718,11 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 			}
 			let color = entry.color();
 			match &mut entry.ty {
+				EntryType::Folder { .. } => {
+					// handled in outer scope
+
+
+				},
 				EntryType::Function { func, range_start, range_end, ty, implicit_resolution, .. } => {
 					ui.vertical(|ui| {
 						match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
@@ -1074,6 +1096,11 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 		return Ok(());
 	}
 	match &mut entry.ty {
+		EntryType::Folder { entries } => {
+			for entry in entries {
+				recompile_entry(entry, ctx, stack_overflow_guard)?;
+			}
+		},
 		EntryType::Points { points, .. } => {
 			for point in points {
 				if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
@@ -1284,18 +1311,44 @@ pub struct PlotParams {
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
-	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams, draw_buffer: &RefCell<DrawBuffer>,
-) -> Result<(), String> {
+	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
+	draw_buffer: &ThreadLocal<RefCell<DrawBuffer>>, stack_overflow_guard: &ThreadLocal<Cell<isize>>,
+) -> Result<(), Vec<(u64, String)>> {
+	stack_overflow_guard.get_or_default().set(0);
+
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Integral { .. }) {
 		return Ok(());
 	}
 	let color = entry.color();
 
+	let draw_buffer_c = draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
 	match &mut entry.ty {
+		EntryType::Folder { entries } => {
+			let mut errors = std::sync::Mutex::new(Vec::new());
+			entries.par_iter_mut().enumerate().for_each(|(ei, entry)| {
+				let eid = Id::new(entry.id);
+				if let Err(e) = create_entry_plot_elements(
+					entry,
+					eid,
+					sorting_idx + ei as u32,
+					selected_id,
+					ctx,
+					plot_params,
+					draw_buffer,
+					stack_overflow_guard,
+				) {
+					errors.lock().unwrap().extend(e);
+				}
+			});
+			if errors.get_mut().unwrap().is_empty() {
+				return Ok(());
+			}
+			return Err(errors.into_inner().unwrap());
+		},
 		EntryType::Constant { .. } => {},
 		EntryType::Integral { func, lower, upper, calculated, resolution, style, .. } => {
-			let mut draw_buffer = draw_buffer.borrow_mut();
+			let mut draw_buffer = draw_buffer_c.borrow_mut();
 			let (Some(lower_node), Some(upper_node), Some(func_node)) = (&lower.node, &upper.node, &func.node)
 			else {
 				return Ok(());
@@ -1303,20 +1356,20 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			let lower = match lower_node.eval_float_with_context(ctx) {
 				Ok(lower) => lower.to_f64(),
 				Err(e) => {
-					return Err(format!("Error evaluating lower bound: {e}"));
+					return Err(vec![(entry.id, format!("Error evaluating lower bound: {e}"))]);
 				},
 			};
 			let upper = match upper_node.eval_float_with_context(ctx) {
 				Ok(upper) => upper.to_f64(),
 				Err(e) => {
-					return Err(format!("Error evaluating upper bound: {e}"));
+					return Err(vec![(entry.id, format!("Error evaluating upper bound: {e}"))]);
 				},
 			};
 			let range = upper - lower;
 			if lower > upper {
 				*calculated = None;
 
-				return Err("Lower bound must be less than upper bound".to_string());
+				return Err(vec![(entry.id, "Lower bound must be less than upper bound".to_string())]);
 			}
 			let resolution = *resolution;
 			let step = range / resolution as f64;
@@ -1363,7 +1416,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						// prev_sampling_point = Some((sampling_x, y.to_f64()));
 					},
 					Err(e) => {
-						return Err(e.to_string());
+						return Err(vec![(entry.id, e.to_string())]);
 					},
 				};
 
@@ -1443,7 +1496,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					}
 				}
 				if result.is_nan() {
-					return Err("Integral is undefined".to_string());
+					return Err(vec![(entry.id, "Integral is undefined".to_string())]);
 				}
 
 				if visible {
@@ -1476,7 +1529,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			*calculated = Some(result);
 		},
 		EntryType::Label { x, y, size, underline, .. } => {
-			let mut draw_buffer = draw_buffer.borrow_mut();
+			let mut draw_buffer = draw_buffer_c.borrow_mut();
 
 			match eval_point(ctx, x.node.as_ref(), y.node.as_ref()) {
 				Ok(Some((x, y))) => {
@@ -1484,7 +1537,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						match size.eval_float_with_context_and_x(ctx, &f64_to_value(x)) {
 							Ok(size) => size.to_f64() as f32,
 							Err(e) => {
-								return Err(e.to_string());
+								return Err(vec![(entry.id, e.to_string())]);
 							},
 						}
 					} else {
@@ -1500,13 +1553,13 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					draw_buffer.texts.push(DrawText::new(sorting_idx, text));
 				},
 				Err(e) => {
-					return Err(e);
+					return Err(vec![(entry.id, e)]);
 				},
 				_ => {},
 			}
 		},
 		EntryType::Points { points, style } => {
-			let mut draw_buffer = draw_buffer.borrow_mut();
+			let mut draw_buffer = draw_buffer_c.borrow_mut();
 			// main_context
 			// 	.write()
 			// 	.unwrap()
@@ -1561,7 +1614,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						}
 					},
 					Err(e) => {
-						return Err(e);
+						return Err(vec![(entry.id, e)]);
 					},
 					_ => {},
 				}
@@ -1611,7 +1664,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 				// });
 				let add_line = |line: Vec<PlotPoint>| {
-					let mut draw_buffer = draw_buffer.borrow_mut();
+					let mut draw_buffer = draw_buffer_c.borrow_mut();
 					draw_buffer.lines.push(DrawLine::new(
 						sorting_idx,
 						id,
@@ -1661,11 +1714,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								},
 								Ok(Value::Empty) => {},
 								Ok(_) => {
-									return Err("Function must return float or empty".to_string());
+									return Err(vec![(entry.id, "Function must return float or empty".to_string())]);
 								},
 
 								Err(e) => {
-									return Err(e.to_string());
+									return Err(vec![(entry.id, e.to_string())]);
 								},
 							}
 
@@ -1715,11 +1768,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								},
 								Ok(Value::Empty) => {},
 								Ok(_) => {
-									return Err("Function must return float or empty".to_string());
+									return Err(vec![(entry.id, "Function must return float or empty".to_string())]);
 								},
 
 								Err(e) => {
-									return Err(e.to_string());
+									return Err(vec![(entry.id, e.to_string())]);
 								},
 							}
 
@@ -1737,7 +1790,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref()) {
 							Ok(Some((start, end))) => {
 								if start > end {
-									return Err("Range start must be less than range end".to_string());
+									return Err(vec![(entry.id, "Range start must be less than range end".to_string())]);
 								}
 								let range = end - start;
 								let step = range / plot_params.resolution as f64;
@@ -1759,13 +1812,13 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 										Ok(Value::Empty) => {},
 										Ok(Value::Tuple(values)) => {
 											if values.len() != 2 {
-												return Err(format!(
+												return Err(vec![(entry.id, format!(
 													"Ranged function must return 1 or 2 float values, got {}",
 													values.len()
-												));
+												))]);
 											}
-											let x = values[0].as_float().map_err(|e| e.to_string())?;
-											let y = values[1].as_float().map_err(|e| e.to_string())?;
+											let x = values[0].as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
+											let y = values[1].as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
 											if y.is_nan() {
 												if !pp_buffer.is_empty() {
 													add_line(mem::take(&mut pp_buffer));
@@ -1776,18 +1829,18 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 										},
 										Ok(_) => {
 											return Err(
-												"Ranged function must return 1 or 2 float values".to_string()
+												vec![(entry.id, "Ranged function must return 1 or 2 float values".to_string())]
 											);
 										},
 										Err(e) => {
-											return Err(e.to_string());
+											return Err(vec![(entry.id, e.to_string())]);
 										},
 									}
 								}
 								add_line(pp_buffer);
 							},
 							Err(e) => {
-								return Err(e);
+								return Err(vec![(entry.id, e)]);
 							},
 							_ => {},
 						}
@@ -1806,7 +1859,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							maxs,
 							*implicit_resolution,
 							// plot_params.eps
-						)? {
+						).map_err(|e| vec![(entry.id, e)])? {
 							add_line(line);
 						}
 					},
