@@ -11,7 +11,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, Node, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, HashMapContext, Node, Value
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -335,6 +335,8 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PointStyle {
 	show_lines:  bool,
+	#[serde(default)]
+	show_arrows: bool,
 	show_points: bool,
 	line_style:  GLineStyle,
 }
@@ -350,7 +352,9 @@ impl Default for IntegralStyle {
 }
 
 impl Default for PointStyle {
-	fn default() -> Self { Self { show_lines: true, show_points: true, line_style: GLineStyle::default() } }
+	fn default() -> Self {
+		Self { show_lines: true, show_points: true, show_arrows: false, line_style: GLineStyle::default() }
+	}
 }
 
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
@@ -593,7 +597,9 @@ impl ConstantType {
 	}
 }
 
-static RESERVED_NAMES: [&str; 2] = ["x", "y"];
+pub const STEP_Y_NAME: &str = "___STEP____X___";
+pub const STEP_X_NAME: &str = "___STEP___Y___";
+static RESERVED_NAMES: [&str; 5] = ["x", "y", "d", STEP_X_NAME, STEP_Y_NAME];
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
 	pub animating:           bool,
@@ -664,7 +670,10 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					ui.checkbox(&mut style.show_lines, "Show Lines");
 					if style.show_lines {
 						ui.label("Line Style:");
+						ui.checkbox(&mut style.show_arrows, "Show Arrows");
 						style.line_style.ui(ui);
+					} else {
+						style.show_arrows = false;
 					}
 					ui.separator();
 					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
@@ -685,8 +694,11 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				},
 				EntryType::Integral { style, .. } => {
 					ui.checkbox(&mut style.show_function, "Show Function being integrated");
+					if style.show_function {
+						ui.checkbox(&mut style.show_area, "Show Area");
+					}
+					ui.separator();
 					ui.checkbox(&mut style.show_integral_fn, "Show Integral Function");
-					ui.checkbox(&mut style.show_area, "Show Area");
 				},
 				EntryType::Constant { .. } => {},
 				EntryType::Label { .. } => {},
@@ -711,7 +723,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 				result.needs_recompilation = true;
 			}
 			if RESERVED_NAMES.contains(&entry.name.trim()) {
-				result.error = Some("\"x\" and \"y\" are reserved names".to_string());
+				result.error = Some(format!("{} is reserved name.", entry.name));
 				// return;
 			} else if !name_was_ok {
 				result.parsed = true;
@@ -737,7 +749,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							match ty {
 								FunctionType::X | FunctionType::Ranged => {
 									let mut is_ranged = *ty == FunctionType::Ranged;
-									ui.checkbox(&mut is_ranged, "Ranged");
+									ui.checkbox(&mut is_ranged, "Parametric");
 									*ty = if is_ranged { FunctionType::Ranged } else { FunctionType::X };
 								},
 
@@ -778,7 +790,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 							}
 						});
 						if let FunctionType::Ranged = ty {
-							ui.label("Ranged fns can return 1 or 2 values: f(x)->y  or f(x)->(x,y)");
+							ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(x)->(x,y)");
 						}
 					});
 				},
@@ -1091,7 +1103,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
-) -> Result<(), String> {
+) -> Result<(), (u64, String)> {
 	if RESERVED_NAMES.contains(&entry.name.trim()) {
 		return Ok(());
 	}
@@ -1169,7 +1181,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 							if x_state.is_literal {
 								point.drag_point = Some(DragPoint::XLiteral);
 							} else if let Some(x_const) = x_state.constants.first() {
-								if y_state.constants.iter().any(|c| c == x_const) {
+								if x_state.num_identifiers == 1 {
+									point.drag_point = Some(DragPoint::XConstant(x_const.to_string()));
+								} else if y_state.constants.iter().any(|c| c == x_const) {
 									point.drag_point =
 										Some(DragPoint::SameConstantBothCoords(x_const.to_string()));
 								} else {
@@ -1181,7 +1195,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 							if y_state.is_literal {
 								point.drag_point = Some(DragPoint::YLiteral);
 							} else if let Some(y_const) = y_state.constants.first() {
-								if x_state.constants.iter().any(|c| c == y_const) {
+								if y_state.num_identifiers == 1 {
+									point.drag_point = Some(DragPoint::YConstant(y_const.to_string()));
+								} else if x_state.constants.iter().any(|c| c == y_const) {
 									point.drag_point =
 										Some(DragPoint::SameConstantBothCoords(y_const.to_string()));
 								} else {
@@ -1231,7 +1247,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				if has_x && has_y {
 					if !func.text.contains('=') {
 						func.node = None;
-						return Err("Implicit function must contain = sign".to_string());
+						return Err((entry.id, "Implicit function must contain = sign".to_string()));
 					}
 					*ty = FunctionType::Implicit;
 				} else if has_y {
@@ -1242,7 +1258,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 				let stack_overflow_guard = stack_overflow_guard.clone();
 				let ty = *ty;
-				let fun = Function::new(move |context, v| {
+				let fun = Function::new(move |context: &HashMapContext<T>, v| {
 					// puffin::profile_scope!("eval_function");
 					let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
 					let stack_depth = stack_overflow_guard.get() + 1;
@@ -1271,9 +1287,11 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 							let vv = Value::<T>::Float(v);
 
 							if ty == FunctionType::Y {
-								func_node.eval_with_context_and_y(context, &vv)
+								let step = context.get_value(STEP_X_NAME).unwrap().as_float().unwrap();
+								func_node.eval_with_context_and_y(context, &vv, step)
 							} else {
-								func_node.eval_with_context_and_x(context, &vv)
+								let step = context.get_value(STEP_Y_NAME).unwrap().as_float().unwrap();
+								func_node.eval_with_context_and_x(context, &vv, step)
 							}
 						},
 						FunctionType::Implicit => {
@@ -1303,14 +1321,16 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 }
 
 pub struct PlotParams {
-	pub eps:        f64,
-	pub first_x:    f64,
-	pub last_x:     f64,
-	pub first_y:    f64,
-	pub last_y:     f64,
-	pub step_size:  f64,
-	pub resolution: usize,
+	pub eps:         f64,
+	pub first_x:     f64,
+	pub last_x:      f64,
+	pub first_y:     f64,
+	pub last_y:      f64,
+	pub step_size:   f64,
+	pub step_size_y: f64,
+	pub resolution:  usize,
 }
+pub fn deriv_step(step: f64) -> f64 { step.sqrt() }
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
@@ -1324,6 +1344,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 		return Ok(());
 	}
 	let color = entry.color();
+	let deriv_step_x = f64_to_float::<T>(deriv_step(plot_params.step_size));
+	let deriv_step_y = f64_to_float::<T>(deriv_step(plot_params.step_size_y));
+	// println!("step_size: {deriv_step_x}");
 
 	let draw_buffer_c = draw_buffer.get_or(|| RefCell::new(DrawBuffer::new()));
 	match &mut entry.ty {
@@ -1377,19 +1400,20 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			let resolution = *resolution;
 			let step = range / resolution as f64;
 			let step_f = f64_to_float::<T>(step);
+			let deriv_step_f = f64_to_float::<T>(deriv_step(step));
 			if lower + step == lower {
 				*calculated = Some(T::Float::ZERO);
 				return Ok(());
 			}
 			*calculated = None;
 
-			let mut polygons = Vec::with_capacity(resolution);
+			// let mut polygons = Vec::with_capacity(resolution);
 			let mut int_lines = Vec::with_capacity(resolution);
 			let mut fun_lines = Vec::with_capacity(resolution);
 
 			let stroke_color = color;
 			let rgba_color = stroke_color.to_srgba_unmultiplied();
-			let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1], 128);
+			// let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1], 128);
 
 			let mut result: T::Float = T::Float::ZERO;
 			let mut prev_y: Option<T::Float> = None;
@@ -1398,7 +1422,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				let sampling_x = lower + step * i as f64;
 
 				let cur_x = sampling_x;
-				let cur_y = match func_node.eval_float_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
+				let cur_y = match func_node.eval_float_with_context_and_x(
+					ctx,
+					&f64_to_value(sampling_x),
+					deriv_step_f,
+				) {
 					Ok(y) => {
 						y.to_f64()
 						// if let Some((prev_x, prev_y)) = prev_sampling_point {
@@ -1433,30 +1461,30 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let diff = (prev_y_f64 - cur_y).abs();
 						let t = prev_y_f64.abs() / diff;
 						let x_midpoint = (cur_x - step) + step * t;
-						if visible && style.show_area {
-							let triangle1 = Polygon::new(
-								entry.name.clone(),
-								PlotPoints::Owned(vec![
-									PlotPoint::new(cur_x - step, 0.0),
-									PlotPoint::new(cur_x - step, prev_y_f64),
-									PlotPoint::new(x_midpoint, 0.0),
-								]),
-							)
-							.fill_color(fill_color)
-							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(triangle1);
-							let triangle2 = Polygon::new(
-								entry.name.clone(),
-								PlotPoints::Owned(vec![
-									PlotPoint::new(x_midpoint, 0.0),
-									PlotPoint::new(cur_x, cur_y),
-									PlotPoint::new(cur_x, 0.0),
-								]),
-							)
-							.fill_color(fill_color)
-							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(triangle2);
-						}
+						// if visible && style.show_area {
+						// 	let triangle1 = Polygon::new(
+						// 		entry.name.clone(),
+						// 		PlotPoints::Owned(vec![
+						// 			PlotPoint::new(cur_x - step, 0.0),
+						// 			PlotPoint::new(cur_x - step, prev_y_f64),
+						// 			PlotPoint::new(x_midpoint, 0.0),
+						// 		]),
+						// 	)
+						// 	.fill_color(fill_color)
+						// 	.stroke(Stroke::new(eps, fill_color));
+						// 	polygons.push(triangle1);
+						// 	let triangle2 = Polygon::new(
+						// 		entry.name.clone(),
+						// 		PlotPoints::Owned(vec![
+						// 			PlotPoint::new(x_midpoint, 0.0),
+						// 			PlotPoint::new(cur_x, cur_y),
+						// 			PlotPoint::new(cur_x, 0.0),
+						// 		]),
+						// 	)
+						// 	.fill_color(fill_color)
+						// 	.stroke(Stroke::new(eps, fill_color));
+						// 	polygons.push(triangle2);
+						// }
 
 						let t = f64_to_float::<T>(t);
 
@@ -1468,29 +1496,29 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						result = result + b1 * T::Float::HALF;
 						result = result + b2 * T::Float::HALF;
 					} else {
-						if visible && style.show_area {
-							let poly = Polygon::new(
-								entry.name.clone(),
-								if prev_y_f64 > 0.0 {
-									PlotPoints::Owned(vec![
-										PlotPoint::new(cur_x - step, 0.0),
-										PlotPoint::new(cur_x - step, prev_y_f64),
-										PlotPoint::new(cur_x, cur_y),
-										PlotPoint::new(cur_x, 0.0),
-									])
-								} else {
-									PlotPoints::Owned(vec![
-										PlotPoint::new(cur_x - step, 0.0),
-										PlotPoint::new(cur_x, 0.0),
-										PlotPoint::new(cur_x, cur_y),
-										PlotPoint::new(cur_x - step, prev_y_f64),
-									])
-								},
-							)
-							.fill_color(fill_color)
-							.stroke(Stroke::new(eps, fill_color));
-							polygons.push(poly);
-						}
+						// if visible && style.show_area {
+						// 	let poly = Polygon::new(
+						// 		entry.name.clone(),
+						// 		if prev_y_f64 > 0.0 {
+						// 			PlotPoints::Owned(vec![
+						// 				PlotPoint::new(cur_x - step, 0.0),
+						// 				PlotPoint::new(cur_x - step, prev_y_f64),
+						// 				PlotPoint::new(cur_x, cur_y),
+						// 				PlotPoint::new(cur_x, 0.0),
+						// 			])
+						// 		} else {
+						// 			PlotPoints::Owned(vec![
+						// 				PlotPoint::new(cur_x - step, 0.0),
+						// 				PlotPoint::new(cur_x, 0.0),
+						// 				PlotPoint::new(cur_x, cur_y),
+						// 				PlotPoint::new(cur_x - step, prev_y_f64),
+						// 			])
+						// 		},
+						// 	)
+						// 	.fill_color(fill_color)
+						// 	.stroke(Stroke::new(eps, fill_color));
+						// 	polygons.push(poly);
+						// }
 						let dy = y - prev_y;
 						let step = f64_to_float::<T>(step);
 						let d = dy * step;
@@ -1513,7 +1541,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				prev_y = Some(y);
 				// x += step;
 			}
-			draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, polygons));
+			// draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, polygons));
 			let int_name = if entry.name.is_empty() { func.text.as_str() } else { entry.name.as_str() };
 			draw_buffer.lines.push(DrawLine::new(
 				sorting_idx,
@@ -1523,21 +1551,20 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					.color(stroke_color),
 			));
 
-			draw_buffer.lines.push(DrawLine::new(
-				sorting_idx,
-				id,
-				1.0,
-				Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color),
-			));
+			let mut fn_line = Line::new("", PlotPoints::Owned(fun_lines)).color(stroke_color);
+			if style.show_area {
+				fn_line = fn_line.fill(0.0).fill_alpha(0.3);
+			}
+			draw_buffer.lines.push(DrawLine::new(sorting_idx, id, 1.0, fn_line));
 			*calculated = Some(result);
 		},
 		EntryType::Label { x, y, size, underline, .. } => {
 			let mut draw_buffer = draw_buffer_c.borrow_mut();
 
-			match eval_point(ctx, x.node.as_ref(), y.node.as_ref()) {
+			match eval_point(ctx, x.node.as_ref(), y.node.as_ref(), deriv_step_x) {
 				Ok(Some((x, y))) => {
 					let size = if let Some(size) = &size.node {
-						match size.eval_float_with_context_and_x(ctx, &f64_to_value(x)) {
+						match size.eval_float_with_context_and_x(ctx, &f64_to_value(x), deriv_step_x) {
 							Ok(size) => size.to_f64() as f32,
 							Err(e) => {
 								return Err(vec![(entry.id, e.to_string())]);
@@ -1568,12 +1595,18 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// 	.unwrap()
 			// 	.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
 			// 	.unwrap();
+			let mut arrow_buffer = vec![];
 			let mut line_buffer = vec![];
 			let color_rgba = color.to_array();
 			let color_outer =
 				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
+			let mut prev_point: Option<egui::Vec2> = None;
+			let arrow_scale = egui::Vec2::new(
+				(plot_params.last_x - plot_params.first_x) as f32,
+				(plot_params.last_y - plot_params.first_y) as f32,
+			) * 0.002;
 			for (i, p) in points.iter_mut().enumerate() {
-				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
+				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref(), deriv_step_x) {
 					Ok(Some((x, y))) => {
 						p.val = Some((f64_to_float::<T>(x), f64_to_float::<T>(y)));
 						let point_id = id.with(i);
@@ -1614,6 +1647,27 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 						if style.show_lines {
 							line_buffer.push([x, y]);
+							let cur_point = egui::Vec2::new(x as f32, y as f32);
+							if style.show_arrows
+								&& let Some(pp) = prev_point
+							{
+								let dir = (pp - cur_point).normalized();
+								let arrow_len = (arrow_scale * radius_outer);
+								let base = cur_point + dir * arrow_len.length();
+								let a = base + dir.rot90() * arrow_len * 0.5;
+								let b = base - dir.rot90() * arrow_len * 0.5;
+
+								arrow_buffer.push(
+									Polygon::new(
+										"",
+										vec![[x, y], [a.x as f64, a.y as f64], [b.x as f64, b.y as f64]],
+									)
+									.fill_color(color)
+									.allow_hover(false)
+									.stroke(Stroke::new(0.0, color)),
+								);
+							}
+							prev_point = Some(cur_point);
 						}
 					},
 					Err(e) => {
@@ -1633,6 +1687,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					.width(style.line_style.line_width)
 					.style(style.line_style.egui_line_style());
 				draw_buffer.lines.push(DrawLine::new(sorting_idx, id, width, line));
+				if !arrow_buffer.is_empty() {
+					draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, arrow_buffer));
+				}
 				// plot_ui.line(line);
 			}
 		},
@@ -1686,7 +1743,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let mut prev_sampling_point: Option<(f64, f64)> = None;
 						let mut sampling_x = plot_params.first_x;
 						while sampling_x < plot_params.last_x {
-							match func_node.eval_with_context_and_x(ctx, &f64_to_value(sampling_x)) {
+							match func_node.eval_with_context_and_x(
+								ctx,
+								&f64_to_value(sampling_x),
+								deriv_step_x,
+							) {
 								Ok(Value::Float(y)) => {
 									let y = y.to_f64();
 
@@ -1697,7 +1758,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											plot_params.eps,
 											|x| {
 												func_node
-													.eval_float_with_context_and_x(ctx, &f64_to_value(x))
+													.eval_float_with_context_and_x(
+														ctx,
+														&f64_to_value(x),
+														deriv_step_x,
+													)
 													.map(|y| y.to_f64())
 													.ok()
 											},
@@ -1743,7 +1808,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let mut pp_buffer = vec![];
 						let mut prev_sampling_point: Option<(f64, f64)> = None;
 						while sampling_y < plot_params.last_y {
-							match func_node.eval_with_context_and_y(ctx, &f64_to_value(sampling_y)) {
+							match func_node.eval_with_context_and_y(
+								ctx,
+								&f64_to_value(sampling_y),
+								deriv_step_y,
+							) {
 								Ok(Value::Float(x)) => {
 									let x = x.to_f64();
 
@@ -1754,7 +1823,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											plot_params.eps,
 											|y| {
 												func_node
-													.eval_float_with_context_and_y(ctx, &f64_to_value(y))
+													.eval_float_with_context_and_y(
+														ctx,
+														&f64_to_value(y),
+														deriv_step_y,
+													)
 													.map(|x| x.to_f64())
 													.ok()
 											},
@@ -1786,7 +1859,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							}
 
 							let prev_y = sampling_y;
-							sampling_y += plot_params.step_size;
+							sampling_y += plot_params.step_size_y;
 							if sampling_y == prev_y {
 								break;
 							}
@@ -1796,7 +1869,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					},
 					FunctionType::Ranged => {
 						let mut pp_buffer = vec![];
-						match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref()) {
+						match eval_point(ctx, range_start.node.as_ref(), range_end.node.as_ref(), deriv_step_x)
+						{
 							Ok(Some((start, end))) => {
 								if start > end {
 									return Err(vec![(
@@ -1811,7 +1885,11 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								}
 								for i in 0..(plot_params.resolution + 1) {
 									let x = start + step * i as f64;
-									match func_node.eval_with_context_and_x(ctx, &f64_to_value(x)) {
+									match func_node.eval_with_context_and_x(
+										ctx,
+										&f64_to_value(x),
+										f64_to_float::<T>(step),
+									) {
 										Ok(Value::Float(y)) => {
 											if y.is_nan() {
 												if !pp_buffer.is_empty() {
@@ -1894,13 +1972,17 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 }
 
 pub fn eval_point<T: EvalexprNumericTypes>(
-	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>,
+	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>, step: T::Float,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
 	};
-	let x = x.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO)).map_err(|e| e.to_string())?;
-	let y = y.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO)).map_err(|e| e.to_string())?;
+	let x = x
+		.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO), step)
+		.map_err(|e| e.to_string())?;
+	let y = y
+		.eval_float_with_context_and_x(ctx, &Value::Float(T::Float::ZERO), step)
+		.map_err(|e| e.to_string())?;
 	Ok(Some((x.to_f64(), y.to_f64())))
 }
 fn zoom_in_x_on_nan_boundary(
@@ -1989,25 +2071,26 @@ pub enum DragPoint {
 }
 
 pub struct NodeAnalysis<'a> {
-	pub is_literal: bool,
-	pub constants:  SmallVec<[&'a str; 6]>,
+	pub is_literal:      bool,
+	pub num_identifiers: u32,
+	pub constants:       SmallVec<[&'a str; 6]>,
 }
 pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_> {
 	let mut is_literal = true;
 	let mut constants = SmallVec::new();
+	let mut num_identifiers = 0;
 
 	for i in node.iter_variable_identifiers() {
 		constants.push(i);
 		is_literal = false;
 	}
 
-	if !is_literal {
-		if node.iter_identifiers().next().is_some() {
-			is_literal = false;
-		}
+	for _ in node.iter_identifiers() {
+		is_literal = false;
+		num_identifiers += 1;
 	}
 
-	NodeAnalysis { is_literal, constants }
+	NodeAnalysis { is_literal, constants, num_identifiers }
 }
 pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	// regex to check if theres an y identifier (single y not surrounded by alphanumerics on either

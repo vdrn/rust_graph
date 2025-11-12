@@ -5,7 +5,6 @@ use core::cell::{Cell, RefCell};
 use rustc_hash::FxHashMap;
 use std::env;
 use std::sync::Mutex;
-use thread_local::ThreadLocal;
 
 use eframe::egui::{
 	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextEdit, TextStyle, Visuals, Window
@@ -22,12 +21,13 @@ use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
 };
 use serde::{Deserialize, Serialize};
+use thread_local::ThreadLocal;
 
 mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, f64_to_float, f64_to_value
+	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, deriv_step, f64_to_float, f64_to_value
 };
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -304,6 +304,7 @@ const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
 	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
   ("get(tuple,index)", " Get the value at the index from the tuple."),
   ("g(tuple, index)", " Alias for `get`."),
+  ("d(func(x))", "Derivative of the expression with respect to x."),
 	("", ""),
 	("max(a, b)", " Returns the maximum of the two numbers."),
 	("min(a, b)", " Returns the minimum of the two numbers."),
@@ -752,11 +753,8 @@ fn side_panel<T: EvalexprNumericTypes>(
 						if entry.visible {
 							let mut remove_from_folder = None;
 
-							// ui.horizontal(|ui| {
 							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
 								ui.horizontal(|ui| {
-									// ui.allocate_space(Vec2::new(2.0, 0.0));
-
 									handle.ui(ui, |ui| {
 										ui.label("    |");
 									});
@@ -774,8 +772,12 @@ fn side_panel<T: EvalexprNumericTypes>(
 										}
 									});
 								});
+								if let Some(parsing_error) = ui_state.parsing_errors.get(&entry.id) {
+									ui.label(RichText::new(parsing_error).color(Color32::RED));
+								} else if let Some(eval_error) = ui_state.eval_errors.get(&entry.id) {
+									ui.label(RichText::new(eval_error).color(Color32::RED));
+								}
 							});
-							// });
 							if let Some(id) = remove_from_folder {
 								if let Some(index) = entries.iter().position(|e| e.id == id) {
 									entries.remove(index);
@@ -953,10 +955,10 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					if let Err(e) =
+					if let Err((id, e)) =
 						entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard)
 					{
-						ui_state.parsing_errors.insert(entry.id, e);
+						ui_state.parsing_errors.insert(id, e);
 					}
 				}
 			} else if animating {
@@ -1017,27 +1019,42 @@ fn side_panel<T: EvalexprNumericTypes>(
 	ui_state.eval_errors.clear();
 }
 fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
-	let main_context = &state.ctx;
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
+	let first_y = ui_state.plot_bounds.min()[1];
+	let last_y = ui_state.plot_bounds.max()[1];
+
 	// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
 	let plot_width = last_x - first_x;
+	let plot_height = last_y - first_y;
+
 	let mut points_to_draw = ui_state.conf.resolution.max(1);
 	let mut step_size = plot_width / points_to_draw as f64;
 	while points_to_draw > 2 && first_x + step_size == first_x {
 		points_to_draw /= 2;
 		step_size = plot_width / points_to_draw as f64;
 	}
+
+	let mut points_to_draw_y = ui_state.conf.resolution.max(1);
+	let mut step_size_y = plot_height / points_to_draw as f64;
+	while points_to_draw_y > 2 && first_y + step_size_y == first_y {
+		points_to_draw_y /= 2;
+		step_size_y = plot_height / points_to_draw_y as f64;
+	}
 	let plot_params = entry::PlotParams {
 		eps: if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon },
 		first_x,
 		last_x,
-		first_y: ui_state.plot_bounds.min()[1],
-		last_y: ui_state.plot_bounds.max()[1],
+		first_y,
+		last_y,
 		step_size,
+		step_size_y,
 		resolution: ui_state.conf.resolution,
 	};
+	state.ctx.set_value(entry::STEP_X_NAME, f64_to_value(deriv_step(plot_params.step_size))).unwrap();
+	state.ctx.set_value(entry::STEP_Y_NAME, f64_to_value(deriv_step(plot_params.step_size_y))).unwrap();
 
+	let main_context = &state.ctx;
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
 	scope!("graph");
 
@@ -1466,7 +1483,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		if let Some((closest_point, _dist_sq)) = closest_point_to_mouse {
 			let screen_x = plot_res.transform.position_from_point_x(closest_point.0);
 			let screen_y = plot_res.transform.position_from_point_y(closest_point.1);
-			// ui_state.showing_custom_label = true;
+			ui_state.showing_custom_label = true;
 			show_popup_label(
 				ui,
 				Id::new("point_on_fn"),
@@ -1495,26 +1512,35 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		}
 
 		if let Some(hovered_id) = plot_res.hovered_plot_item {
-			if plot_res.response.is_pointer_button_down_on() {
+			if plot_res.response.clicked()
+				|| plot_res.response.drag_started()
+				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
+			{
 				// if ui.input(|i| i.pointer.primary_clicked()) {
 				if state.entries.iter().any(|e| match &e.ty {
 					EntryType::Function { .. } => Id::new(e.id) == hovered_id,
 					EntryType::Folder { entries } => entries.iter().any(|e| Id::new(e.id) == hovered_id),
 					_ => false,
 				}) {
-					ui_state.selected_plot_line = Some((hovered_id, false));
+					// println!("selecting line {:?}", hovered_id);
+					ui_state.selected_plot_line = Some((hovered_id, true));
 				}
 			}
 		} else {
-			//if ui_state.dragging_point.is_none() {
-			if ui.input(|i| i.pointer.primary_clicked()) {
-				ui_state.selected_plot_line = None;
+			if plot_res.response.clicked() || plot_res.response.drag_started() {
+				if let Some(selected_plot_line) = &mut ui_state.selected_plot_line {
+					if !selected_plot_line.1 {
+						// println!("clearing selected line {:?}", ui_state.selected_plot_line);
+						ui_state.selected_plot_line = None;
+					}
+				}
 			}
 		}
 
 		if let Some(selected_plot_line) = &mut ui_state.selected_plot_line {
-			selected_plot_line.1 =
-				!ui_state.showing_custom_label && plot_res.response.is_pointer_button_down_on();
+			if selected_plot_line.1 && !plot_res.response.is_pointer_button_down_on() {
+				selected_plot_line.1 = false;
+			}
 		}
 	});
 }

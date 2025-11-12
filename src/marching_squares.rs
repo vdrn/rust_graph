@@ -48,7 +48,8 @@ pub fn marching_squares(
 		}
 	}
 
-	let mut polyline_builder = PolylineBuilder::new(0.0001, f32::EPSILON as f64);
+	let eps = f32::EPSILON as f64;
+	let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
 	// let mut polylines: Vec<Vec<PlotPoint>> = Vec::new();
 
 	scope!("generate_polylines");
@@ -73,7 +74,11 @@ pub fn marching_squares(
 				let p1 = interpolate_edge(edge1, x, y, dx, dy, &vals);
 				let p2 = interpolate_edge(edge2, x, y, dx, dy, &vals);
 
-				polyline_builder.add_segment(PlotPoint::new(p1.0, p1.1), PlotPoint::new(p2.0, p2.1));
+				let start = PlotPoint::new(p1.0, p1.1);
+				let end = PlotPoint::new(p2.0, p2.1);
+				if !equals(start, end, eps) {
+					polyline_builder.add_segment(start, end);
+				}
 				// add_segment_to_polylines(
 				// 	&mut polylines,
 				// 	PlotPoint::new(p1.0, p1.1),
@@ -255,6 +260,7 @@ impl PolylineBuilder {
 					// connect the start and end
 					if at_start1 {
 						self.polylines[idx1].push(start);
+						// self.polylines[idx1].insert(0, end);
 					} else {
 						self.polylines[idx1].push(end);
 					}

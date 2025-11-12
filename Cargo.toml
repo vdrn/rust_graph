@@ -53,8 +53,8 @@ thread_local="1"
 regex = "1"
 # debug-cell="*"
 
-# [patch."https://github.com/vdrn/evalexpr"]
-# evalexpr = { path = "../../contrib/evalexpr" }
+[patch."https://github.com/vdrn/evalexpr"]
+evalexpr = { path = "../../contrib/evalexpr" }
 [patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
 # puffin = { path = "../../contrib/puffin/puffin" }
