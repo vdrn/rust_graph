@@ -90,7 +90,7 @@ pub fn wasm_main() -> () {
 
 const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
-const MAX_FUNCTION_NESTING: isize = 50;
+const MAX_FUNCTION_NESTING: isize = 500;
 
 struct State<T: EvalexprNumericTypes> {
 	entries:        Vec<Entry<T>>,
@@ -1217,19 +1217,17 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 					}
 				}
 			} else {
+				// find intersections
 				let mut pi = 0;
 				for selected_line in draw_lines.iter().filter(|sel| sel.id == selected_fline_id) {
 					let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
 						continue;
 					};
-					// println!("finding intersections between curent {:?} and selected {:?}", fline.id,
-					// selected_line.id);
 					for plot_seg in plot_points.windows(2) {
 						for sel_seg in sel_points.windows(2) {
 							if let Some(point) = intersect_segs(
 								plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
 							) {
-								// println!("Found intersection {point:?}");
 								draw_buffer.points.push(DrawPoint::new(
 									fline.sorting_index,
 									pi as u32,
@@ -1248,7 +1246,6 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 						}
 					}
 				}
-				// find intersections
 			}
 		});
 	}
@@ -1442,34 +1439,28 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 								let x_node = point.x.node.clone();
 								let y_node = point.y.node.clone();
 								if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
-									if let Some(c_idx) = entry_position(&state.entries, |e| e.name == x_const)
+									if let Some(value) =
+										find_constant_value(&mut state.entries, |e| e.name == x_const)
 									{
-										if let EntryType::Constant { value, .. } =
-											&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
-										{
-											let new_value = solve_minimize(
-												value.to_f64(),
-												(pos.x, pos.y),
-												plot_params.eps,
-												|x| {
-													state
-														.ctx
-														.set_value(&x_const, f64_to_value::<T>(x))
-														.unwrap();
-													(
-														x_node
-															.eval_float_with_context(&state.ctx)
-															.unwrap()
-															.to_f64(),
-														y_node
-															.eval_float_with_context(&state.ctx)
-															.unwrap()
-															.to_f64(),
-													)
-												},
-											);
-											*value = f64_to_float::<T>(new_value);
-										}
+										let new_value = solve_minimize(
+											value.to_f64(),
+											(pos.x, pos.y),
+											plot_params.eps,
+											|x| {
+												state.ctx.set_value(&x_const, f64_to_value::<T>(x)).unwrap();
+												(
+													x_node
+														.eval_float_with_context(&state.ctx)
+														.unwrap()
+														.to_f64(),
+													y_node
+														.eval_float_with_context(&state.ctx)
+														.unwrap()
+														.to_f64(),
+												)
+											},
+										);
+										*value = f64_to_float::<T>(new_value);
 									}
 								}
 							},
@@ -1616,23 +1607,18 @@ fn drag<T: EvalexprNumericTypes>(
 	state: &mut State<T>, name: &str, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
 ) -> bool {
 	if let Some(point_node) = node {
-		if let Some(c_idx) = entry_position(&state.entries, |e| e.name == name) {
-			if let EntryType::Constant { value, .. } =
-				&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
-			{
-				// let value = *value;
-				if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
-					state.ctx.set_value(name, f64_to_value::<T>(x)).unwrap();
-					point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
-				}) {
-					// if let EntryType::Constant { value, .. } =
-					// 	&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
-					// {
-					*value = f64_to_float::<T>(new_value);
-					// }
-				} else {
-					return false;
-				}
+		if let Some(value) = find_constant_value(&mut state.entries, |e| e.name == name) {
+			if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
+				state.ctx.set_value(name, f64_to_value::<T>(x)).unwrap();
+				point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
+			}) {
+				// if let EntryType::Constant { value, .. } =
+				// 	&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
+				// {
+				*value = f64_to_float::<T>(new_value);
+				// }
+			} else {
+				return false;
 			}
 		}
 	}
@@ -1797,29 +1783,20 @@ fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
 	});
 }
 
-fn get_entry_mut<T: EvalexprNumericTypes>(
-	entries: &mut [Entry<T>], idx: (Option<usize>, usize),
-) -> Option<&mut Entry<T>> {
-	if let Some(idx_2) = idx.0 {
-		if let Some(entry) = entries.get_mut(idx.1) {
-			if let EntryType::Folder { entries } = &mut entry.ty {
-				return entries.get_mut(idx_2);
-			}
-		}
-		return None;
-	}
-	entries.get_mut(idx.1)
-}
-fn entry_position<T: EvalexprNumericTypes>(
-	entries: &[Entry<T>], pos_cb: impl Fn(&Entry<T>) -> bool,
-) -> Option<(Option<usize>, usize)> {
-	for (i, entry) in entries.iter().enumerate() {
+fn find_constant_value<T: EvalexprNumericTypes>(
+	entries: &mut [Entry<T>], pos_cb: impl Fn(&Entry<T>) -> bool,
+) -> Option<&mut T::Float> {
+	for entry in entries.iter_mut() {
 		if pos_cb(entry) {
-			return Some((None, i));
-		} else if let EntryType::Folder { entries } = &entry.ty {
-			for (j, sub_entry) in entries.iter().enumerate() {
+			if let EntryType::Constant { value, .. } = &mut entry.ty {
+				return Some(value);
+			}
+		} else if let EntryType::Folder { entries } = &mut entry.ty {
+			for sub_entry in entries.iter_mut() {
 				if pos_cb(sub_entry) {
-					return Some((Some(j), i));
+					if let EntryType::Constant { value, .. } = &mut sub_entry.ty {
+						return Some(value);
+					}
 				}
 			}
 		}

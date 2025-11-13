@@ -1124,6 +1124,7 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "evalexpr"
 version = "13.0.0"
+source = "git+https://github.com/vdrn/evalexpr#060ab210a211ba37289e914ebc6b7a7225033184"
 dependencies = [
  "arrayvec",
  "rustc-hash 2.1.1",
@@ -2663,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "rust_graph"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "arrayvec",
  "base64",

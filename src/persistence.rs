@@ -250,6 +250,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 					style,
 					implicit_resolution,
 				} => EntryType::Function {
+          can_be_drawn:true,
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: if ranged { FunctionType::Ranged } else { FunctionType::X },

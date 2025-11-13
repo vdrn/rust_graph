@@ -294,9 +294,10 @@ pub enum FunctionType {
 #[derive(Clone, Debug)]
 pub enum EntryType<T: EvalexprNumericTypes> {
 	Function {
-		func:  Expr<T>,
-		style: GLineStyle,
-		ty:    FunctionType,
+		can_be_drawn: bool,
+		func:         Expr<T>,
+		style:        GLineStyle,
+		ty:           FunctionType,
 
 		/// used for `RangedFunction`
 		range_start:         Expr<T>,
@@ -332,13 +333,115 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		entries: Vec<Entry<T>>,
 	},
 }
+
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub enum LabelSize {
+	#[default]
+	Small,
+	Medium,
+	Large,
+}
+impl LabelSize {
+	pub fn size(&self) -> f32 {
+		match self {
+			LabelSize::Small => 10.0,
+			LabelSize::Medium => 16.0,
+			LabelSize::Large => 20.0,
+		}
+	}
+}
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub enum LabelPosition {
+	#[default]
+	Bottom,
+	Top,
+	Left,
+	Right,
+	TLeft,
+	TRight,
+	BLeft,
+	BRight,
+}
+impl LabelPosition {
+	fn symbol(&self) -> &'static str {
+		match self {
+			LabelPosition::Top => "⮉",
+			LabelPosition::Bottom => "⮋",
+			LabelPosition::Left => "⮈",
+			LabelPosition::Right => "⮊",
+			LabelPosition::TLeft => "⬉",
+			LabelPosition::TRight => "⬈",
+			LabelPosition::BLeft => "⬋",
+			LabelPosition::BRight => "⬊",
+		}
+	}
+	fn dir(&self) -> egui::Vec2 {
+		match self {
+			LabelPosition::Top => egui::Vec2::new(0.0, 1.0),
+			LabelPosition::Bottom => egui::Vec2::new(0.0, -1.0),
+			LabelPosition::Left => egui::Vec2::new(-1.0, 0.0),
+			LabelPosition::Right => egui::Vec2::new(1.0, 0.0),
+			LabelPosition::TLeft => egui::Vec2::new(-0.71, 0.71),
+			LabelPosition::TRight => egui::Vec2::new(0.71, 0.71),
+			LabelPosition::BLeft => egui::Vec2::new(-0.71, -0.71),
+			LabelPosition::BRight => egui::Vec2::new(0.71, -0.71),
+		}
+	}
+}
+
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub struct LabelConfig {
+	#[serde(default)]
+	size:   LabelSize,
+	#[serde(default)]
+	pos:    LabelPosition,
+	#[serde(default)]
+	italic: bool,
+}
+impl LabelConfig {
+	fn ui(&mut self, ui: &mut egui::Ui) {
+		ui.checkbox(&mut self.italic, "Italic");
+		ui.horizontal(|ui| {
+			SubMenuButton::new(format!("Size {:?}", self.size)).ui(ui, |ui| {
+				use LabelSize as LS;
+				ui.selectable_value(&mut self.size, LS::Small, RichText::new("Small").size(LS::Small.size()));
+				ui.selectable_value(
+					&mut self.size,
+					LS::Medium,
+					RichText::new("Medium").size(LS::Medium.size()),
+				);
+				ui.selectable_value(&mut self.size, LS::Large, RichText::new("Large").size(LS::Large.size()));
+			});
+		});
+		ui.horizontal(|ui| {
+			use LabelPosition as LP;
+			SubMenuButton::new(format!("Position {}", self.pos.symbol())).ui(ui, |ui| {
+				ui.selectable_value(&mut self.pos, LP::Top, format!("Top {}", LP::Top.symbol()));
+				ui.selectable_value(&mut self.pos, LP::Bottom, format!("Bottom {}", LP::Bottom.symbol()));
+				ui.selectable_value(&mut self.pos, LP::Left, format!("Left {}", LP::Left.symbol()));
+				ui.selectable_value(&mut self.pos, LP::Right, format!("Right {}", LP::Right.symbol()));
+				ui.selectable_value(&mut self.pos, LP::TLeft, format!("Top Left {}", LP::TLeft.symbol()));
+				ui.selectable_value(&mut self.pos, LP::TRight, format!("Top Right {}", LP::TRight.symbol()));
+				ui.selectable_value(&mut self.pos, LP::BLeft, format!("Bottom Left {}", LP::BLeft.symbol()));
+				ui.selectable_value(
+					&mut self.pos,
+					LP::BRight,
+					format!("Bottom Right {}", LP::BRight.symbol()),
+				);
+			});
+		});
+	}
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PointStyle {
-	show_lines:  bool,
+	show_lines:   bool,
 	#[serde(default)]
-	show_arrows: bool,
-	show_points: bool,
-	line_style:  GLineStyle,
+	show_arrows:  bool,
+	show_points:  bool,
+	line_style:   GLineStyle,
+	#[serde(default)]
+	label_config: Option<LabelConfig>,
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -353,7 +456,13 @@ impl Default for IntegralStyle {
 
 impl Default for PointStyle {
 	fn default() -> Self {
-		Self { show_lines: true, show_points: true, show_arrows: false, line_style: GLineStyle::default() }
+		Self {
+			show_lines:   true,
+			show_points:  true,
+			show_arrows:  false,
+			label_config: Some(LabelConfig::default()),
+			line_style:   GLineStyle::default(),
+		}
 	}
 }
 
@@ -437,6 +546,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			visible: true,
 			name: String::new(),
 			ty: EntryType::Function {
+				can_be_drawn:        true,
 				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
 					text,
@@ -666,6 +776,18 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 					);
 				},
 				EntryType::Points { style, .. } => {
+					ui.separator();
+					let mut show_label = style.label_config.is_some();
+					if ui.checkbox(&mut show_label, "Show label").changed() {
+						if show_label {
+							style.label_config = Some(LabelConfig::default());
+						} else {
+							style.label_config = None;
+						}
+					}
+					if let Some(label_config) = &mut style.label_config {
+						label_config.ui(ui);
+					}
 					ui.separator();
 					ui.checkbox(&mut style.show_lines, "Show Lines");
 					if style.show_lines {
@@ -1218,7 +1340,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				ctx.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value)).unwrap();
 			}
 		},
-		EntryType::Function { func, ty, .. } => {
+		EntryType::Function { func, ty, can_be_drawn, .. } => {
 			if let Some(func_node) = func.node.clone() {
 				// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
 				// impl Clone for LocalCache {
@@ -1235,6 +1357,8 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				// 	AHashMap::with_capacity(ui_state.conf.resolution),
 				// ));
 				// let animating = ui_state.animating.clone();
+				*can_be_drawn = true;
+
 				let mut has_x = false;
 				let mut has_y = false;
 				for ident in func_node.iter_identifiers() {
@@ -1246,8 +1370,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				}
 				if has_x && has_y {
 					if !func.text.contains('=') {
-						func.node = None;
-						return Err((entry.id, "Implicit function must contain = sign".to_string()));
+						*can_be_drawn = false;
+						// func.node = None;
+						// return Err((entry.id, "Implicit function must contain = sign".to_string()));
 					}
 					*ty = FunctionType::Implicit;
 				} else if has_y {
@@ -1413,7 +1538,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 			let stroke_color = color;
 			let rgba_color = stroke_color.to_srgba_unmultiplied();
-			// let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1], 128);
+			// let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1],
+			// 128);
 
 			let mut result: T::Float = T::Float::ZERO;
 			let mut prev_y: Option<T::Float> = None;
@@ -1605,6 +1731,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				(plot_params.last_x - plot_params.first_x) as f32,
 				(plot_params.last_y - plot_params.first_y) as f32,
 			) * 0.002;
+			let points_len = points.len();
 			for (i, p) in points.iter_mut().enumerate() {
 				match eval_point(ctx, p.x.node.as_ref(), p.y.node.as_ref(), deriv_step_x) {
 					Ok(Some((x, y))) => {
@@ -1644,6 +1771,29 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								));
 							}
 						}
+						if let Some(label_config) = &style.label_config
+							&& i == points_len - 1
+							&& !entry.name.trim().is_empty()
+						{
+							let size = label_config.size.size();
+							let mut label = RichText::new(entry.name.clone()).size(size);
+							if label_config.italic {
+								label = label.italics();
+							}
+
+							let dir = label_config.pos.dir();
+							let text = Text::new(
+								entry.name.clone(),
+								PlotPoint {
+									x: x + (dir.x * size * arrow_scale.x) as f64,
+									y: y + (dir.y * size * arrow_scale.y) as f64,
+								},
+								label,
+							)
+							.color(color);
+
+							draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+						}
 
 						if style.show_lines {
 							line_buffer.push([x, y]);
@@ -1652,7 +1802,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								&& let Some(pp) = prev_point
 							{
 								let dir = (pp - cur_point).normalized();
-								let arrow_len = (arrow_scale * radius_outer);
+								let arrow_len = arrow_scale * radius_outer;
 								let base = cur_point + dir * arrow_len.length();
 								let a = base + dir.rot90() * arrow_len * 0.5;
 								let b = base - dir.rot90() * arrow_len * 0.5;
@@ -1693,7 +1843,10 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// plot_ui.line(line);
 			}
 		},
-		EntryType::Function { func, range_start, range_end, style, ty, implicit_resolution, .. } => {
+		EntryType::Function { func,can_be_drawn, range_start, range_end, style, ty, implicit_resolution, .. } => {
+      if !*can_be_drawn {
+        return Ok(());
+      }
 			if let Some(func_node) = &func.node {
 				let name = if entry.name.is_empty() {
 					match ty {
