@@ -6,9 +6,9 @@ use smallvec::SmallVec;
 
 use crate::scope;
 
-pub fn marching_squares(
-	f: impl Fn(f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64), bounds_max: (f64, f64),
-	resolution: usize,
+pub fn marching_squares<C: Copy>(
+	f: impl Fn(C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64), bounds_max: (f64, f64),
+	resolution: usize, thread_prepare: impl Fn() -> C + Sync,
 ) -> Result<Vec<Vec<PlotPoint>>, String> {
 	scope!("marching_squares");
 	let (x_min, y_min) = bounds_min;
@@ -26,11 +26,12 @@ pub fn marching_squares(
 			.into_par_iter()
 			.map(|i| {
 				scope!("grid_calc_par");
+				let ctx = thread_prepare();
 				let mut grid_i = vec![0.0; resolution + 1];
 				for j in 0..=resolution {
 					let x = x_min + i as f64 * dx;
 					let y = y_min + j as f64 * dy;
-					match f(x, y) {
+					match f(ctx, x, y) {
 						Ok(y) => {
 							grid_i[j] = y;
 						},

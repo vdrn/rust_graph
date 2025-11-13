@@ -15,7 +15,7 @@ use egui_plot::{
 	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
 };
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, F32NumericTypes, Node, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, Node, Value
 };
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
@@ -100,6 +100,7 @@ struct State<T: EvalexprNumericTypes> {
 	name:           String,
 	// points_cache: PointsCache,
 	clear_cache:    bool,
+  complex_context: Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
 }
 fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
@@ -121,13 +122,24 @@ const BUILTIN_CONSTS: &[(&str, &str)] = &[
   ("pi","3.141592653589793"),
   ("tau","6.283185307179586"),
 ];
+pub fn expect_function_argument_amount<NumericTypes: EvalexprNumericTypes>(
+	actual: usize, expected: usize,
+) -> EvalexprResult<(), NumericTypes> {
+	if actual == expected {
+		Ok(())
+	} else {
+		Err(EvalexprError::wrong_function_argument_amount(actual, expected))
+	}
+}
+
 fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_function {
 		($ident:ident) => {
 			ctx.set_function(
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |_, v| {
-					let v: T::Float = v.as_float()?;
+					expect_function_argument_amount(v.len(), 1)?;
+					let v: T::Float = v[0].as_float()?;
 					Ok(Value::Float(v.$ident()))
 				}),
 			)
@@ -167,19 +179,9 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 			ctx.set_function(
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |_, v| {
-					let v = v.as_tuple_ref()?;
-					let v1: T::Float = v
-						.first()
-						.ok_or_else(|| {
-							EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
-						})?
-						.as_float()?;
-					let v2: T::Float = v
-						.get(1)
-						.ok_or_else(|| {
-							EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
-						})?
-						.as_float()?;
+					expect_function_argument_amount(v.len(), 2)?;
+					let v1: T::Float = v[0].as_float()?;
+					let v2: T::Float = v[1].as_float()?;
 
 					Ok(Value::Float(v1.$ident(&v2)))
 				}),
@@ -198,25 +200,10 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 			ctx.set_function(
 				stringify!($ident).to_string(),
 				evalexpr::Function::new(move |_, v| {
-					let v = v.as_tuple_ref()?;
-					let v1: T::Float = v
-						.first()
-						.ok_or_else(|| {
-							EvalexprError::CustomMessage("Expected 3 arguments, got 0.".to_string())
-						})?
-						.as_float()?;
-					let v2: T::Float = v
-						.get(1)
-						.ok_or_else(|| {
-							EvalexprError::CustomMessage("Expected 3 arguments, got 1.".to_string())
-						})?
-						.as_float()?;
-					let v3: T::Float = v
-						.get(2)
-						.ok_or_else(|| {
-							EvalexprError::CustomMessage("Expected 3 arguments, got 2.".to_string())
-						})?
-						.as_float()?;
+					expect_function_argument_amount(v.len(), 3)?;
+					let v1: T::Float = v[0].as_float()?;
+					let v2: T::Float = v[1].as_float()?;
+					let v3: T::Float = v[2].as_float()?;
 
 					Ok(Value::Float(v1.$ident(&v2, &v3)))
 				}),
@@ -231,17 +218,14 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 		evalexpr::Function::new(move |_, v| {
 			let zero = T::Float::f64_to_float(0.0);
 			let one = T::Float::f64_to_float(1.0);
+			if v.is_empty() {
+				return Err(EvalexprError::wrong_function_argument_amount_range(0, 1..=3));
+			}
 
-			let (x, mean, std_dev) = if let Ok(x) = v.as_float() {
+			let (x, mean, std_dev) = if let Ok(x) = v[0].as_float() {
 				(x, zero, one)
 			} else {
-				let v = v.as_tuple_ref()?;
-				let x = v
-					.first()
-					.ok_or_else(|| {
-						EvalexprError::CustomMessage("normaldist requires at least 1 argument".to_string())
-					})?
-					.as_float()?;
+				let x = v[0].as_float()?;
 				let mean: T::Float =
 					v.get(1).unwrap_or(&Value::Float(T::Float::f64_to_float(0.0))).as_float()?;
 				let std_dev: T::Float =
@@ -261,8 +245,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 
 	ctx.set_function(
 		"g".to_string(),
-		evalexpr::Function::new(|_, v: &Value<T>| {
-			let v = v.as_fixed_len_tuple_ref(2)?;
+		evalexpr::Function::new(|_, v: &[Value<T>]| {
+			expect_function_argument_amount(v.len(), 2)?;
 			let tuple = v[0].as_tuple_ref()?;
 			let index: T::Float = v[1].as_float()?;
 
@@ -280,8 +264,7 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	.unwrap();
 	ctx.set_function(
 		"get".to_string(),
-		evalexpr::Function::new(|_, v: &Value<T>| {
-			let v = v.as_fixed_len_tuple_ref(2)?;
+		evalexpr::Function::new(|_, v: &[Value<T>]| {
 			let tuple = v[0].as_tuple_ref()?;
 			let index: T::Float = v[1].as_float()?;
 
@@ -517,6 +500,7 @@ impl Application {
 				default_bounds: default_bounds_s,
 				// points_cache: PointsCache::default(),
 				clear_cache:    true,
+        complex_context: Arc::new(ThreadLocal::new()),
 			},
 			state_f64: State {
 				entries:        entries_d,
@@ -525,6 +509,7 @@ impl Application {
 				name:           String::new(),
 				// points_cache: PointsCache::default(),
 				clear_cache:    true,
+        complex_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -720,6 +705,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 			let mut remove = None;
 			let mut animating = false;
+      // println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					ui.vertical(|ui| {
@@ -956,7 +942,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
 					if let Err((id, e)) =
-						entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard)
+						entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard, &state.complex_context)
 					{
 						ui_state.parsing_errors.insert(id, e);
 					}
@@ -1059,6 +1045,11 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	scope!("graph");
 
 	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
+
+	// for stack in unsafe{&mut *(Arc::as_ptr(&ui_state.stack_overflow_guard) as *mut
+	// ThreadLocal<Cell<isize>>)}.iter_mut(){   println!("stack :{}", stack.get());
+	// }
+
 	state.entries.par_iter_mut().enumerate().for_each(|(i, entry)| {
 		scope!("entry_draw", entry.name.clone());
 
@@ -1072,6 +1063,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			&plot_params,
 			&ui_state.draw_buffer,
 			&ui_state.stack_overflow_guard,
+      &state.complex_context,
 		) {
 			for (id, error) in errors {
 				eval_errors.lock().unwrap().insert(id, error);

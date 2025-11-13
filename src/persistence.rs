@@ -199,7 +199,9 @@ pub fn serialize_to_url<T: EvalexprNumericTypes>(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn deserialize_from_url<T: EvalexprNumericTypes>(id_counter:&mut u64) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
+pub fn deserialize_from_url<T: EvalexprNumericTypes>(
+	id_counter: &mut u64,
+) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
 	let href = web_sys::window()
 		.expect("Couldn't get window")
 		.document()
@@ -223,7 +225,7 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>(id_counter:&mut u64) -> Res
 	let entries_ser = bincode::serde::decode_from_slice(&base64_decoded, bincode::config::standard())
 		.map_err(|e| e.to_string())?
 		.0;
-	Ok(entries_from_ser(entries_ser,id_counter))
+	Ok(entries_from_ser(entries_ser, id_counter))
 
 	// let decoded = urlencoding::decode(without_prefix).map_err(|e| e.to_string())?;
 	// deserialize_from_json(decoded.as_bytes())
@@ -235,13 +237,13 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 	let mut result = Vec::new();
 	let bounds = ser.default_bounds.map(|b| PlotBounds::from_min_max([b[0], b[1]], [b[2], b[3]]));
 	for entry in ser.entries {
-    *id += 1;
+		*id += 1;
 		let entry_deserialized = Entry {
-			id:*id,
-			name: entry.name,
+			id:      *id,
+			name:    entry.name,
 			visible: entry.visible,
-			color: entry.color,
-			ty: match entry.ty {
+			color:   entry.color,
+			ty:      match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
 					ranged,
@@ -250,7 +252,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 					style,
 					implicit_resolution,
 				} => EntryType::Function {
-          can_be_drawn:true,
+					can_be_drawn: true,
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
@@ -305,6 +307,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 
 		result.push(entry_deserialized);
 	}
+  *id += 1;
 	(result, bounds)
 }
 pub fn deserialize_from_json<T: EvalexprNumericTypes>(
@@ -380,7 +383,8 @@ pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String
 }
 #[cfg(target_arch = "wasm32")]
 pub fn load_file<T: EvalexprNumericTypes>(
-	cur_dir: &str, ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,id_counter:&mut u64
+	cur_dir: &str, ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
+	id_counter: &mut u64,
 ) -> Result<(), String> {
 	if let Some(file) = ser_states.get(file_name) {
 		let (entries, bounds) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
@@ -395,13 +399,13 @@ pub fn load_file<T: EvalexprNumericTypes>(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file<T: EvalexprNumericTypes>(
 	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
-  id_counter: &mut u64,
+	id_counter: &mut u64,
 ) -> Result<(), String> {
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
 	};
-	let (entries, default_bounds) =
-		deserialize_from_json::<T>(&file, id_counter).map_err(|e| format!("Could not deserialize file: {}", e))?;
+	let (entries, default_bounds) = deserialize_from_json::<T>(&file, id_counter)
+		.map_err(|e| format!("Could not deserialize file: {}", e))?;
 	state.entries = entries;
 	state.default_bounds = default_bounds;
 
@@ -443,8 +447,10 @@ pub fn persistence_ui<T: EvalexprNumericTypes>(
 			for file_name in ui_state.serialized_states.keys() {
 				ui.label(file_name);
 				if ui.button("Load").clicked() {
-					if let Err(e) = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name, state, &mut ui_state.next_id)
-					{
+					if let Err(e) = load_file(
+						&ui_state.cur_dir, &ui_state.serialized_states, file_name, state,
+						&mut ui_state.next_id,
+					) {
 						ui_state.serialization_error = Some(format!("Could not open file: {}", e));
 						return;
 					};

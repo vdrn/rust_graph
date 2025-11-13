@@ -249,8 +249,13 @@ impl<T: EvalexprNumericTypes> Expr<T> {
 					}
 
 					self.node = match evalexpr::build_operator_tree::<T>(txt) {
-						Ok(func) => Some(func),
+						Ok(func) => {
+							println!("func: {:#?}", func);
+
+							Some(func)
+						},
 						Err(e) => {
+							println!("Error: {e}");
 							return Err(e.to_string());
 						},
 					};
@@ -707,9 +712,9 @@ impl ConstantType {
 	}
 }
 
-pub const STEP_Y_NAME: &str = "___STEP____X___";
-pub const STEP_X_NAME: &str = "___STEP___Y___";
-static RESERVED_NAMES: [&str; 5] = ["x", "y", "d", STEP_X_NAME, STEP_Y_NAME];
+pub const STEP_Y_NAME: &str = "___DERIV_STEP__X__";
+pub const STEP_X_NAME: &str = "___DERIV_STEP__Y__";
+static RESERVED_NAMES: [&str; 7] = ["x", "y", "zx", "zy", "d", STEP_X_NAME, STEP_Y_NAME];
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
 	pub animating:           bool,
@@ -1225,6 +1230,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
+	complex_context: &Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
 ) -> Result<(), (u64, String)> {
 	if RESERVED_NAMES.contains(&entry.name.trim()) {
 		return Ok(());
@@ -1232,7 +1238,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 	match &mut entry.ty {
 		EntryType::Folder { entries } => {
 			for entry in entries {
-				recompile_entry(entry, ctx, stack_overflow_guard)?;
+				recompile_entry(entry, ctx, stack_overflow_guard, complex_context)?;
 			}
 		},
 		EntryType::Points { points, .. } => {
@@ -1361,14 +1367,17 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 				let mut has_x = false;
 				let mut has_y = false;
+				let mut has_complex = false;
 				for ident in func_node.iter_identifiers() {
 					if ident == "x" {
 						has_x = true;
 					} else if ident == "y" {
 						has_y = true;
+					} else if ident == "zx" || ident == "zy" {
+						has_complex = true;
 					}
 				}
-				if has_x && has_y {
+				if (has_x && has_y) || has_complex {
 					if !func.text.contains('=') {
 						*can_be_drawn = false;
 						// func.node = None;
@@ -1382,6 +1391,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				}
 
 				let stack_overflow_guard = stack_overflow_guard.clone();
+				let complex_context = complex_context.clone();
 				let ty = *ty;
 				let fun = Function::new(move |context: &HashMapContext<T>, v| {
 					// puffin::profile_scope!("eval_function");
@@ -1389,6 +1399,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					let stack_depth = stack_overflow_guard.get() + 1;
 					stack_overflow_guard.set(stack_depth);
 					if stack_depth > MAX_FUNCTION_NESTING {
+						stack_overflow_guard.set(stack_depth - 1);
 						return Err(EvalexprError::CustomMessage(format!(
 							"Max function nesting reached ({MAX_FUNCTION_NESTING})"
 						)));
@@ -1396,18 +1407,17 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 					let res = match ty {
 						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
-							let v = match v {
-								Value::Float(x) => *x,
-								Value::Boolean(x) => f64_to_float::<T>(*x as i64 as f64),
-								Value::String(_) => T::Float::ZERO,
+							let v = match v.first() {
+								Some(Value::Float(x)) => *x,
+								Some(Value::Boolean(x)) => f64_to_float::<T>(*x as i64 as f64),
 								// Value::Int(x) => T::int_as_float(x),
-								Value::Tuple(values) => values[0]
+								Some(Value::Tuple(values)) => values[0]
 									.as_float()
 									.or_else(|_| {
 										values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
 									})
 									.unwrap_or(T::Float::ZERO),
-								Value::Empty => T::Float::ZERO,
+								_ => T::Float::ZERO,
 							};
 							let vv = Value::<T>::Float(v);
 
@@ -1419,16 +1429,40 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								func_node.eval_with_context_and_x(context, &vv, step)
 							}
 						},
+						// FunctionType::Implicit => {
+						// 	if v.len() == 1 {
+						// 		let v = v[0].as_fixed_len_tuple_ref(2)?;
+						// 		func_node.eval_with_context_and_xy(context, &v[0], &v[1])
+						// 	} else if v.len() == 2 {
+						// 		func_node.eval_with_context_and_xy(context, &v[0], &v[1])
+						// 	} else {
+						// 		return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
+						// 	}
+						// },
 						FunctionType::Implicit => {
-							let v = v.as_tuple_ref()?;
-							let x = v.first().ok_or_else(|| {
-								EvalexprError::CustomMessage("Expected 2 arguments, got 0.".to_string())
-							})?;
-							let y = v.get(1).ok_or_else(|| {
-								EvalexprError::CustomMessage("Expected 2 arguments, got 1.".to_string())
-							})?;
-
-							func_node.eval_with_context_and_xy(context, x, y)
+							let cc = complex_context
+								.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
+							if v.len() == 1 {
+								let v = v[0].as_fixed_len_tuple_ref(2)?;
+								// println!("Evaling implicit function with {v:?} and cc {cc:?}");
+								func_node.eval_with_context_and_xy_and_z(
+									context,
+									&Value::Float(cc.0.get()),
+									&Value::Float(cc.1.get()),
+									&v[0],
+									&v[1],
+								)
+							} else if v.len() == 2 {
+								func_node.eval_with_context_and_xy_and_z(
+									context,
+									&Value::Float(cc.0.get()),
+									&Value::Float(cc.1.get()),
+									&v[0],
+									&v[1],
+								)
+							} else {
+								return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
+							}
 						},
 					};
 
@@ -1461,6 +1495,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	draw_buffer: &ThreadLocal<RefCell<DrawBuffer>>, stack_overflow_guard: &ThreadLocal<Cell<isize>>,
+	complex_context: &Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
 ) -> Result<(), Vec<(u64, String)>> {
 	stack_overflow_guard.get_or_default().set(0);
 
@@ -1488,6 +1523,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					plot_params,
 					draw_buffer,
 					stack_overflow_guard,
+					complex_context,
 				) {
 					errors.lock().unwrap().extend(e);
 				}
@@ -1843,10 +1879,19 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 				// plot_ui.line(line);
 			}
 		},
-		EntryType::Function { func,can_be_drawn, range_start, range_end, style, ty, implicit_resolution, .. } => {
-      if !*can_be_drawn {
-        return Ok(());
-      }
+		EntryType::Function {
+			func,
+			can_be_drawn,
+			range_start,
+			range_end,
+			style,
+			ty,
+			implicit_resolution,
+			..
+		} => {
+			if !*can_be_drawn {
+				return Ok(());
+			}
 			if let Some(func_node) = &func.node {
 				let name = if entry.name.is_empty() {
 					match ty {
@@ -2097,20 +2142,59 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							_ => {},
 						}
 					},
+					// FunctionType::Implicit => {
+					// 	let mins = (plot_params.first_x, plot_params.first_y);
+					// 	let maxs = (plot_params.last_x, plot_params.last_y);
+					// 	for line in marching_squares::marching_squares(
+					// 		|x, y| {
+					// 			func_node
+					// 				.eval_float_with_context_and_xy(ctx, &f64_to_value(x), &f64_to_value(y))
+					// 				.map(|y| y.to_f64())
+					// 				.map_err(|e| e.to_string())
+					// 		},
+					// 		mins,
+					// 		maxs,
+					// 		*implicit_resolution,
+					// 		stack_overflow_guard, // plot_params.eps
+					// 	)
+					// 	.map_err(|e| vec![(entry.id, e)])?
+					// 	{
+					// 		add_line(line);
+					// 	}
+					// },
 					FunctionType::Implicit => {
 						let mins = (plot_params.first_x, plot_params.first_y);
 						let maxs = (plot_params.last_x, plot_params.last_y);
+						// let cc =
+						// 	complex_context.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
+
 						for line in marching_squares::marching_squares(
-							|x, y| {
+							|cc: &(Cell<T::Float>, Cell<T::Float>), x, y| {
+								let xf = f64_to_float::<T>(x);
+								let yf = f64_to_float::<T>(y);
+
+								cc.0.set(xf);
+								cc.1.set(yf);
 								func_node
-									.eval_float_with_context_and_xy(ctx, &f64_to_value(x), &f64_to_value(y))
+									.eval_float_with_context_and_xy_and_z(
+										ctx,
+										&f64_to_value(x),
+										&f64_to_value(y),
+										&f64_to_value(x),
+										&f64_to_value(y),
+									)
 									.map(|y| y.to_f64())
 									.map_err(|e| e.to_string())
 							},
 							mins,
 							maxs,
 							*implicit_resolution,
-							// plot_params.eps
+							|| {
+								stack_overflow_guard.get_or_default().set(0);
+								let cc = complex_context
+									.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
+								cc
+							},
 						)
 						.map_err(|e| vec![(entry.id, e)])?
 						{
@@ -2252,6 +2336,10 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])y(?:$|[^a-zA-Z0-9])").unwrap());
 	static RE_X: LazyLock<Regex> =
 		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])x(?:$|[^a-zA-Z0-9])").unwrap());
+	static RE_ZY: LazyLock<Regex> =
+		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])zy(?:$|[^a-zA-Z0-9])").unwrap());
+	static RE_ZX: LazyLock<Regex> =
+		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])zx(?:$|[^a-zA-Z0-9])").unwrap());
 
 	let text_b = text.as_bytes();
 	let mut split = None;
@@ -2276,13 +2364,13 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 		return Err("Something is needed on both sides of the = sign".to_string());
 	}
 	if left == "y" {
-		if RE_Y.is_match(right) {
+		if RE_Y.is_match(right) || RE_ZY.is_match(right) || RE_ZX.is_match(right) {
 			return Ok(Some(format!("y - ({right})")));
 		}
 		return Ok(Some(right.to_string()));
 	}
 	if left == "x" {
-		if RE_X.is_match(right) {
+		if RE_X.is_match(right) || RE_ZY.is_match(right) || RE_ZX.is_match(right) {
 			return Ok(Some(format!("x - ({right})")));
 		}
 		if RE_Y.is_match(right) {

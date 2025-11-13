@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = []
+default = ["puffin"]
 
 [profile.dev]
 opt-level = 1
@@ -55,12 +55,12 @@ thread_local="1"
 regex = "1"
 # debug-cell="*"
 
-# [patch."https://github.com/vdrn/evalexpr"]
-# evalexpr = { path = "../../contrib/evalexpr" }
-# [patch.crates-io]
+[patch."https://github.com/vdrn/evalexpr"]
+evalexpr = { path = "../../contrib/evalexpr" }
+[patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
-# puffin = { path = "../../contrib/puffin/puffin" }
-# puffin_http = { path = "../../contrib/puffin/puffin_http" }
+puffin = { path = "../../contrib/puffin/puffin" }
+puffin_http = { path = "../../contrib/puffin/puffin_http" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 puffin = { version = "0.19", optional = true }
