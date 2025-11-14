@@ -1,5 +1,8 @@
 use rust_graph::Application;
 
+// #[cfg(not(target_arch = "wasm32"))]
+// #[global_allocator]
+// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() {
 	// #[cfg(target_arch = "wasm32")]
 	// {

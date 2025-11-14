@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
-use evalexpr::{EvalexprFloat, EvalexprNumericTypes};
+use evalexpr::{EvalexprFloat, EvalexprNumericTypes, IStr, istr};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
@@ -141,7 +141,7 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(
 					style:               style.clone(),
 					implicit_resolution: *implicit_resolution,
 				},
-				EntryType::Constant { value, step, ty } => {
+				EntryType::Constant { value, step, ty, istr_name: _ } => {
 					EntryTypeSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
 				},
 				EntryType::Points { points, style } => {
@@ -240,7 +240,6 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 		*id += 1;
 		let entry_deserialized = Entry {
 			id:      *id,
-			name:    entry.name,
 			visible: entry.visible,
 			color:   entry.color,
 			ty:      match entry.ty {
@@ -263,8 +262,11 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 
 					style,
 				},
-				EntryTypeSerialized::Constant { value, step, ty } => {
-					EntryType::Constant { value: T::Float::f64_to_float(value), step, ty }
+				EntryTypeSerialized::Constant { value, step, ty } => EntryType::Constant {
+					value: T::Float::f64_to_float(value),
+					step,
+					ty,
+					istr_name: istr(&entry.name),
 				},
 				EntryTypeSerialized::Points { points, style } => {
 					let mut points_deserialized = Vec::new();
@@ -303,11 +305,12 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 					EntryType::Folder { entries }
 				},
 			},
+			name:    entry.name,
 		};
 
 		result.push(entry_deserialized);
 	}
-  *id += 1;
+	*id += 1;
 	(result, bounds)
 }
 pub fn deserialize_from_json<T: EvalexprNumericTypes>(

@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -54,7 +54,7 @@ rayon={version="1", features=["web_spin_lock"]}
 thread_local="1"
 regex = "1"
 # debug-cell="*"
-
+mimalloc = { version = "0.1"}
 [patch."https://github.com/vdrn/evalexpr"]
 # evalexpr = { path = "../../contrib/evalexpr" }
 [patch.crates-io]

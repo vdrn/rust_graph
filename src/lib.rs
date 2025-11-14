@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
+use core::ops::{Deref, DerefMut};
 use rustc_hash::FxHashMap;
 use std::env;
 use std::sync::Mutex;
@@ -15,7 +16,7 @@ use egui_plot::{
 	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
 };
 use evalexpr::{
-	CompiledNode, Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, Value
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, FlatNode, IStr, Stack, Value, istr
 };
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
@@ -29,6 +30,7 @@ mod persistence;
 use crate::entry::{
 	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, deriv_step, f64_to_float, f64_to_value
 };
+use crate::marching_squares::MarchingSquaresCache;
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -92,18 +94,23 @@ const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 const MAX_FUNCTION_NESTING: isize = 500;
 
+#[repr(align(128))]
 struct ThreadLocalContext<T: EvalexprNumericTypes> {
-	cc_x:                 Cell<T::Float>,
-	cc_y:                 Cell<T::Float>,
-	stack_overflow_guard: Cell<isize>,
+	cc_x:                   Cell<T::Float>,
+	cc_y:                   Cell<T::Float>,
+	// stack_overflow_guard: Cell<isize>,
+	stack:                  RefCell<Stack<T>>,
+	marching_squares_cache: MarchingSquaresCache,
 }
 
 impl<T: EvalexprNumericTypes> Default for ThreadLocalContext<T> {
 	fn default() -> Self {
 		Self {
-			cc_x:                 Cell::new(T::Float::ZERO),
-			cc_y:                 Cell::new(T::Float::ZERO),
-			stack_overflow_guard: Default::default(),
+			cc_x:                   Cell::new(T::Float::ZERO),
+			cc_y:                   Cell::new(T::Float::ZERO),
+			// stack_overflow_guard: Default::default(),
+			stack:                  RefCell::new(Stack::<T>::with_capacity(128)),
+			marching_squares_cache: MarchingSquaresCache::default(),
 		}
 	}
 }
@@ -121,9 +128,9 @@ struct State<T: EvalexprNumericTypes> {
 fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
 		($ident:ident, $uppercase:expr, $lowercase:expr) => {
-			ctx.set_value($lowercase, Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
+			ctx.set_value(istr($lowercase), Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
 				.unwrap();
-			ctx.set_value($uppercase, Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
+			ctx.set_value(istr($uppercase), Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
 				.unwrap();
 		};
 	}
@@ -152,8 +159,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	macro_rules! add_function {
 		($ident:ident) => {
 			ctx.set_function(
-				stringify!($ident).to_string(),
-				evalexpr::Function::new(move |_, v| {
+				istr(stringify!($ident)),
+				evalexpr::Function::new(move |_, _, v| {
 					expect_function_argument_amount(v.len(), 1)?;
 					let v: T::Float = v[0].as_float()?;
 					Ok(Value::Float(v.$ident()))
@@ -193,8 +200,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	macro_rules! add_function_2 {
 		($ident:ident) => {
 			ctx.set_function(
-				stringify!($ident).to_string(),
-				evalexpr::Function::new(move |_, v| {
+				istr(stringify!($ident)),
+				evalexpr::Function::new(move |_, _, v| {
 					expect_function_argument_amount(v.len(), 2)?;
 					let v1: T::Float = v[0].as_float()?;
 					let v2: T::Float = v[1].as_float()?;
@@ -214,8 +221,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	macro_rules! add_function_3 {
 		($ident:ident) => {
 			ctx.set_function(
-				stringify!($ident).to_string(),
-				evalexpr::Function::new(move |_, v| {
+				istr(stringify!($ident)),
+				evalexpr::Function::new(move |_, _, v| {
 					expect_function_argument_amount(v.len(), 3)?;
 					let v1: T::Float = v[0].as_float()?;
 					let v2: T::Float = v[1].as_float()?;
@@ -230,8 +237,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	add_function_3!(clamp);
 
 	ctx.set_function(
-		"normaldist".to_string(),
-		evalexpr::Function::new(move |_, v| {
+		istr("normaldist"),
+		evalexpr::Function::new(move |_, _, v| {
 			let zero = T::Float::f64_to_float(0.0);
 			let one = T::Float::f64_to_float(1.0);
 			if v.is_empty() {
@@ -260,8 +267,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	.unwrap();
 
 	ctx.set_function(
-		"g".to_string(),
-		evalexpr::Function::new(|_, v: &[Value<T>]| {
+		istr("g"),
+		evalexpr::Function::new(|_, _, v: &[Value<T>]| {
 			expect_function_argument_amount(v.len(), 2)?;
 			let tuple = v[0].as_tuple_ref()?;
 			let index: T::Float = v[1].as_float()?;
@@ -279,8 +286,8 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	)
 	.unwrap();
 	ctx.set_function(
-		"get".to_string(),
-		evalexpr::Function::new(|_, v: &[Value<T>]| {
+		istr("get"),
+		evalexpr::Function::new(|_, _, v: &[Value<T>]| {
 			let tuple = v[0].as_tuple_ref()?;
 			let index: T::Float = v[1].as_float()?;
 
@@ -381,6 +388,24 @@ impl Default for AppConfig {
 		Self { fullscreen: true, dark_mode: true, use_f32: false, resolution: 500, ui_scale: 1.5 }
 	}
 }
+#[repr(align(128))]
+pub struct DrawBufferRC {
+	inner: RefCell<entry::DrawBuffer>,
+}
+impl Default for DrawBufferRC {
+	fn default() -> Self { Self { inner: RefCell::new(entry::DrawBuffer::default()) } }
+}
+
+#[derive(Clone)]
+struct ReservedVars {
+	x:  IStr,
+	y:  IStr,
+	zx: IStr,
+	zy: IStr,
+}
+impl ReservedVars {
+	pub fn new() -> Self { Self { x: istr("x"), y: istr("y"), zx: istr("zx"), zy: istr("zy") } }
+}
 
 struct UiState {
 	conf:        AppConfig,
@@ -407,8 +432,9 @@ struct UiState {
 	last_url_update:      f64,
 	file_to_remove:       Option<String>,
 
-	draw_buffer:  Box<ThreadLocal<RefCell<entry::DrawBuffer>>>,
-	showing_help: bool,
+	draw_buffer:   Box<ThreadLocal<DrawBufferRC>>,
+	reserved_vars: ReservedVars,
+	showing_help:  bool,
 
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	full_frame_scope: Option<puffin::ProfilerScope>,
@@ -552,6 +578,7 @@ impl Application {
 				file_to_remove: None,
 				draw_buffer: Box::new(ThreadLocal::new()),
 				showing_help: false,
+				reserved_vars: ReservedVars::new(),
 			},
 		}
 	}
@@ -955,9 +982,9 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					if let Err((id, e)) =
-						entry::recompile_entry(entry, &mut state.ctx, &state.thread_local_context)
-					{
+					if let Err((id, e)) = entry::recompile_entry(
+						entry, &mut state.ctx, &state.thread_local_context, &ui_state.reserved_vars,
+					) {
 						ui_state.parsing_errors.insert(id, e);
 					}
 				}
@@ -965,24 +992,18 @@ fn side_panel<T: EvalexprNumericTypes>(
 				for entry in state.entries.iter_mut() {
 					scope!("entry_process");
 					match &mut entry.ty {
-						EntryType::Constant { value, .. } => {
+						EntryType::Constant { value, istr_name, .. } => {
 							if !entry.name.is_empty() {
-								state
-									.ctx
-									.set_value(entry.name.as_str(), evalexpr::Value::<T>::Float(*value))
-									.unwrap();
+								state.ctx.set_value(*istr_name, evalexpr::Value::<T>::Float(*value)).unwrap();
 							}
 						},
 						EntryType::Folder { entries } => {
 							for entry in entries {
-								if let EntryType::Constant { value, .. } = &mut entry.ty {
+								if let EntryType::Constant { value, istr_name, .. } = &mut entry.ty {
 									if !entry.name.is_empty() {
 										state
 											.ctx
-											.set_value(
-												entry.name.as_str(),
-												evalexpr::Value::<T>::Float(*value),
-											)
+											.set_value(*istr_name, evalexpr::Value::<T>::Float(*value))
 											.unwrap();
 									}
 								}
@@ -1051,8 +1072,8 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 		step_size_y,
 		resolution: ui_state.conf.resolution,
 	};
-	state.ctx.set_value(entry::STEP_X_NAME, f64_to_value(deriv_step(plot_params.step_size))).unwrap();
-	state.ctx.set_value(entry::STEP_Y_NAME, f64_to_value(deriv_step(plot_params.step_size_y))).unwrap();
+	// state.ctx.set_value(entry::STEP_X_NAME, f64_to_value(deriv_step(plot_params.step_size))).unwrap();
+	// state.ctx.set_value(entry::STEP_Y_NAME, f64_to_value(deriv_step(plot_params.step_size_y))).unwrap();
 
 	let main_context = &state.ctx;
 	// let animating = ui_state.animating.load(Ordering::Relaxed);
@@ -1077,6 +1098,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			&plot_params,
 			&ui_state.draw_buffer,
 			&state.thread_local_context,
+			&ui_state.reserved_vars,
 		) {
 			for (id, error) in errors {
 				eval_errors.lock().unwrap().insert(id, error);
@@ -1086,7 +1108,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 
 	let mut draw_lines = vec![];
 	for draw_buffer in ui_state.draw_buffer.iter_mut() {
-		let draw_buffer = draw_buffer.get_mut();
+		let draw_buffer = draw_buffer.inner.get_mut();
 		draw_lines.append(&mut draw_buffer.lines);
 	}
 	let final_closest_point_to_mouse: Mutex<Option<((f64, f64), f64)>> = Mutex::new(None);
@@ -1099,8 +1121,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
 				return;
 			};
-			let mut draw_buffer =
-				ui_state.draw_buffer.get_or(|| RefCell::new(entry::DrawBuffer::new())).borrow_mut();
+			let mut draw_buffer = thread_local_get(&ui_state.draw_buffer).inner.borrow_mut();
 			if fline.id == selected_fline_id {
 				let mut closest_point_to_mouse: Option<((f64, f64), f64)> = None;
 
@@ -1259,7 +1280,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 	let mut draw_polygons = vec![];
 	let mut draw_texts = vec![];
 	for draw_buffer in ui_state.draw_buffer.iter_mut() {
-		let draw_buffer = draw_buffer.get_mut();
+		let draw_buffer = draw_buffer.inner.get_mut();
 		draw_polygons.append(&mut draw_buffer.polygons);
 		draw_points.append(&mut draw_buffer.points);
 		draw_texts.append(&mut draw_buffer.texts);
@@ -1373,6 +1394,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			ui_state.dragging_point_i = None;
 		}
 
+		let mut stack = Stack::<T>::new();
 		if let Some(dragging_point_i) = &ui_state.dragging_point_i {
 			if let PointInteractionType::Draggable { i } = dragging_point_i.ty {
 				if let Some((name, points)) = get_entry_mut_by_id(&mut state.entries, i.0).and_then(|entry| {
@@ -1418,48 +1440,48 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 							DragPoint::XLiteralYConstant(y_const) => {
 								point.x.text = format!("{}", f64_to_float::<T>(pos.x));
 								let y_node = point.y.node.clone();
-								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+								drag(state, y_const, y_node, &mut stack, point_y, pos.y, plot_params.eps);
 							},
 							DragPoint::YLiteralXConstant(x_const) => {
 								point.y.text = format!("{}", f64_to_float::<T>(pos.y));
 								let x_node = point.x.node.clone();
-								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+								drag(state, x_const, x_node, &mut stack, point_x, pos.x, plot_params.eps);
 							},
 							DragPoint::BothCoordConstants(x_const, y_const) => {
 								let x_node = point.x.node.clone();
 								let y_node = point.y.node.clone();
 
-								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
-								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+								drag(state, x_const, x_node, &mut stack, point_x, pos.x, plot_params.eps);
+								drag(state, y_const, y_node, &mut stack, point_y, pos.y, plot_params.eps);
 							},
 							DragPoint::XConstant(x_const) => {
 								let x_node = point.x.node.clone();
-								drag(state, &x_const, x_node, point_x, pos.x, plot_params.eps);
+								drag(state, x_const, x_node, &mut stack, point_x, pos.x, plot_params.eps);
 							},
 							DragPoint::YConstant(y_const) => {
 								let y_node = point.y.node.clone();
-								drag(state, &y_const, y_node, point_y, pos.y, plot_params.eps);
+								drag(state, y_const, y_node, &mut stack, point_y, pos.y, plot_params.eps);
 							},
 							DragPoint::SameConstantBothCoords(x_const) => {
 								let x_node = point.x.node.clone();
 								let y_node = point.y.node.clone();
 								if let (Some(x_node), Some(y_node)) = (x_node, y_node) {
 									if let Some(value) =
-										find_constant_value(&mut state.entries, |e| e.name == x_const)
+										find_constant_value(&mut state.entries, |e| e == x_const)
 									{
 										let new_value = solve_minimize(
 											value.to_f64(),
 											(pos.x, pos.y),
 											plot_params.eps,
 											|x| {
-												state.ctx.set_value(&x_const, f64_to_value::<T>(x)).unwrap();
+												state.ctx.set_value(x_const, f64_to_value::<T>(x)).unwrap();
 												(
 													x_node
-														.eval_float_with_context(&state.ctx)
+														.eval_float_with_context(&mut stack, &state.ctx)
 														.unwrap()
 														.to_f64(),
 													y_node
-														.eval_float_with_context(&state.ctx)
+														.eval_float_with_context(&mut stack, &state.ctx)
 														.unwrap()
 														.to_f64(),
 												)
@@ -1609,13 +1631,14 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 // }
 //
 fn drag<T: EvalexprNumericTypes>(
-	state: &mut State<T>, name: &str, node: Option<CompiledNode<T>>, cur: f64, target: f64, eps: f64,
+	state: &mut State<T>, name: IStr, node: Option<FlatNode<T>>, stack: &mut Stack<T>, cur: f64, target: f64,
+	eps: f64,
 ) -> bool {
 	if let Some(point_node) = node {
-		if let Some(value) = find_constant_value(&mut state.entries, |e| e.name == name) {
+		if let Some(value) = find_constant_value(&mut state.entries, |e| e == name) {
 			if let Some(new_value) = solve_secant(value.to_f64(), cur, target, eps, |x| {
 				state.ctx.set_value(name, f64_to_value::<T>(x)).unwrap();
-				point_node.eval_float_with_context(&state.ctx).unwrap().to_f64()
+				point_node.eval_float_with_context(stack, &state.ctx).unwrap().to_f64()
 			}) {
 				// if let EntryType::Constant { value, .. } =
 				// 	&mut get_entry_mut(&mut state.entries, c_idx).unwrap().ty
@@ -1789,21 +1812,25 @@ fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
 }
 
 fn find_constant_value<T: EvalexprNumericTypes>(
-	entries: &mut [Entry<T>], pos_cb: impl Fn(&Entry<T>) -> bool,
+	entries: &mut [Entry<T>], pos_cb: impl Fn(IStr) -> bool,
 ) -> Option<&mut T::Float> {
 	for entry in entries.iter_mut() {
-		if pos_cb(entry) {
-			if let EntryType::Constant { value, .. } = &mut entry.ty {
-				return Some(value);
-			}
-		} else if let EntryType::Folder { entries } = &mut entry.ty {
-			for sub_entry in entries.iter_mut() {
-				if pos_cb(sub_entry) {
-					if let EntryType::Constant { value, .. } = &mut sub_entry.ty {
-						return Some(value);
+		match &mut entry.ty {
+			EntryType::Constant { value, istr_name, .. } => {
+				if pos_cb(*istr_name) {
+					return Some(value);
+				}
+			},
+			EntryType::Folder { entries } => {
+				for sub_entry in entries.iter_mut() {
+					if let EntryType::Constant { value, istr_name, .. } = &mut sub_entry.ty {
+						if pos_cb(*istr_name) {
+							return Some(value);
+						}
 					}
 				}
-			}
+			},
+			_ => {},
 		}
 	}
 	None
@@ -1862,4 +1889,13 @@ pub fn unlikely(x: bool) -> bool {
 		cold()
 	}
 	x
+}
+
+pub fn thread_local_get<T: Send + Default>(tl: &ThreadLocal<T>) -> &T {
+	if let Some(t) = tl.get() {
+		t
+	} else {
+		cold();
+		tl.get_or_default()
+	}
 }
