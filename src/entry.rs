@@ -11,14 +11,14 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, HashMapContext, Node, Value
+	CompiledNode, Context, ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, Function, HashMapContext, Value
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use thread_local::ThreadLocal;
 
-use crate::{MAX_FUNCTION_NESTING, marching_squares};
+use crate::{MAX_FUNCTION_NESTING, ThreadLocalContext, marching_squares};
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
@@ -184,7 +184,7 @@ impl TextboxType {
 #[derive(Clone, Debug)]
 pub struct Expr<T: EvalexprNumericTypes> {
 	pub text:         String,
-	pub node:         Option<Node<T>>,
+	pub node:         Option<CompiledNode<T>>,
 	pub textbox_type: TextboxType,
 }
 
@@ -1229,8 +1229,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 
 pub fn recompile_entry<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
-	stack_overflow_guard: &Arc<ThreadLocal<Cell<isize>>>,
-	complex_context: &Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
+	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) -> Result<(), (u64, String)> {
 	if RESERVED_NAMES.contains(&entry.name.trim()) {
 		return Ok(());
@@ -1238,7 +1237,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 	match &mut entry.ty {
 		EntryType::Folder { entries } => {
 			for entry in entries {
-				recompile_entry(entry, ctx, stack_overflow_guard, complex_context)?;
+				recompile_entry(entry, ctx, thread_local_context)?;
 			}
 		},
 		EntryType::Points { points, .. } => {
@@ -1390,16 +1389,16 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					*ty = FunctionType::X;
 				}
 
-				let stack_overflow_guard = stack_overflow_guard.clone();
-				let complex_context = complex_context.clone();
+				let thread_local_context = thread_local_context.clone();
 				let ty = *ty;
 				let fun = Function::new(move |context: &HashMapContext<T>, v| {
 					// puffin::profile_scope!("eval_function");
-					let stack_overflow_guard = stack_overflow_guard.get_or(|| Cell::new(0));
-					let stack_depth = stack_overflow_guard.get() + 1;
-					stack_overflow_guard.set(stack_depth);
-					if stack_depth > MAX_FUNCTION_NESTING {
-						stack_overflow_guard.set(stack_depth - 1);
+					let tl_context = thread_local_context.get_or(|| ThreadLocalContext::default());
+
+					let stack_depth = tl_context.stack_overflow_guard.get();
+					tl_context.stack_overflow_guard.set(stack_depth + 1);
+					if crate::unlikely(stack_depth > MAX_FUNCTION_NESTING) {
+						tl_context.stack_overflow_guard.set(stack_depth);
 						return Err(EvalexprError::CustomMessage(format!(
 							"Max function nesting reached ({MAX_FUNCTION_NESTING})"
 						)));
@@ -1409,14 +1408,15 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
 							let v = match v.first() {
 								Some(Value::Float(x)) => *x,
+								Some(Value::Float2(x, _)) => *x,
 								Some(Value::Boolean(x)) => f64_to_float::<T>(*x as i64 as f64),
 								// Value::Int(x) => T::int_as_float(x),
-								Some(Value::Tuple(values)) => values[0]
-									.as_float()
-									.or_else(|_| {
-										values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
-									})
-									.unwrap_or(T::Float::ZERO),
+								// Some(Value::Tuple(values)) => values[0]
+								// 	.as_float()
+								// 	.or_else(|_| {
+								// 		values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
+								// 	})
+								// 	.unwrap_or(T::Float::ZERO),
 								_ => T::Float::ZERO,
 							};
 							let vv = Value::<T>::Float(v);
@@ -1440,33 +1440,37 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						// 	}
 						// },
 						FunctionType::Implicit => {
-							let cc = complex_context
-								.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
+							let cc_x = tl_context.cc_x.get();
+							let cc_y = tl_context.cc_y.get();
 							if v.len() == 1 {
-								let v = v[0].as_fixed_len_tuple_ref(2)?;
+								let Ok(v) = v[0].as_float2() else {
+									tl_context.stack_overflow_guard.set(stack_depth);
+									return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
+								};
 								// println!("Evaling implicit function with {v:?} and cc {cc:?}");
 								func_node.eval_with_context_and_xy_and_z(
 									context,
-									&Value::Float(cc.0.get()),
-									&Value::Float(cc.1.get()),
-									&v[0],
-									&v[1],
+									&Value::Float(cc_x),
+									&Value::Float(cc_y),
+									&Value::Float(v.0),
+									&Value::Float(v.1),
 								)
 							} else if v.len() == 2 {
 								func_node.eval_with_context_and_xy_and_z(
 									context,
-									&Value::Float(cc.0.get()),
-									&Value::Float(cc.1.get()),
+									&Value::Float(cc_x),
+									&Value::Float(cc_y),
 									&v[0],
 									&v[1],
 								)
 							} else {
+								tl_context.stack_overflow_guard.set(stack_depth);
 								return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
 							}
 						},
 					};
 
-					stack_overflow_guard.set(stack_depth - 1);
+					tl_context.stack_overflow_guard.set(stack_depth);
 					res
 				});
 
@@ -1494,10 +1498,9 @@ pub fn deriv_step(step: f64) -> f64 { step.sqrt() }
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	draw_buffer: &ThreadLocal<RefCell<DrawBuffer>>, stack_overflow_guard: &ThreadLocal<Cell<isize>>,
-	complex_context: &Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
+	draw_buffer: &ThreadLocal<RefCell<DrawBuffer>>, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) -> Result<(), Vec<(u64, String)>> {
-	stack_overflow_guard.get_or_default().set(0);
+  tl_context.get_or_default().stack_overflow_guard.set(0);
 
 	let visible = entry.visible;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. } | EntryType::Integral { .. }) {
@@ -1522,8 +1525,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					ctx,
 					plot_params,
 					draw_buffer,
-					stack_overflow_guard,
-					complex_context,
+          tl_context
 				) {
 					errors.lock().unwrap().extend(e);
 				}
@@ -2098,23 +2100,23 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 											}
 										},
 										Ok(Value::Empty) => {},
-										Ok(Value::Tuple(values)) => {
-											if values.len() != 2 {
-												return Err(vec![(
-													entry.id,
-													format!(
-														"Ranged function must return 1 or 2 float values, \
-														 got {}",
-														values.len()
-													),
-												)]);
-											}
-											let x = values[0]
-												.as_float()
-												.map_err(|e| vec![(entry.id, e.to_string())])?;
-											let y = values[1]
-												.as_float()
-												.map_err(|e| vec![(entry.id, e.to_string())])?;
+										Ok(Value::Float2(x, y)) => {
+											// if values.len() != 2 {
+											// 	return Err(vec![(
+											// 		entry.id,
+											// 		format!(
+											// 			"Ranged function must return 1 or 2 float values, \
+											// 			 got {}",
+											// 			values.len()
+											// 		),
+											// 	)]);
+											// }
+											// let x = values[0]
+											// 	.as_float()
+											// 	.map_err(|e| vec![(entry.id, e.to_string())])?;
+											// let y = values[1]
+											// 	.as_float()
+											// 	.map_err(|e| vec![(entry.id, e.to_string())])?;
 											if y.is_nan() {
 												if !pp_buffer.is_empty() {
 													add_line(mem::take(&mut pp_buffer));
@@ -2169,7 +2171,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						// 	complex_context.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
 
 						for line in marching_squares::marching_squares(
-							|cc: &(Cell<T::Float>, Cell<T::Float>), x, y| {
+							|cc: (&Cell<T::Float>, &Cell<T::Float>), x, y| {
 								let xf = f64_to_float::<T>(x);
 								let yf = f64_to_float::<T>(y);
 
@@ -2190,10 +2192,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							maxs,
 							*implicit_resolution,
 							|| {
-								stack_overflow_guard.get_or_default().set(0);
-								let cc = complex_context
-									.get_or(|| (Cell::new(T::Float::ZERO), Cell::new(T::Float::ZERO)));
-								cc
+                let tl_context = tl_context.get_or_default();
+								tl_context.stack_overflow_guard.set(0);
+                (&tl_context.cc_x,&tl_context.cc_y)
 							},
 						)
 						.map_err(|e| vec![(entry.id, e)])?
@@ -2209,7 +2210,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 }
 
 pub fn eval_point<T: EvalexprNumericTypes>(
-	ctx: &evalexpr::HashMapContext<T>, px: Option<&Node<T>>, py: Option<&Node<T>>, step: T::Float,
+	ctx: &evalexpr::HashMapContext<T>, px: Option<&CompiledNode<T>>, py: Option<&CompiledNode<T>>,
+	step: T::Float,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
@@ -2312,7 +2314,7 @@ pub struct NodeAnalysis<'a> {
 	pub num_identifiers: u32,
 	pub constants:       SmallVec<[&'a str; 6]>,
 }
-pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_> {
+pub fn analyze_node<T: EvalexprNumericTypes>(node: &CompiledNode<T>) -> NodeAnalysis<'_> {
 	let mut is_literal = true;
 	let mut constants = SmallVec::new();
 	let mut num_identifiers = 0;
@@ -2322,7 +2324,7 @@ pub fn analyze_node<T: EvalexprNumericTypes>(node: &Node<T>) -> NodeAnalysis<'_>
 		is_literal = false;
 	}
 
-	for _ in node.iter_identifiers() {
+	for i in node.iter_identifiers() {
 		is_literal = false;
 		num_identifiers += 1;
 	}

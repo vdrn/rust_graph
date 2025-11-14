@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = ["puffin"]
+default = []
 
 [profile.dev]
 opt-level = 1
@@ -56,11 +56,11 @@ regex = "1"
 # debug-cell="*"
 
 [patch."https://github.com/vdrn/evalexpr"]
-evalexpr = { path = "../../contrib/evalexpr" }
+# evalexpr = { path = "../../contrib/evalexpr" }
 [patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
-puffin = { path = "../../contrib/puffin/puffin" }
-puffin_http = { path = "../../contrib/puffin/puffin_http" }
+# puffin = { path = "../../contrib/puffin/puffin" }
+# puffin_http = { path = "../../contrib/puffin/puffin_http" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 puffin = { version = "0.19", optional = true }

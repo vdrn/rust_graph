@@ -15,7 +15,7 @@ use egui_plot::{
 	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
 };
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, Node, Value
+	CompiledNode, Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, Value
 };
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
@@ -92,15 +92,31 @@ const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 const MAX_FUNCTION_NESTING: isize = 500;
 
+struct ThreadLocalContext<T: EvalexprNumericTypes> {
+	cc_x:                 Cell<T::Float>,
+	cc_y:                 Cell<T::Float>,
+	stack_overflow_guard: Cell<isize>,
+}
+
+impl<T: EvalexprNumericTypes> Default for ThreadLocalContext<T> {
+	fn default() -> Self {
+		Self {
+			cc_x:                 Cell::new(T::Float::ZERO),
+			cc_y:                 Cell::new(T::Float::ZERO),
+			stack_overflow_guard: Default::default(),
+		}
+	}
+}
+
 struct State<T: EvalexprNumericTypes> {
-	entries:        Vec<Entry<T>>,
-	ctx:            evalexpr::HashMapContext<T>,
-	default_bounds: Option<PlotBounds>,
+	entries:              Vec<Entry<T>>,
+	ctx:                  evalexpr::HashMapContext<T>,
+	default_bounds:       Option<PlotBounds>,
 	// context_stash: &'static Mutex<Vec<evalexpr::HashMapContext<T>>>,
-	name:           String,
+	name:                 String,
 	// points_cache: PointsCache,
-	clear_cache:    bool,
-  complex_context: Arc<ThreadLocal<(Cell<T::Float>, Cell<T::Float>)>>,
+	clear_cache:          bool,
+	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
 }
 fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
@@ -373,12 +389,11 @@ struct UiState {
 	// data_aspect: f32,
 	reset_graph: bool,
 
-	cur_dir:              String,
-	serialization_error:  Option<String>,
-	serialized_states:    BTreeMap<String, String>,
-	stack_overflow_guard: Arc<ThreadLocal<Cell<isize>>>,
-	eval_errors:          FxHashMap<u64, String>,
-	parsing_errors:       FxHashMap<u64, String>,
+	cur_dir:             String,
+	serialization_error: Option<String>,
+	serialized_states:   BTreeMap<String, String>,
+	eval_errors:         FxHashMap<u64, String>,
+	parsing_errors:      FxHashMap<u64, String>,
 
 	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<entry::PointInteraction>,
@@ -494,22 +509,22 @@ impl Application {
 			#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 			_puffin: run_puffin_server(),
 			state_f32: State {
-				entries:        entries_s,
-				ctx:            ctx_s,
-				name:           String::new(),
-				default_bounds: default_bounds_s,
+				entries:              entries_s,
+				ctx:                  ctx_s,
+				name:                 String::new(),
+				default_bounds:       default_bounds_s,
 				// points_cache: PointsCache::default(),
-				clear_cache:    true,
-        complex_context: Arc::new(ThreadLocal::new()),
+				clear_cache:          true,
+				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			state_f64: State {
-				entries:        entries_d,
-				default_bounds: default_bounds_d,
-				ctx:            ctx_d,
-				name:           String::new(),
+				entries:              entries_d,
+				default_bounds:       default_bounds_d,
+				ctx:                  ctx_d,
+				name:                 String::new(),
 				// points_cache: PointsCache::default(),
-				clear_cache:    true,
-        complex_context: Arc::new(ThreadLocal::new()),
+				clear_cache:          true,
+				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -525,7 +540,6 @@ impl Application {
 
 				cur_dir,
 				serialization_error,
-				stack_overflow_guard: Arc::new(ThreadLocal::new()),
 				eval_errors: FxHashMap::default(),
 				parsing_errors: FxHashMap::default(),
 				selected_plot_line: None,
@@ -705,7 +719,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 
 			let mut remove = None;
 			let mut animating = false;
-      // println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
+			// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					ui.vertical(|ui| {
@@ -942,7 +956,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
 					if let Err((id, e)) =
-						entry::recompile_entry(entry, &mut state.ctx, &ui_state.stack_overflow_guard, &state.complex_context)
+						entry::recompile_entry(entry, &mut state.ctx, &state.thread_local_context)
 					{
 						ui_state.parsing_errors.insert(id, e);
 					}
@@ -1062,8 +1076,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 			main_context,
 			&plot_params,
 			&ui_state.draw_buffer,
-			&ui_state.stack_overflow_guard,
-      &state.complex_context,
+			&state.thread_local_context,
 		) {
 			for (id, error) in errors {
 				eval_errors.lock().unwrap().insert(id, error);
@@ -1596,7 +1609,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 // }
 //
 fn drag<T: EvalexprNumericTypes>(
-	state: &mut State<T>, name: &str, node: Option<Node<T>>, cur: f64, target: f64, eps: f64,
+	state: &mut State<T>, name: &str, node: Option<CompiledNode<T>>, cur: f64, target: f64, eps: f64,
 ) -> bool {
 	if let Some(point_node) = node {
 		if let Some(value) = find_constant_value(&mut state.entries, |e| e.name == name) {
@@ -1839,4 +1852,14 @@ fn dist_sq(a: (f64, f64), b: (f64, f64)) -> f64 {
 	let a = ax - bx;
 	let b = ay - by;
 	a * a + b * b
+}
+
+#[cold]
+fn cold() {}
+
+pub fn unlikely(x: bool) -> bool {
+	if x {
+		cold()
+	}
+	x
 }

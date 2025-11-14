@@ -4,3 +4,6 @@ all:
 
 serve:
 	serve --config ./serve.json ./assets
+
+bp:
+	cargo build --profile profiling
