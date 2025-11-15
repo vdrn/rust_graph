@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::cell::{Cell, RefCell, RefMut};
+use core::cell::{Cell, RefMut};
 use core::mem;
 use core::ops::RangeInclusive;
 use evalexpr::error::EvalexprResultValue;
@@ -19,9 +19,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use thread_local::ThreadLocal;
 
-use crate::{
-	MAX_FUNCTION_NESTING, ReservedVars, ThreadLocalContext, marching_squares, thread_local_get, unlikely
-};
+use crate::{ReservedVars, ThreadLocalContext, marching_squares, thread_local_get};
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
@@ -1396,12 +1394,6 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 				let reserved_vars = reserved_vars.clone();
 				let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>, v| {
 					// puffin::profile_scope!("eval_function");
-					let tl_context = thread_local_get(thread_local_context.as_ref());
-
-					const MAX_STACK_SIZE: usize = 1 << 16;
-					if unlikely(stack.len() > MAX_STACK_SIZE) {
-						return Err(EvalexprError::StackOverflow);
-					}
 
 					// let stack_depth = tl_context.stack_overflow_guard.get();
 					// tl_context.stack_overflow_guard.set(stack_depth + 1);
@@ -1446,6 +1438,7 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						// 	}
 						// },
 						FunctionType::Implicit => {
+							let tl_context = thread_local_get(thread_local_context.as_ref());
 							let cc_x = tl_context.cc_x.get();
 							let cc_y = tl_context.cc_y.get();
 							if v.len() == 1 {
@@ -1486,9 +1479,9 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 					res
 				});
 
-				let name = if entry.name.is_empty() { &func.text } else { &entry.name };
-
-				ctx.set_function(istr(name), fun).unwrap();
+				if !entry.name.is_empty() {
+					ctx.set_function(istr(&entry.name), fun).unwrap();
+				}
 			}
 		},
 	}
@@ -1505,7 +1498,6 @@ pub struct PlotParams {
 	pub step_size_y: f64,
 	pub resolution:  usize,
 }
-pub fn deriv_step(step: f64) -> f64 { step.sqrt() }
 #[allow(clippy::too_many_arguments)]
 pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
@@ -2186,7 +2178,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let mins = (plot_params.first_x, plot_params.first_y);
 						let maxs = (plot_params.last_x, plot_params.last_y);
 
-						for lines in marching_squares::marching_squares(
+						for (_, lines) in marching_squares::marching_squares(
 							|cc: &mut (RefMut<Stack<T>>, &Cell<T::Float>, &Cell<T::Float>), x, y| {
 								let xf = f64_to_float::<T>(x);
 								let yf = f64_to_float::<T>(y);
@@ -2218,9 +2210,9 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						)
 						.map_err(|e| vec![(entry.id, e)])?
 						{
-							// for line in lines {
-								add_line(lines);
-							// }
+							for line in lines {
+								add_line(line);
+							}
 						}
 					},
 				}

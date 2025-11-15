@@ -1130,11 +1130,10 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "evalexpr"
 version = "13.0.0"
-source = "git+https://github.com/vdrn/evalexpr#5e9faac923c6e3a7b3e034800660321df8e75295"
+source = "git+https://github.com/vdrn/evalexpr#0dbf7ed8cf406b50b0ea0046e12efab498b70098"
 dependencies = [
  "arrayvec",
  "istr",
- "rustc-hash 2.1.1",
  "smallvec",
 ]
 
@@ -1331,9 +1330,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1787,16 +1788,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1898,15 +1889,6 @@ dependencies = [
  "log",
  "objc",
  "paste",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.48"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -2711,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "rust_graph"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "arrayvec",
  "base64",
@@ -2722,7 +2704,7 @@ dependencies = [
  "egui_dnd",
  "egui_plot",
  "evalexpr",
- "mimalloc",
+ "getrandom",
  "puffin",
  "puffin_http",
  "rayon",
