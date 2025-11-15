@@ -2,8 +2,6 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
-use core::ops::{Deref, DerefMut};
-use rustc_hash::FxHashMap;
 use std::env;
 use std::sync::Mutex;
 
@@ -21,6 +19,7 @@ use evalexpr::{
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
 };
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thread_local::ThreadLocal;
 
@@ -28,7 +27,7 @@ mod entry;
 mod marching_squares;
 mod persistence;
 use crate::entry::{
-	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, deriv_step, f64_to_float, f64_to_value
+	ConstantType, DragPoint, DrawPoint, Entry, EntryType, OtherPointType, PointEntry, PointInteraction, PointInteractionType, f64_to_float, f64_to_value
 };
 use crate::marching_squares::MarchingSquaresCache;
 
@@ -92,7 +91,6 @@ pub fn wasm_main() -> () {
 
 const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
-const MAX_FUNCTION_NESTING: isize = 500;
 
 #[repr(align(128))]
 struct ThreadLocalContext<T: EvalexprNumericTypes> {
@@ -110,6 +108,7 @@ impl<T: EvalexprNumericTypes> Default for ThreadLocalContext<T> {
 			cc_y:                   Cell::new(T::Float::ZERO),
 			// stack_overflow_guard: Default::default(),
 			stack:                  RefCell::new(Stack::<T>::with_capacity(128)),
+			// stack:                  RefCell::new(Stack::<T>::new()),
 			marching_squares_cache: MarchingSquaresCache::default(),
 		}
 	}
@@ -156,86 +155,6 @@ pub fn expect_function_argument_amount<NumericTypes: EvalexprNumericTypes>(
 }
 
 fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
-	macro_rules! add_function {
-		($ident:ident) => {
-			ctx.set_function(
-				istr(stringify!($ident)),
-				evalexpr::Function::new(move |_, _, v| {
-					expect_function_argument_amount(v.len(), 1)?;
-					let v: T::Float = v[0].as_float()?;
-					Ok(Value::Float(v.$ident()))
-				}),
-			)
-			.unwrap();
-		};
-	}
-	add_function!(ln);
-	add_function!(log2);
-	add_function!(log10);
-
-	add_function!(exp);
-	add_function!(exp2);
-
-	add_function!(cos);
-	add_function!(cosh);
-	add_function!(acos);
-	add_function!(acosh);
-
-	add_function!(sin);
-	add_function!(sinh);
-	add_function!(asin);
-	add_function!(asinh);
-
-	add_function!(tan);
-	add_function!(tanh);
-	add_function!(atan);
-	add_function!(atanh);
-
-	add_function!(sqrt);
-	add_function!(cbrt);
-
-	add_function!(signum);
-	add_function!(abs);
-
-	macro_rules! add_function_2 {
-		($ident:ident) => {
-			ctx.set_function(
-				istr(stringify!($ident)),
-				evalexpr::Function::new(move |_, _, v| {
-					expect_function_argument_amount(v.len(), 2)?;
-					let v1: T::Float = v[0].as_float()?;
-					let v2: T::Float = v[1].as_float()?;
-
-					Ok(Value::Float(v1.$ident(&v2)))
-				}),
-			)
-			.unwrap();
-		};
-	}
-
-	add_function_2!(pow);
-	add_function_2!(log);
-	add_function_2!(atan2);
-	add_function_2!(hypot);
-
-	macro_rules! add_function_3 {
-		($ident:ident) => {
-			ctx.set_function(
-				istr(stringify!($ident)),
-				evalexpr::Function::new(move |_, _, v| {
-					expect_function_argument_amount(v.len(), 3)?;
-					let v1: T::Float = v[0].as_float()?;
-					let v2: T::Float = v[1].as_float()?;
-					let v3: T::Float = v[2].as_float()?;
-
-					Ok(Value::Float(v1.$ident(&v2, &v3)))
-				}),
-			)
-			.unwrap();
-		};
-	}
-	add_function_3!(clamp);
-
 	ctx.set_function(
 		istr("normaldist"),
 		evalexpr::Function::new(move |_, _, v| {
@@ -310,7 +229,6 @@ const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
 	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
   ("get(tuple,index)", " Get the value at the index from the tuple."),
   ("g(tuple, index)", " Alias for `get`."),
-  ("d(func(x))", "Derivative of the expression with respect to x."),
 	("", ""),
 	("max(a, b)", " Returns the maximum of the two numbers."),
 	("min(a, b)", " Returns the minimum of the two numbers."),
@@ -1653,6 +1571,82 @@ fn drag<T: EvalexprNumericTypes>(
 	true
 }
 
+pub fn newton_raphson_minimizer2<const ITERS: usize>(
+	start_x: f64, start_y: f64, eps: f64, mut f: impl FnMut(f64, f64) -> Result<f64, String>,
+) -> Result<Option<(f64, f64)>, String> {
+	let mut x = start_x;
+	let mut y = start_y;
+
+	for _ in 0..ITERS {
+		let f_val = f(x, y)?;
+		let df_dx = (f(x + eps, y)? - f(x - eps, y)?) / (2.0 * eps);
+		let df_dy = (f(x, y + eps)? - f(x, y - eps)?) / (2.0 * eps);
+		// let df_dx = (f(x + eps, y)? - f_val) / (eps);
+		// let df_dy = (f(x, y + eps)? - f_val) / (eps);
+
+		let grad_len_sq = df_dx * df_dx + df_dy * df_dy;
+
+		// gradient too small
+		if grad_len_sq < 1e-10 {
+			return Ok(None);
+		}
+
+		let step = f_val / grad_len_sq;
+		x -= step * df_dx;
+		y -= step * df_dy;
+	}
+
+	Ok(Some((x, y)))
+}
+
+pub fn newton_raphson_minimizer2_tmp<const ITERS: usize>(
+	start_x: f64, start_y: f64, eps: f64, mut f: impl FnMut(f64, f64) -> Result<f64, String>,
+) -> Result<Option<(f64, f64)>, String> {
+	let mut x = start_x;
+	let mut y = start_y;
+
+	let initial_f_val = f(x, y)?;
+	let initial_f = initial_f_val.abs();
+	let mut f_val = initial_f_val;
+
+	let mut best_f = initial_f;
+	let mut best_x = x;
+	let mut best_y = y;
+
+	for _ in 0..ITERS {
+		let df_dx = (f(x + eps, y)? - f(x - eps, y)?) / (2.0 * eps);
+		let df_dy = (f(x, y + eps)? - f(x, y - eps)?) / (2.0 * eps);
+
+		let grad_len_sq = df_dx * df_dx + df_dy * df_dy;
+
+		// gradient too small
+		if grad_len_sq < 1e-10 {
+			break;
+		}
+
+		// move in the direction of the gradient
+		let step = f_val / grad_len_sq;
+		let dx = -step * df_dx;
+		let dy = -step * df_dy;
+
+		// estimate new f
+		f_val = f_val + df_dx * dx + df_dy * dy;
+		let estimated_new_f = f_val.abs();
+
+		// not improving, bail out
+		if estimated_new_f >= best_f {
+			break;
+		}
+
+		x += dx;
+		y += dy;
+		best_f = estimated_new_f;
+		best_x = x;
+		best_y = y;
+	}
+
+	Ok(if best_f < initial_f { Some((best_x, best_y)) } else { None })
+}
 fn solve_secant(
 	cur_x: f64, cur_y: f64, target_y: f64, eps: f64, mut f: impl FnMut(f64) -> f64,
 ) -> Option<f64> {

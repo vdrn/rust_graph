@@ -3,15 +3,13 @@ use core::ops::{Deref, DerefMut};
 
 use arrayvec::ArrayVec;
 use egui_plot::PlotPoint;
-use evalexpr::EvalexprNumericTypes;
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator
 };
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use thread_local::ThreadLocal;
 
-use crate::{scope, thread_local_get};
+use crate::scope;
 
 #[repr(align(128))]
 struct CachePadded<T>(T);
@@ -24,12 +22,15 @@ impl<T> DerefMut for CachePadded<T> {
 }
 
 pub struct MarchingSquaresCache {
-	grids:             RefCell<Vec<Vec<CachePadded<Vec<f64>>>>>,
-	polyline_builders: RefCell<Vec<PolylineBuilder>>,
+	grids: RefCell<Vec<Vec<CachePadded<Vec<f64>>>>>,
+	// polyline_builders: RefCell<Vec<PolylineBuilder>>,
 }
 impl Default for MarchingSquaresCache {
 	fn default() -> Self {
-		Self { grids: RefCell::new(Vec::new()), polyline_builders: RefCell::new(Vec::new()) }
+		Self {
+			grids: RefCell::new(Vec::new()),
+			// polyline_builders: RefCell::new(Vec::new())
+		}
 	}
 }
 impl MarchingSquaresCache {
@@ -42,216 +43,29 @@ impl MarchingSquaresCache {
 		//     println!("RETURNING GRID len {}", grid.len());
 		self.grids.borrow_mut().push(grid);
 	}
-	fn get_polyline_builder(&self, grid_precision: f64, eps: f64) -> PolylineBuilder {
-		let mut polyline_builder = self
-			.polyline_builders
-			.borrow_mut()
-			.pop()
-			.unwrap_or_else(|| PolylineBuilder::new(grid_precision, eps));
-		polyline_builder.eps = eps;
-		polyline_builder.precision_recip = 1.0 / grid_precision;
-		polyline_builder.endpoint_map.clear();
-		polyline_builder
-	}
-	fn return_polyline_builder(&self, polyline_builder: PolylineBuilder) {
-		self.polyline_builders.borrow_mut().push(polyline_builder);
-	}
+	// fn get_polyline_builder(&self, grid_precision: f64, eps: f64) -> PolylineBuilder {
+	// 	let mut polyline_builder = self
+	// 		.polyline_builders
+	// 		.borrow_mut()
+	// 		.pop()
+	// 		.unwrap_or_else(|| PolylineBuilder::new(grid_precision, eps));
+	// 	polyline_builder.eps = eps;
+	// 	polyline_builder.precision_recip = 1.0 / grid_precision;
+	// 	polyline_builder.endpoint_map.clear();
+	// 	polyline_builder
+	// }
+	// fn return_polyline_builder(&self, polyline_builder: PolylineBuilder) {
+	// 	self.polyline_builders.borrow_mut().push(polyline_builder);
+	// }
 }
 
-pub fn marching_squares_old<C>(
-	f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64),
-	bounds_max: (f64, f64), resolution: usize, thread_prepare: impl Fn() -> C + Sync,
-	cache: &MarchingSquaresCache,
-) -> Result<Vec<Vec<PlotPoint>>, String> {
-	scope!("marching_squares");
-	let (x_min, y_min) = bounds_min;
-	let (x_max, y_max) = bounds_max;
 
-	let dx = (x_max - x_min) / resolution as f64;
-	let dy = (y_max - y_min) / resolution as f64;
-
-	let mut grid;
-	{
-		scope!("grid_calc");
-
-		let mut error = std::sync::Mutex::new(None);
-		grid = cache.get_grid(resolution);
-
-		grid.par_iter_mut().enumerate().for_each(|(i, grid_i)| {
-			scope!("grid_calc_par");
-			let mut ctx = thread_prepare();
-
-			grid_i.resize(resolution + 1, 0.0);
-			for j in 0..=resolution {
-				let x = x_min + i as f64 * dx;
-				let y = y_min + j as f64 * dy;
-				match f(&mut ctx, x, y) {
-					Ok(y) => {
-						grid_i[j] = y;
-					},
-					Err(e) => {
-						*error.lock().unwrap() = Some(e);
-						return;
-					},
-				}
-			}
-			// grid_i
-		});
-		// .collect::<Vec<_>>();
-		// for i in 0..=resolution {}
-		if let Some(error) = error.get_mut().unwrap().take() {
-			cache.return_grid(grid);
-			return Err(error);
-		}
-	}
-
-	let eps = f32::EPSILON as f64;
-	let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
-
-	scope!("generate_polylines");
-	for i in 0..resolution {
-		for j in 0..resolution {
-			// scope!("grid_cell");
-			let x = x_min + i as f64 * dx;
-			let y = y_min + j as f64 * dy;
-
-			// vals at (bottom-left, bottom-right, top-right, top-left)
-			let vals = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]];
-
-			// 1 if positive, 0 if negative
-			let mut config = 0u8;
-			for (idx, &val) in vals.iter().enumerate() {
-				if val > 0.0 {
-					config |= 1 << idx;
-				}
-			}
-
-			for (edge1, edge2) in get_edges_for_config(config) {
-				let p1 = interpolate_edge(edge1, x, y, dx, dy, &vals);
-				let p2 = interpolate_edge(edge2, x, y, dx, dy, &vals);
-
-				let start = PlotPoint::new(p1.0, p1.1);
-				let end = PlotPoint::new(p2.0, p2.1);
-				if !equals(start, end, eps) {
-					polyline_builder.add_segment(start, end);
-				}
-			}
-		}
-	}
-
-	// println!("polyline hashmap cap: {}", polyline_builder.endpoint_map.capacity());
-	let polylines = polyline_builder.finish();
-
-	cache.return_grid(grid);
-	Ok(polylines)
-}
-pub fn marching_squares_old2<C>(
-	f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64),
-	bounds_max: (f64, f64), resolution: usize, thread_prepare: impl Fn() -> C + Sync,
-	cache: &MarchingSquaresCache,
-) -> Result<Vec<Vec<Vec<PlotPoint>>>, String> {
-	scope!("marching_squares");
-	let (x_min, y_min) = bounds_min;
-	let (x_max, y_max) = bounds_max;
-
-	let dx = (x_max - x_min) / resolution as f64;
-	let dy = (y_max - y_min) / resolution as f64;
-
-	let mut grid;
-	{
-		scope!("grid_calc");
-
-		let mut error = std::sync::Mutex::new(None);
-		grid = cache.get_grid(resolution);
-
-		grid.par_iter_mut().enumerate().for_each(|(i, grid_i)| {
-			scope!("grid_calc_par");
-			let mut ctx = thread_prepare();
-
-			grid_i.resize(resolution + 1, 0.0);
-			for j in 0..=resolution {
-				let x = x_min + i as f64 * dx;
-				let y = y_min + j as f64 * dy;
-				match f(&mut ctx, x, y) {
-					Ok(y) => {
-						grid_i[j] = y;
-					},
-					Err(e) => {
-						*error.lock().unwrap() = Some(e);
-						return;
-					},
-				}
-			}
-		});
-
-		if let Some(error) = error.get_mut().unwrap().take() {
-			cache.return_grid(grid);
-			return Err(error);
-		}
-	}
-
-	let eps = f32::EPSILON as f64;
-
-	scope!("generate_polylines");
-
-	let num_threads = rayon::current_num_threads();
-	let num_chunks = num_threads.min(resolution);
-
-	let chunk_results: Vec<Vec<Vec<PlotPoint>>> = (0..num_chunks)
-		.into_par_iter()
-		.map(|chunk_idx| {
-			scope!("polyline_chunk");
-
-			let chunk_size = resolution / num_chunks;
-			let remainder = resolution % num_chunks;
-
-			// Distribute remainder across first chunks
-			let start = chunk_idx * chunk_size + chunk_idx.min(remainder);
-			let end = start + chunk_size + if chunk_idx < remainder { 1 } else { 0 };
-
-			let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
-
-			for i in start..end {
-				for j in 0..resolution {
-					let x = x_min + i as f64 * dx;
-					let y = y_min + j as f64 * dy;
-
-					let vals = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]];
-					// vals = [top-left, top-right, bot-right, bot-left]
-
-					let mut config = 0u8;
-					for (idx, &val) in vals.iter().enumerate() {
-						if val > 0.0 {
-							config |= 1 << idx;
-						}
-					}
-
-					for (edge1, edge2) in get_edges_for_config(config) {
-						let p1 = interpolate_edge(edge1, x, y, dx, dy, &vals);
-						let p2 = interpolate_edge(edge2, x, y, dx, dy, &vals);
-
-						let start = PlotPoint::new(p1.0, p1.1);
-						let end = PlotPoint::new(p2.0, p2.1);
-						if !equals(start, end, eps) {
-							polyline_builder.add_segment(start, end);
-						}
-					}
-				}
-			}
-
-			polyline_builder.finish()
-		})
-		.collect();
-
-	cache.return_grid(grid);
-	Ok(chunk_results)
-}
-
+pub type  MarchingSquaresResult = Result<Vec<((f64, f64), Vec<Vec<PlotPoint>>)>, String> ;
 pub fn marching_squares<C>(
 	f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64),
 	bounds_max: (f64, f64), resolution: usize, thread_prepare: impl Fn() -> C + Sync,
 	cache: &MarchingSquaresCache,
-) -> Result<Vec<Vec<PlotPoint>>, String> {
+) -> MarchingSquaresResult{
 	scope!("marching_squares");
 	let (x_min, y_min) = bounds_min;
 	let (x_max, y_max) = bounds_max;
@@ -469,10 +283,34 @@ pub fn marching_squares<C>(
 	}
 
 	cache.return_grid(grid);
-	println!("chunk_results: {:?}", chunk_results.iter().fold(0, |acc, (_, chunk)| acc + chunk.len()));
-	let merged = merge_polyline_chunks2(chunk_results, bounds_min.1, bounds_max.1, eps);
-	println!("merged: {:?}", merged.len());
-	Ok(merged)
+	// println!("chunk_results: {:?}", chunk_results.iter().fold(0, |acc, (_, chunk)| acc + chunk.len()));
+	// let mut error = std::sync::Mutex::new(None);
+	// let mut merged = merge_polyline_chunks2(chunk_results, bounds_min.1, bounds_max.1, eps);
+	// merged.par_iter_mut().for_each(|polyline| {
+	// 	scope!("polyline_minimize");
+	// 	polyline.par_chunks_mut(32).for_each(|chunk| {
+	// 		scope!("polyline_chunk_minimize");
+	// 		let mut ctx = thread_prepare();
+	// 		for point in chunk {
+	// 			match newton_raphson_minimizer2::<1>(point.x, point.y, eps, |x, y| f(&mut ctx, x, y)) {
+	// 				Ok(Some((x, y))) => {
+	// 					point.x = x;
+	// 					point.y = y;
+	// 				},
+	// 				Ok(None) => {},
+	// 				Err(e) => {
+	// 					*error.lock().unwrap() = Some(e);
+	// 					return;
+	// 				},
+	// 			}
+	// 		}
+	// 	});
+	// });
+	// if let Some(error) = error.get_mut().unwrap().take() {
+	// 	return Err(error);
+	// }
+	// println!("merged: {:?}", merged.len());
+	Ok(chunk_results)
 }
 
 fn process_subcell(

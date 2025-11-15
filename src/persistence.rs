@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
-use evalexpr::{EvalexprFloat, EvalexprNumericTypes, IStr, istr};
+use evalexpr::{EvalexprFloat, EvalexprNumericTypes, istr};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
