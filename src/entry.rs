@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
+	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -148,14 +148,14 @@ pub const COLORS: &[Color32; 20] = &[
 pub const NUM_COLORS: usize = COLORS.len();
 
 #[derive(Clone, Debug)]
-pub struct Entry<T: EvalexprNumericTypes> {
+pub struct Entry<T: EvalexprFloat> {
 	pub id:      u64,
 	pub name:    String,
 	pub visible: bool,
 	pub color:   usize,
 	pub ty:      EntryType<T>,
 }
-impl<T: EvalexprNumericTypes> core::hash::Hash for Entry<T> {
+impl<T: EvalexprFloat> core::hash::Hash for Entry<T> {
 	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
 }
 
@@ -183,13 +183,13 @@ impl TextboxType {
 	}
 }
 #[derive(Clone, Debug)]
-pub struct Expr<T: EvalexprNumericTypes> {
+pub struct Expr<T: EvalexprFloat> {
 	pub text:         String,
 	pub node:         Option<FlatNode<T>>,
 	pub textbox_type: TextboxType,
 }
 
-impl<T: EvalexprNumericTypes> Default for Expr<T> {
+impl<T: EvalexprFloat> Default for Expr<T> {
 	fn default() -> Self {
 		Self {
 			text:         Default::default(),
@@ -198,7 +198,7 @@ impl<T: EvalexprNumericTypes> Default for Expr<T> {
 		}
 	}
 }
-impl<T: EvalexprNumericTypes> Expr<T> {
+impl<T: EvalexprFloat> Expr<T> {
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
 		preprocess: bool,
@@ -295,10 +295,10 @@ pub enum FunctionType {
 	X,
 	Y,
 	Ranged,
-	Implicit,
+	Implicit { complex: bool },
 }
 #[derive(Clone, Debug)]
-pub enum EntryType<T: EvalexprNumericTypes> {
+pub enum EntryType<T: EvalexprFloat> {
 	Function {
 		can_be_drawn: bool,
 		func:         Expr<T>,
@@ -314,7 +314,7 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 	},
 	Constant {
 		istr_name: IStr,
-		value:     T::Float,
+		value:     T,
 		step:      f64,
 		ty:        ConstantType,
 	},
@@ -326,7 +326,7 @@ pub enum EntryType<T: EvalexprNumericTypes> {
 		func:       Expr<T>,
 		lower:      Expr<T>,
 		upper:      Expr<T>,
-		calculated: Option<T::Float>,
+		calculated: Option<T>,
 		resolution: usize,
 		style:      IntegralStyle,
 	},
@@ -518,7 +518,7 @@ impl GLineStyle {
 	}
 }
 
-impl<T: EvalexprNumericTypes> Entry<T> {
+impl<T: EvalexprFloat> Entry<T> {
 	pub fn symbol(&self) -> &'static str {
 		match self.ty {
 			EntryType::Function { .. } => "λ",
@@ -575,7 +575,7 @@ impl<T: EvalexprNumericTypes> Entry<T> {
 			name: String::new(),
 			ty: EntryType::Constant {
 				istr_name: istr(""),
-				value:     T::Float::ZERO,
+				value:     T::ZERO,
 				step:      0.01,
 				ty:        ConstantType::LoopForwardAndBackward {
 					start:   -10.0,
@@ -663,16 +663,16 @@ impl PointDragType {
 	}
 }
 #[derive(Clone, Debug)]
-pub struct PointEntry<T: EvalexprNumericTypes> {
+pub struct PointEntry<T: EvalexprFloat> {
 	pub x:                        Expr<T>,
 	pub y:                        Expr<T>,
 	pub drag_point:               Option<DragPoint>,
 	pub drag_type:                PointDragType,
 	pub both_drag_dirs_available: bool,
-	pub val:                      Option<(T::Float, T::Float)>,
+	pub val:                      Option<(T, T)>,
 }
 
-impl<T: EvalexprNumericTypes> Default for PointEntry<T> {
+impl<T: EvalexprFloat> Default for PointEntry<T> {
 	fn default() -> Self {
 		Self {
 			x:                        Expr::default(),
@@ -729,7 +729,7 @@ pub struct EditEntryResult {
 	pub error:               Option<String>,
 	pub parsed:              bool,
 }
-pub fn edit_entry_ui<T: EvalexprNumericTypes>(
+pub fn edit_entry_ui<T: EvalexprFloat>(
 	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool,
 ) -> EditEntryResult {
 	let mut result = EditEntryResult {
@@ -912,13 +912,18 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 										},
 									}
 								},
-								FunctionType::Implicit => {
-									Slider::new(
-										implicit_resolution,
-										MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
-									)
-									.text("Implicit Resolution")
-									.ui(ui);
+								FunctionType::Implicit { complex } => {
+									ui.horizontal(|ui| {
+										Slider::new(
+											implicit_resolution,
+											MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
+										)
+										.text("Implicit Resolution")
+										.ui(ui);
+										if *complex {
+											ui.label("Complex");
+										}
+									});
 								},
 								_ => {},
 							}
@@ -1234,7 +1239,7 @@ pub fn edit_entry_ui<T: EvalexprNumericTypes>(
 	result
 }
 
-pub fn recompile_entry<T: EvalexprNumericTypes>(
+pub fn recompile_entry<T: EvalexprFloat>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, reserved_vars: &ReservedVars,
 ) -> Result<(), (u64, String)> {
@@ -1382,17 +1387,17 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						// func.node = None;
 						// return Err((entry.id, "Implicit function must contain = sign".to_string()));
 					}
-					*ty = FunctionType::Implicit;
+					*ty = FunctionType::Implicit { complex: has_complex };
 				} else if has_y {
 					*ty = FunctionType::Y;
-				} else if matches!(ty, FunctionType::Implicit | FunctionType::Y) {
+				} else if matches!(ty, FunctionType::Implicit { .. } | FunctionType::Y) {
 					*ty = FunctionType::X;
 				}
 
 				let thread_local_context = thread_local_context.clone();
 				let ty = *ty;
 				let reserved_vars = reserved_vars.clone();
-				let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>, v| {
+				let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
 					// puffin::profile_scope!("eval_function");
 
 					// let stack_depth = tl_context.stack_overflow_guard.get();
@@ -1406,10 +1411,10 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 
 					let res = match ty {
 						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
-							let v = match v.first() {
+							let v = match stack.get_arg(0) {
 								Some(Value::Float(x)) => *x,
 								Some(Value::Float2(x, _)) => *x,
-								Some(Value::Boolean(x)) => f64_to_float::<T>(*x as i64 as f64),
+								// Some(Value::Boolean(x)) => f64_to_float::<T>(*x as i64 as f64),
 								// Value::Int(x) => T::int_as_float(x),
 								// Some(Value::Tuple(values)) => values[0]
 								// 	.as_float()
@@ -1417,14 +1422,13 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 								// 		values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
 								// 	})
 								// 	.unwrap_or(T::Float::ZERO),
-								_ => T::Float::ZERO,
+								_ => T::ZERO,
 							};
-							let vv = Value::<T>::Float(v);
 
 							if ty == FunctionType::Y {
-								eval_with_context_and_y(&func_node, stack, context, &reserved_vars, vv)
+								eval_with_context_and_y(&func_node, stack, context, &reserved_vars, v)
 							} else {
-								eval_with_context_and_x(&func_node, stack, context, &reserved_vars, vv)
+								eval_with_context_and_x(&func_node, stack, context, &reserved_vars, v)
 							}
 						},
 						// FunctionType::Implicit => {
@@ -1437,40 +1441,70 @@ pub fn recompile_entry<T: EvalexprNumericTypes>(
 						// 		return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
 						// 	}
 						// },
-						FunctionType::Implicit => {
-							let tl_context = thread_local_get(thread_local_context.as_ref());
-							let cc_x = tl_context.cc_x.get();
-							let cc_y = tl_context.cc_y.get();
-							if v.len() == 1 {
-								let Ok(v) = v[0].as_float2() else {
+						FunctionType::Implicit { complex } => {
+							if complex {
+								let tl_context = thread_local_get(thread_local_context.as_ref());
+								let cc_x = tl_context.cc_x.get();
+								let cc_y = tl_context.cc_y.get();
+								if stack.num_args() == 1 {
+									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+										// tl_context.stack_overflow_guard.set(stack_depth);
+										return Err(EvalexprError::wrong_function_argument_amount(
+											stack.num_args(),
+											2,
+										));
+									};
+									// println!("Evaling implicit function with {v:?} and cc {cc:?}");
+									eval_with_context_and_xy_and_z(
+										&func_node, stack, context, &reserved_vars, cc_x, cc_y, v.0, v.1,
+									)
+								} else if stack.num_args() == 2 {
+									eval_with_context_and_xy_and_z(
+										&func_node,
+										stack,
+										context,
+										&reserved_vars,
+										cc_x,
+										cc_y,
+										stack.get_arg(0).unwrap().as_float()?,
+										stack.get_arg(1).unwrap().as_float()?,
+									)
+								} else {
 									// tl_context.stack_overflow_guard.set(stack_depth);
-									return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
-								};
-								// println!("Evaling implicit function with {v:?} and cc {cc:?}");
-								eval_with_context_and_xy_and_z(
-									&func_node,
-									stack,
-									context,
-									&reserved_vars,
-									Value::Float(cc_x),
-									Value::Float(cc_y),
-									Value::Float(v.0),
-									Value::Float(v.1),
-								)
-							} else if v.len() == 2 {
-								eval_with_context_and_xy_and_z(
-									&func_node,
-									stack,
-									context,
-									&reserved_vars,
-									Value::Float(cc_x),
-									Value::Float(cc_y),
-									v[0].clone(),
-									v[1].clone(),
-								)
+									return Err(EvalexprError::wrong_function_argument_amount(
+										stack.num_args(),
+										2,
+									));
+								}
 							} else {
-								// tl_context.stack_overflow_guard.set(stack_depth);
-								return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
+								if stack.num_args() == 1 {
+									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+										// tl_context.stack_overflow_guard.set(stack_depth);
+										return Err(EvalexprError::wrong_function_argument_amount(
+											stack.num_args(),
+											2,
+										));
+									};
+									// println!("Evaling implicit function with {v:?} and cc {cc:?}");
+									eval_with_context_and_xy(
+										&func_node, stack, context, &reserved_vars, v.0, v.1,
+									)
+								} else if stack.num_args() == 2 {
+									eval_with_context_and_xy(
+										&func_node,
+										stack,
+										context,
+										&reserved_vars,
+										stack.get_arg(0).unwrap().as_float()?,
+										stack.get_arg(1).unwrap().as_float()?,
+									)
+								} else {
+									// tl_context.stack_overflow_guard.set(stack_depth);
+									return Err(EvalexprError::wrong_function_argument_amount(
+										stack.num_args(),
+										2,
+									));
+								}
 							}
 						},
 					};
@@ -1499,7 +1533,7 @@ pub struct PlotParams {
 	pub resolution:  usize,
 }
 #[allow(clippy::too_many_arguments)]
-pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
+pub fn create_entry_plot_elements<T: EvalexprFloat>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	draw_buffer: &ThreadLocal<crate::DrawBufferRC>, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
@@ -1569,7 +1603,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			let step = range / resolution as f64;
 			let step_f = f64_to_float::<T>(step);
 			if lower + step == lower {
-				*calculated = Some(T::Float::ZERO);
+				*calculated = Some(T::ZERO);
 				return Ok(());
 			}
 			*calculated = None;
@@ -1583,8 +1617,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 			// let fill_color = Color32::from_rgba_unmultiplied(rgba_color[0], rgba_color[1], rgba_color[1],
 			// 128);
 
-			let mut result: T::Float = T::Float::ZERO;
-			let mut prev_y: Option<T::Float> = None;
+			let mut result: T = T::ZERO;
+			let mut prev_y: Option<T> = None;
 			// let mut prev_sampling_point: Option<(f64, f64)> = None;
 			for i in 0..(resolution + 1) {
 				let sampling_x = lower + step * i as f64;
@@ -1595,7 +1629,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 					&mut stack,
 					ctx,
 					reserved_vars,
-					f64_to_value(sampling_x),
+					f64_to_float::<T>(sampling_x),
 				) {
 					Ok(y) => {
 						y.to_f64()
@@ -1663,8 +1697,8 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 
 						let b1 = prev_y * step1;
 						let b2 = y * step2;
-						result = result + b1 * T::Float::HALF;
-						result = result + b2 * T::Float::HALF;
+						result = result + b1 * T::HALF;
+						result = result + b2 * T::HALF;
 					} else {
 						// if visible && style.show_area {
 						// 	let poly = Polygon::new(
@@ -1693,7 +1727,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						let step = f64_to_float::<T>(step);
 						let d = dy * step;
 						result = result + prev_y * step;
-						result = result + d * T::Float::HALF;
+						result = result + d * T::HALF;
 					}
 				}
 				if result.is_nan() {
@@ -1740,7 +1774,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							&mut stack,
 							ctx,
 							reserved_vars,
-							f64_to_value(x),
+							f64_to_float::<T>(x),
 						) {
 							Ok(size) => size.to_f64() as f32,
 							Err(e) => {
@@ -1915,7 +1949,13 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						FunctionType::Ranged | FunctionType::X => {
 							format!("f(x):  {}", func.text.trim())
 						},
-						FunctionType::Implicit => func.text.trim().to_string(),
+						FunctionType::Implicit { complex } => {
+							if *complex {
+								format!("F(zx,zy): {}", func.text.trim())
+							} else {
+								func.text.to_string()
+							}
+						},
 					}
 				} else {
 					match ty {
@@ -1923,8 +1963,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 						FunctionType::Ranged | FunctionType::X => {
 							format!("{}(x): {}", entry.name.trim(), func.text.trim())
 						},
-						FunctionType::Implicit => {
-							format!("{}: {}", entry.name.trim(), func.text.trim())
+						FunctionType::Implicit { complex } => {
+							if *complex {
+								format!("{}(zx,zy): {}", entry.name.trim(), func.text.trim())
+							} else {
+								format!("{}: {}", entry.name.trim(), func.text.trim())
+							}
 						},
 					}
 				};
@@ -1963,7 +2007,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								&mut stack,
 								ctx,
 								reserved_vars,
-								f64_to_value(sampling_x),
+								f64_to_float::<T>(sampling_x),
 							) {
 								Ok(Value::Float(y)) => {
 									let y = y.to_f64();
@@ -1979,7 +2023,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 													&mut stack,
 													ctx,
 													reserved_vars,
-													f64_to_value(x),
+													f64_to_float::<T>(x),
 												)
 												.map(|y| y.to_f64())
 												.ok()
@@ -2032,7 +2076,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 								&mut stack,
 								ctx,
 								reserved_vars,
-								f64_to_value(sampling_y),
+								f64_to_float::<T>(sampling_y),
 							) {
 								Ok(Value::Float(x)) => {
 									let x = x.to_f64();
@@ -2048,7 +2092,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 													&mut stack,
 													ctx,
 													reserved_vars,
-													f64_to_value(y),
+													f64_to_float::<T>(y),
 												)
 												.map(|x| x.to_f64())
 												.ok()
@@ -2118,7 +2162,7 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 										&mut stack,
 										ctx,
 										reserved_vars,
-										f64_to_value(x),
+										f64_to_float::<T>(x),
 									) {
 										Ok(Value::Float(y)) => {
 											if y.is_nan() {
@@ -2174,26 +2218,31 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							_ => {},
 						}
 					},
-					FunctionType::Implicit => {
+					FunctionType::Implicit { .. } => {
 						let mins = (plot_params.first_x, plot_params.first_y);
 						let maxs = (plot_params.last_x, plot_params.last_y);
 
+						struct ImplicitContext<'a, T: EvalexprFloat> {
+							stack: RefMut<'a, Stack<T>>,
+							x:     &'a Cell<T>,
+							y:     &'a Cell<T>,
+						}
 						for (_, lines) in marching_squares::marching_squares(
-							|cc: &mut (RefMut<Stack<T>>, &Cell<T::Float>, &Cell<T::Float>), x, y| {
+							|cc: &mut ImplicitContext<T>, x, y| {
 								let xf = f64_to_float::<T>(x);
 								let yf = f64_to_float::<T>(y);
 
-								cc.1.set(xf);
-								cc.2.set(yf);
+								cc.x.set(xf);
+								cc.y.set(yf);
 								eval_float_with_context_and_xy_and_z(
 									func_node,
-									&mut cc.0,
+									&mut cc.stack,
 									ctx,
 									reserved_vars,
-									f64_to_value(x),
-									f64_to_value(y),
-									f64_to_value(x),
-									f64_to_value(y),
+									f64_to_float::<T>(x),
+									f64_to_float::<T>(y),
+									f64_to_float::<T>(x),
+									f64_to_float::<T>(y),
 								)
 								.map(|y| y.to_f64())
 								.map_err(|e| e.to_string())
@@ -2204,7 +2253,12 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 							|| {
 								let tl_context = thread_local_get(tl_context);
 								// tl_context.stack_overflow_guard.set(0);
-								(tl_context.stack.borrow_mut(), &tl_context.cc_x, &tl_context.cc_y)
+
+								ImplicitContext {
+									stack: tl_context.stack.borrow_mut(),
+									x:     &tl_context.cc_x,
+									y:     &tl_context.cc_y,
+								}
 							},
 							&thread_local_get(tl_context).marching_squares_cache,
 						)
@@ -2222,17 +2276,15 @@ pub fn create_entry_plot_elements<T: EvalexprNumericTypes>(
 	Ok(())
 }
 
-pub fn eval_point<T: EvalexprNumericTypes>(
+pub fn eval_point<T: EvalexprFloat>(
 	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, reserved_vars: &ReservedVars,
 	px: Option<&FlatNode<T>>, py: Option<&FlatNode<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
 	};
-	let x = eval_float_with_context_and_x(x, stack, ctx, reserved_vars, Value::Float(T::Float::ZERO))
-		.map_err(|e| e.to_string())?;
-	let y = eval_float_with_context_and_x(y, stack, ctx, reserved_vars, Value::Float(T::Float::ZERO))
-		.map_err(|e| e.to_string())?;
+	let x = eval_float_with_context_and_x(x, stack, ctx, reserved_vars, T::ZERO).map_err(|e| e.to_string())?;
+	let y = eval_float_with_context_and_x(y, stack, ctx, reserved_vars, T::ZERO).map_err(|e| e.to_string())?;
 	Ok(Some((x.to_f64(), y.to_f64())))
 }
 fn zoom_in_x_on_nan_boundary(
@@ -2302,10 +2354,8 @@ fn zoom_in_y_on_nan_boundary(
 	if left.0.is_nan() { right } else { left }
 }
 
-pub fn f64_to_value<T: EvalexprNumericTypes>(x: f64) -> Value<T> {
-	Value::<T>::Float(T::Float::f64_to_float(x))
-}
-pub fn f64_to_float<T: EvalexprNumericTypes>(x: f64) -> T::Float { T::Float::f64_to_float(x) }
+pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::f64_to_float(x)) }
+pub fn f64_to_float<T: EvalexprFloat>(x: f64) -> T { T::f64_to_float(x) }
 
 #[derive(Clone, Debug)]
 pub enum DragPoint {
@@ -2325,7 +2375,7 @@ pub struct NodeAnalysis<'a> {
 	pub num_identifiers: u32,
 	pub constants:       SmallVec<[&'a str; 6]>,
 }
-pub fn analyze_node<T: EvalexprNumericTypes>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
+pub fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 	let mut is_literal = true;
 	let mut constants = SmallVec::new();
 	let mut num_identifiers = 0;
@@ -2395,63 +2445,54 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	Ok(Some(new))
 }
 
-fn eval_with_context_and_x<T: EvalexprNumericTypes>(
+fn eval_with_context_and_x<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: Value<T>,
+	reserved_vars: &ReservedVars, x: T,
 ) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, |ident| {
-		if ident == reserved_vars.x { Some(x.clone()) } else { None }
-	})
+	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x)])
 }
-fn eval_with_context_and_y<T: EvalexprNumericTypes>(
+fn eval_with_context_and_y<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, y: Value<T>,
+	reserved_vars: &ReservedVars, y: T,
 ) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, |ident| {
-		if ident == reserved_vars.y { Some(y.clone()) } else { None }
-	})
+	node.eval_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
 }
-fn eval_float_with_context_and_x<T: EvalexprNumericTypes>(
+fn eval_float_with_context_and_x<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: Value<T>,
-) -> EvalexprResult<<T as EvalexprNumericTypes>::Float, T> {
-	node.eval_float_with_context_and_override(stack, context, |ident| {
-		if ident == reserved_vars.x { Some(x.clone()) } else { None }
-	})
+	reserved_vars: &ReservedVars, x: T,
+) -> EvalexprResult<T, T> {
+	node.eval_float_with_context_and_override(stack, context, &[(reserved_vars.x, x)])
 }
-fn eval_float_with_context_and_y<T: EvalexprNumericTypes>(
+fn eval_float_with_context_and_y<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, y: Value<T>,
-) -> EvalexprResult<<T as EvalexprNumericTypes>::Float, T> {
-	node.eval_float_with_context_and_override(stack, context, |ident| {
-		if ident == reserved_vars.y { Some(y.clone()) } else { None }
-	})
+	reserved_vars: &ReservedVars, y: T,
+) -> EvalexprResult<T, T> {
+	node.eval_float_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
 }
-fn eval_with_context_and_xy_and_z<T: EvalexprNumericTypes>(
+
+fn eval_with_context_and_xy_and_z<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: Value<T>, y: Value<T>, zx: Value<T>, zy: Value<T>,
+	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
 ) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, |ident| {
-		if ident == reserved_vars.x {
-			Some(x.clone())
-		} else if ident == reserved_vars.y {
-			Some(y.clone())
-		} else if ident == reserved_vars.zx {
-			Some(zx.clone())
-		} else if ident == reserved_vars.zy {
-			Some(zy.clone())
-		} else {
-			None
-		}
-	})
+	node.eval_with_context_and_override(
+		stack,
+		context,
+		&[(reserved_vars.x, x), (reserved_vars.y, y), (reserved_vars.zx, zx), (reserved_vars.zy, zy)],
+	)
 }
-fn eval_float_with_context_and_xy_and_z<T: EvalexprNumericTypes>(
+fn eval_float_with_context_and_xy_and_z<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: Value<T>, y: Value<T>, zx: Value<T>, zy: Value<T>,
-) -> EvalexprResult<<T as EvalexprNumericTypes>::Float, T> {
+	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
+) -> EvalexprResult<T, T> {
 	match eval_with_context_and_xy_and_z(node, stack, context, reserved_vars, x, y, zx, zy) {
 		Ok(Value::Float(float)) => Ok(float),
 		Ok(value) => Err(EvalexprError::expected_float(value)),
 		Err(error) => Err(error),
 	}
+}
+fn eval_with_context_and_xy<T: EvalexprFloat>(
+	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+	reserved_vars: &ReservedVars, x: T, y: T,
+) -> EvalexprResultValue<T> {
+	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x), (reserved_vars.y, y)])
 }

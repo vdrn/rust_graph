@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
-use evalexpr::{EvalexprFloat, EvalexprNumericTypes, istr};
+use evalexpr::{EvalexprFloat,  istr};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
@@ -39,10 +39,10 @@ pub struct ExprSer {
 	textbox_type: TextboxType,
 }
 impl ExprSer {
-	pub fn from_expr<T: EvalexprNumericTypes>(expr: &Expr<T>) -> Self {
+	pub fn from_expr<T: EvalexprFloat>(expr: &Expr<T>) -> Self {
 		Self { text: expr.text.clone(), textbox_type: expr.textbox_type }
 	}
-	pub fn into_expr<T: EvalexprNumericTypes>(self, preprocess: bool) -> Expr<T> {
+	pub fn into_expr<T: EvalexprFloat>(self, preprocess: bool) -> Expr<T> {
 		let temp;
 		let mut txt = &self.text;
 		if preprocess && let Ok(Some(new_text)) = preprecess_fn(&self.text) {
@@ -118,7 +118,7 @@ pub struct EntryPointSerialized {
 	drag_type: PointDragType,
 }
 
-pub fn entries_to_ser<T: EvalexprNumericTypes>(
+pub fn entries_to_ser<T: EvalexprFloat>(
 	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
 ) -> StateSerialized {
 	let mut state_serialized = StateSerialized {
@@ -181,14 +181,14 @@ pub fn entries_to_ser<T: EvalexprNumericTypes>(
 	}
 	state_serialized
 }
-pub fn serialize_to_json<T: EvalexprNumericTypes>(
+pub fn serialize_to_json<T: EvalexprFloat>(
 	writer: impl Write, state: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
 ) -> std::io::Result<()> {
 	let ser = entries_to_ser(state, plot_bounds);
 	serde_json::to_writer(writer, &ser)?;
 	Ok(())
 }
-pub fn serialize_to_url<T: EvalexprNumericTypes>(
+pub fn serialize_to_url<T: EvalexprFloat>(
 	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
 ) -> Result<String, String> {
 	let ser = entries_to_ser(entries, plot_bounds);
@@ -199,7 +199,7 @@ pub fn serialize_to_url<T: EvalexprNumericTypes>(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn deserialize_from_url<T: EvalexprNumericTypes>(
+pub fn deserialize_from_url<T: EvalexprFloat>(
 	id_counter: &mut u64,
 ) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
 	let href = web_sys::window()
@@ -231,7 +231,7 @@ pub fn deserialize_from_url<T: EvalexprNumericTypes>(
 	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn entries_from_ser<T: EvalexprNumericTypes>(
+pub fn entries_from_ser<T: EvalexprFloat>(
 	ser: StateSerialized, id: &mut u64,
 ) -> (Vec<Entry<T>>, Option<PlotBounds>) {
 	let mut result = Vec::new();
@@ -263,7 +263,7 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 					style,
 				},
 				EntryTypeSerialized::Constant { value, step, ty } => EntryType::Constant {
-					value: T::Float::f64_to_float(value),
+					value: T::f64_to_float(value),
 					step,
 					ty,
 					istr_name: istr(&entry.name),
@@ -313,16 +313,16 @@ pub fn entries_from_ser<T: EvalexprNumericTypes>(
 	*id += 1;
 	(result, bounds)
 }
-pub fn deserialize_from_json<T: EvalexprNumericTypes>(
+pub fn deserialize_from_json<T: EvalexprFloat>(
 	reader: &[u8], id_counter: &mut u64,
 ) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
 	let entries: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
 	Ok(entries_from_ser(entries, id_counter))
 }
-// pub fn deserialize_from_url<T: EvalexprNumericTypes>(url: &str) -> Result<Vec<Entry<T>>, String> {
+// pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
 // }
 #[cfg(target_arch = "wasm32")]
-pub fn save_file<T: EvalexprNumericTypes>(
+pub fn save_file<T: EvalexprFloat>(
 	ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame,
 ) {
 	let file = format!("{}.json", state.name);
@@ -338,7 +338,7 @@ pub fn save_file<T: EvalexprNumericTypes>(
 	}
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_file<T: EvalexprNumericTypes>(
+pub fn save_file<T: EvalexprFloat>(
 	ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame,
 ) {
 	use std::path::PathBuf;
@@ -385,7 +385,7 @@ pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String
 	}
 }
 #[cfg(target_arch = "wasm32")]
-pub fn load_file<T: EvalexprNumericTypes>(
+pub fn load_file<T: EvalexprFloat>(
 	cur_dir: &str, ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
 	id_counter: &mut u64,
 ) -> Result<(), String> {
@@ -400,7 +400,7 @@ pub fn load_file<T: EvalexprNumericTypes>(
 	Ok(())
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_file<T: EvalexprNumericTypes>(
+pub fn load_file<T: EvalexprFloat>(
 	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
 	id_counter: &mut u64,
 ) -> Result<(), String> {
@@ -418,7 +418,7 @@ pub fn load_file<T: EvalexprNumericTypes>(
 	Ok(())
 }
 
-pub fn persistence_ui<T: EvalexprNumericTypes>(
+pub fn persistence_ui<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ui: &mut egui::Ui, frame: &mut eframe::Frame,
 ) {
 	ui.horizontal_top(|ui| {

@@ -14,7 +14,7 @@ use egui_plot::{
 	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
 };
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprNumericTypes, EvalexprResult, F32NumericTypes, FlatNode, IStr, Stack, Value, istr
+	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprResult, F32NumericTypes, FlatNode, IStr, Stack, Value, istr
 };
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
@@ -93,19 +93,19 @@ const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 
 #[repr(align(128))]
-struct ThreadLocalContext<T: EvalexprNumericTypes> {
-	cc_x:                   Cell<T::Float>,
-	cc_y:                   Cell<T::Float>,
+struct ThreadLocalContext<T: EvalexprFloat> {
+	cc_x:                   Cell<T>,
+	cc_y:                   Cell<T>,
 	// stack_overflow_guard: Cell<isize>,
 	stack:                  RefCell<Stack<T>>,
 	marching_squares_cache: MarchingSquaresCache,
 }
 
-impl<T: EvalexprNumericTypes> Default for ThreadLocalContext<T> {
+impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
 	fn default() -> Self {
 		Self {
-			cc_x:                   Cell::new(T::Float::ZERO),
-			cc_y:                   Cell::new(T::Float::ZERO),
+			cc_x:                   Cell::new(T::ZERO),
+			cc_y:                   Cell::new(T::ZERO),
 			// stack_overflow_guard: Default::default(),
 			stack:                  RefCell::new(Stack::<T>::with_capacity(128)),
 			// stack:                  RefCell::new(Stack::<T>::new()),
@@ -114,7 +114,7 @@ impl<T: EvalexprNumericTypes> Default for ThreadLocalContext<T> {
 	}
 }
 
-struct State<T: EvalexprNumericTypes> {
+struct State<T: EvalexprFloat> {
 	entries:              Vec<Entry<T>>,
 	ctx:                  evalexpr::HashMapContext<T>,
 	default_bounds:       Option<PlotBounds>,
@@ -124,13 +124,11 @@ struct State<T: EvalexprNumericTypes> {
 	clear_cache:          bool,
 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
 }
-fn init_consts<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
+fn init_consts<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	macro_rules! add_const {
 		($ident:ident, $uppercase:expr, $lowercase:expr) => {
-			ctx.set_value(istr($lowercase), Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
-				.unwrap();
-			ctx.set_value(istr($uppercase), Value::Float(T::Float::f64_to_float(core::f64::consts::$ident)))
-				.unwrap();
+			ctx.set_value(istr($lowercase), Value::Float(T::f64_to_float(core::f64::consts::$ident))).unwrap();
+			ctx.set_value(istr($uppercase), Value::Float(T::f64_to_float(core::f64::consts::$ident))).unwrap();
 		};
 	}
 
@@ -144,7 +142,7 @@ const BUILTIN_CONSTS: &[(&str, &str)] = &[
   ("pi","3.141592653589793"),
   ("tau","6.283185307179586"),
 ];
-pub fn expect_function_argument_amount<NumericTypes: EvalexprNumericTypes>(
+pub fn expect_function_argument_amount<NumericTypes: EvalexprFloat>(
 	actual: usize, expected: usize,
 ) -> EvalexprResult<(), NumericTypes> {
 	if actual == expected {
@@ -154,32 +152,30 @@ pub fn expect_function_argument_amount<NumericTypes: EvalexprNumericTypes>(
 	}
 }
 
-fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>) {
+fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	ctx.set_function(
 		istr("normaldist"),
-		evalexpr::Function::new(move |_, _, v| {
-			let zero = T::Float::f64_to_float(0.0);
-			let one = T::Float::f64_to_float(1.0);
-			if v.is_empty() {
+		evalexpr::Function::new(move |s, _| {
+			let zero = T::f64_to_float(0.0);
+			let one = T::f64_to_float(1.0);
+			if s.num_args() == 0 {
 				return Err(EvalexprError::wrong_function_argument_amount_range(0, 1..=3));
 			}
 
-			let (x, mean, std_dev) = if let Ok(x) = v[0].as_float() {
+			let (x, mean, std_dev) = if let Ok(x) = s.get_arg(0).unwrap().as_float() {
 				(x, zero, one)
 			} else {
-				let x = v[0].as_float()?;
-				let mean: T::Float =
-					v.get(1).unwrap_or(&Value::Float(T::Float::f64_to_float(0.0))).as_float()?;
-				let std_dev: T::Float =
-					v.get(2).unwrap_or(&Value::Float(T::Float::f64_to_float(1.0))).as_float()?;
+				let x = s.get_arg(0).unwrap().as_float()?;
+				let mean: T = s.get_arg(1).unwrap_or(&Value::Float(T::f64_to_float(0.0))).as_float()?;
+				let std_dev: T = s.get_arg(2).unwrap_or(&Value::Float(T::f64_to_float(1.0))).as_float()?;
 				(x, mean, std_dev)
 			};
 
-			let two = T::Float::f64_to_float(2.0);
-			let coefficient = T::Float::f64_to_float(1.0)
-				/ (std_dev * T::Float::f64_to_float(2.0 * core::f64::consts::PI).sqrt());
-			let diff: T::Float = x - mean;
-			let exponent = -(diff.pow(&two)) / (T::Float::f64_to_float(2.0) * std_dev.pow(&two));
+			let two = T::f64_to_float(2.0);
+			let coefficient =
+				T::f64_to_float(1.0) / (std_dev * T::f64_to_float(2.0 * core::f64::consts::PI).sqrt());
+			let diff: T = x - mean;
+			let exponent = -(diff.pow(&two)) / (T::f64_to_float(2.0) * std_dev.pow(&two));
 			Ok(Value::Float(coefficient * exponent.exp()))
 		}),
 	)
@@ -187,10 +183,10 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 
 	ctx.set_function(
 		istr("g"),
-		evalexpr::Function::new(|_, _, v: &[Value<T>]| {
-			expect_function_argument_amount(v.len(), 2)?;
-			let tuple = v[0].as_tuple_ref()?;
-			let index: T::Float = v[1].as_float()?;
+		evalexpr::Function::new(|s, _| {
+			expect_function_argument_amount(s.num_args(), 2)?;
+			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
+			let index: T = s.get_arg(1).unwrap().as_float()?;
 
 			let index = index.to_f64() as usize;
 
@@ -206,9 +202,10 @@ fn init_functions<T: EvalexprNumericTypes>(ctx: &mut evalexpr::HashMapContext<T>
 	.unwrap();
 	ctx.set_function(
 		istr("get"),
-		evalexpr::Function::new(|_, _, v: &[Value<T>]| {
-			let tuple = v[0].as_tuple_ref()?;
-			let index: T::Float = v[1].as_float()?;
+		evalexpr::Function::new(|s, _| {
+			expect_function_argument_amount(s.num_args(), 2)?;
+			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
+			let index: T = s.get_arg(1).unwrap().as_float()?;
 
 			let index = index.to_f64() as usize;
 
@@ -576,7 +573,7 @@ impl App for Application {
 	fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
 }
 
-fn add_new_entry_btn<T: EvalexprNumericTypes>(
+fn add_new_entry_btn<T: EvalexprFloat>(
 	ui: &mut egui::Ui, next_id: &mut u64, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
 ) -> bool {
 	let mut needs_recompilation = false;
@@ -624,7 +621,7 @@ fn add_new_entry_btn<T: EvalexprNumericTypes>(
 
 	needs_recompilation
 }
-fn side_panel<T: EvalexprNumericTypes>(
+fn side_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -957,7 +954,7 @@ fn side_panel<T: EvalexprNumericTypes>(
 	});
 	ui_state.eval_errors.clear();
 }
-fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
+fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
 	let first_y = ui_state.plot_bounds.min()[1];
@@ -1548,7 +1545,7 @@ fn graph_panel<T: EvalexprNumericTypes>(state: &mut State<T>, ui_state: &mut UiS
 // 	multiplier * power
 // }
 //
-fn drag<T: EvalexprNumericTypes>(
+fn drag<T: EvalexprFloat>(
 	state: &mut State<T>, name: IStr, node: Option<FlatNode<T>>, stack: &mut Stack<T>, cur: f64, target: f64,
 	eps: f64,
 ) -> bool {
@@ -1805,9 +1802,9 @@ fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
 	});
 }
 
-fn find_constant_value<T: EvalexprNumericTypes>(
+fn find_constant_value<T: EvalexprFloat>(
 	entries: &mut [Entry<T>], pos_cb: impl Fn(IStr) -> bool,
-) -> Option<&mut T::Float> {
+) -> Option<&mut T> {
 	for entry in entries.iter_mut() {
 		match &mut entry.ty {
 			EntryType::Constant { value, istr_name, .. } => {
@@ -1829,7 +1826,7 @@ fn find_constant_value<T: EvalexprNumericTypes>(
 	}
 	None
 }
-fn get_entry_mut_by_id<T: EvalexprNumericTypes>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
+fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
 	for entry in entries.iter_mut() {
 		if Id::new(entry.id) == id {
 			return Some(entry);

@@ -1,6 +1,6 @@
 [toolchain]
 # 10-02 good
 # 10-03 bad
-channel = "nightly-2025-11-03"
+channel = "nightly-2025-11-15"
 components = ["rust-src", "rust-analyzer", "clippy", "rustfmt"]
 targets = ["wasm32-unknown-unknown"]

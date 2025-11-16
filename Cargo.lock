@@ -1130,11 +1130,13 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "evalexpr"
 version = "13.0.0"
-source = "git+https://github.com/vdrn/evalexpr#0dbf7ed8cf406b50b0ea0046e12efab498b70098"
+source = "git+https://github.com/vdrn/evalexpr#e7d23acda08b354ec96296633f00b316bb86c360"
 dependencies = [
  "arrayvec",
  "istr",
  "smallvec",
+ "special-fun",
+ "thin-vec",
 ]
 
 [[package]]
@@ -2693,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "rust_graph"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "arrayvec",
  "base64",
@@ -2952,6 +2954,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "special-fun"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb4bd24b8b2eb5eea491312924709e030e1a64f9e19c92f36ef0cbfaf68783c"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "spirv"
 version = "0.3.0+sdk-1.3.268.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3021,6 +3032,12 @@ checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
 ]
+
+[[package]]
+name = "thin-vec"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144f754d318415ac792f9d69fc87abbbfc043ce2ef041c60f16ad828f638717d"
 
 [[package]]
 name = "thiserror"

@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -26,6 +26,7 @@ opt-level = 1
 inherits = "release"
 debug = "line-tables-only"
 split-debuginfo="unpacked"
+
 
 # The profile that 'dist' will build with
 [profile.dist]
