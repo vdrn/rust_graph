@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = ["puffin"]
+default = []
 
 [profile.dev]
 opt-level = 1
@@ -59,8 +59,8 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # debug-cell="*"
 [patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
-puffin = { path = "../../contrib/puffin/puffin" }
-puffin_http = { path = "../../contrib/puffin/puffin_http" }
+# puffin = { path = "../../contrib/puffin/puffin" }
+# puffin_http = { path = "../../contrib/puffin/puffin_http" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 puffin = { version = "0.19", optional = true }

@@ -1130,20 +1130,11 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 				},
 
 				EntryType::Constant { value, step, ty, .. } => {
-					let mut v = value.to_f64();
+					let original_value = *value;
 					let step_f = f64_to_float::<T>(*step);
 					let range = ty.range();
 					let start = *range.start();
 					let end = *range.end();
-
-					if v > end {
-						v -= end - start;
-						result.animating = true;
-					} else if v < start {
-						v += end - start;
-						result.animating = true;
-					}
-					v = v.clamp(start, end);
 
 					ui.vertical(|ui| {
 						ui.horizontal(|ui| {
@@ -1203,16 +1194,18 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 
 								match ty {
 									ConstantType::LoopForwardAndBackward { forward, .. } => {
-										if value.to_f64() > end {
-											*forward = false;
-										}
-										if value.to_f64() < start {
-											*forward = true;
-										}
 										if *forward {
 											*value = *value + step_f;
 										} else {
 											*value = *value - step_f;
+										}
+										if value.to_f64() > end {
+											*forward = false;
+                      *value = f64_to_float::<T>(end);
+										}
+										if value.to_f64() < start {
+											*forward = true;
+                      *value = f64_to_float::<T>(start);
 										}
 									},
 									ConstantType::LoopForward { .. } => {
@@ -1230,6 +1223,19 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 								}
 							}
 						});
+
+						let mut v = value.to_f64();
+						if v > end {
+							v = start + (v - end);
+							// v -= end - start;
+							result.animating = true;
+						} else if v < start {
+							v = end - (start - v);
+							// v += end - start;
+							result.animating = true;
+						}
+						v = v.clamp(start, end);
+
 						if ui
 							.add(
 								Slider::new(&mut v, range)
@@ -1238,9 +1244,14 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 							)
 							.changed() || clear_cache
 						{
-							*value = f64_to_float::<T>(v);
-							result.animating = true;
+              // *value = f64_to_float::<T>(v);
+							// result.animating = true;
 						}
+            if original_value.to_f64() != v {
+              *value = f64_to_float::<T>(v);
+							result.animating = true;
+            }
+						// *value = f64_to_float::<T>(v);
 					});
 				},
 			}

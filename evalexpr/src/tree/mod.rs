@@ -369,7 +369,7 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
                 if child.operator() == &Operator::Tuple {
                     // println!("pushing tuple children into function");
                     for mut child in child.children {
-                        if child.operator() == &Operator::RootNode {
+                        if child.operator() == &Operator::RootNode && !child.children.is_empty() {
                             self.children.append(&mut child.children);
                         } else {
                             self.children.push(child);

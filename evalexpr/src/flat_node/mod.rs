@@ -16,7 +16,7 @@ mod optimization;
 
 use eval::eval_range;
 use optimization::{
-    compile_specialized_function, extract_const_float, fuse_comutative, fuse_left, nary_op,
+    compile_operator_function, extract_const_float, fuse_comutative, fuse_left, nary_op,
     FusingReturn,
 };
 
@@ -90,6 +90,10 @@ pub enum FlatOperator<F: EvalexprFloat> {
     ReadVar {
         identifier: IStr,
     },
+    /// Reads a variable and pused `-value` to the stack
+    ReadVarNeg {
+        identifier: IStr,
+    },
     /// Write to variable (pops value from stack)
     WriteVar {
         identifier: IStr,
@@ -158,6 +162,7 @@ pub enum FlatOperator<F: EvalexprFloat> {
     ExpConst {
         value: F,
     },
+    /// x%C
     ModConst {
         value: F,
     },
@@ -191,9 +196,9 @@ pub enum FlatOperator<F: EvalexprFloat> {
 
     Tan,
     Atan,
-    TanH, //2 params
+    TanH, 
     AtanH,
-    Atan2,
+    Atan2,//2 params
     Hypot, // 2 params
     Signum,
 
@@ -205,14 +210,19 @@ pub enum FlatOperator<F: EvalexprFloat> {
 
     Range,
     RangeWithStep,
+    /// ∑
     Sum {
         variable: IStr,
         expr: Box<FlatNode<F>>,
     },
+    /// ∏
     Product {
         variable: IStr,
         expr: Box<FlatNode<F>>,
     },
+
+    /// Duplicates the top value on the stack
+    Duplicate,
 }
 
 /// Flat compiled node - linear sequence of operations
@@ -456,6 +466,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 ops.push(FlatOperator::PushConst {
                     value: Value::Float(-val),
                 });
+            } else if let &Operator::VariableIdentifierRead { identifier } = &child.operator {
+                ops.push(FlatOperator::ReadVarNeg { identifier });
             } else {
                 compile_to_flat_inner(child, ops)?;
                 ops.push(FlatOperator::Neg);
@@ -607,14 +619,25 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
             ops.push(FlatOperator::PushConst { value });
         },
         VariableIdentifierRead { identifier } => {
-            ops.push(FlatOperator::ReadVar { identifier });
+            if let Some(FlatOperator::ReadVar {
+                identifier: other_identifier,
+            }) = ops.last()
+            {
+                if identifier == *other_identifier {
+                    ops.push(FlatOperator::Duplicate);
+                } else {
+                    ops.push(FlatOperator::ReadVar { identifier });
+                }
+            } else {
+                ops.push(FlatOperator::ReadVar { identifier });
+            }
         },
         VariableIdentifierWrite { identifier } => {
             ops.push(FlatOperator::WriteVar { identifier });
         },
         FunctionIdentifier { identifier } => {
             let CompileNativeResult::NotNative(node) =
-                compile_native_function(ops, identifier, node)?
+                compile_special_function(ops, identifier, node)?
             else {
                 return Ok(());
             };
@@ -623,7 +646,7 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
             for child in node.children {
                 compile_to_flat_inner(child, ops)?;
             }
-            if let Some(op) = compile_specialized_function(identifier, len)? {
+            if let Some(op) = compile_operator_function(identifier, len)? {
                 ops.push(op);
             } else {
                 ops.push(FlatOperator::FunctionCall {
@@ -641,14 +664,14 @@ enum CompileNativeResult<F: EvalexprFloat> {
     Compiled,
     NotNative(Node<F>),
 }
-fn compile_native_function<F: EvalexprFloat>(
+fn compile_special_function<F: EvalexprFloat>(
     ops: &mut Vec<FlatOperator<F>>,
     identifier: IStr,
     mut node: Node<F>,
 ) -> EvalexprResult<CompileNativeResult<F>, F> {
     match identifier.to_str() {
         // "Deriv" | "Derivative" | "D" => Ok(CompileNativeResult::NotNative(node)),
-        "Sum" | "S" | "Product" | "P" => {
+        "Sum" | "Product" => {
             let len = node.children.len();
             if len != 3 {
                 return Err(EvalexprError::CustomMessage(format!(
@@ -674,13 +697,13 @@ fn compile_native_function<F: EvalexprFloat>(
 
             let exp_node = compile_to_flat(expr_child)?;
             match identifier.to_str() {
-                "Sum" | "S" => {
+                "Sum" => {
                     ops.push(FlatOperator::Sum {
                         variable: variable_ident,
                         expr: Box::new(exp_node),
                     });
                 },
-                "Product" | "P" => {
+                "Product" => {
                     ops.push(FlatOperator::Product {
                         variable: variable_ident,
                         expr: Box::new(exp_node),
@@ -701,8 +724,7 @@ pub fn compile_to_flat<F: EvalexprFloat>(node: Node<F>) -> EvalexprResult<FlatNo
     Ok(FlatNode { ops })
     // Ok(FlatNode { ops })
 }
-/// Helper type for stacks
-// pub type Stack<T> = Vec<Value<T>>;
+/// Stack type
 #[derive(Default)]
 pub struct Stack<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize = 512> {
     stack: Vec<Value<T>>,
@@ -736,6 +758,9 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
     }
     fn pop(&mut self) -> Option<Value<T>> {
         self.stack.pop()
+    }
+    fn last(&self) -> Option<&Value<T>> {
+        self.stack.last()
     }
     pub(crate) fn function_called(&mut self) -> EvalexprResult<(), T> {
         if self.function_nesting > MAX_FUNCTION_NESTING {
@@ -923,7 +948,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
         use FlatOperator::*;
 
         // println!("{:?}", self.ops);
-        'next_op: for op in &self.ops {
+        for op in &self.ops {
             // println!("{:?}", op);
             match op {
                 // Binary arithmetic operators
@@ -1102,36 +1127,12 @@ impl<F: EvalexprFloat> FlatNode<F> {
                     stack.push(value.clone());
                 },
                 ReadVar { identifier } => {
-                    for (var, val) in override_vars {
-                        if *identifier == *var {
-                            stack.push(Value::Float(*val));
-                            continue 'next_op;
-                        }
-                    }
-                    let value = if let Some(val) = context.get_value(*identifier).cloned() {
-                        val
-                    } else {
-                        // Try as zero-argument function
-
-                        let prev_num_args = stack.num_args;
-                        stack.num_args = 0;
-                        match context.unchecked_call_function(stack, *identifier) {
-                            Err(EvalexprError::FunctionIdentifierNotFound(_))
-                                if !context.are_builtin_functions_disabled() =>
-                            {
-                                return Err(EvalexprError::VariableIdentifierNotFound(
-                                    identifier.to_string(),
-                                ));
-                            },
-                            Ok(val) => {
-                                stack.num_args = prev_num_args;
-
-                                val
-                            },
-                            Err(e) => return Err(e),
-                        }
-                    };
+                    let value = read_var(identifier, stack, context, override_vars)?;
                     stack.push(value);
+                },
+                ReadVarNeg { identifier } => {
+                    let value = read_var(identifier, stack, context, override_vars)?;
+                    stack.push(Value::Float(-value.as_float()?));
                 },
                 WriteVar { .. } => {
                     // Not implemented in immutable context
@@ -1221,6 +1222,18 @@ impl<F: EvalexprFloat> FlatNode<F> {
                     let a = pop_unchecked(stack).as_float()?;
                     stack.push(Value::Float((a - b) / c));
                 },
+                MulDiv => {
+                    let c = pop_unchecked(stack).as_float()?;
+                    let b = pop_unchecked(stack).as_float()?;
+                    let a = pop_unchecked(stack).as_float()?;
+                    stack.push(Value::Float(a * b / c));
+                },
+                DivMul => {
+                    let c = pop_unchecked(stack).as_float()?;
+                    let b = pop_unchecked(stack).as_float()?;
+                    let a = pop_unchecked(stack).as_float()?;
+                    stack.push(Value::Float(a / b * c));
+                },
                 MulConst { value } => {
                     let x = pop_unchecked(stack).as_float()?;
                     stack.push(Value::Float(x * *value));
@@ -1252,18 +1265,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
                 ModConst { value } => {
                     let x = pop_unchecked(stack).as_float()?;
                     stack.push(Value::Float(x % *value));
-                },
-                MulDiv => {
-                    let c = pop_unchecked(stack).as_float()?;
-                    let b = pop_unchecked(stack).as_float()?;
-                    let a = pop_unchecked(stack).as_float()?;
-                    stack.push(Value::Float(a * b / c));
-                },
-                DivMul => {
-                    let c = pop_unchecked(stack).as_float()?;
-                    let b = pop_unchecked(stack).as_float()?;
-                    let a = pop_unchecked(stack).as_float()?;
-                    stack.push(Value::Float(a / b * c));
                 },
 
                 // Specialized math operations
@@ -1460,6 +1461,10 @@ impl<F: EvalexprFloat> FlatNode<F> {
                         result = result * current;
                     }
                     stack.push(Value::Float(result));
+                },
+                Duplicate => {
+                    let value = stack.last().cloned().unwrap();
+                    stack.push(value.clone());
                 },
             }
         }
@@ -1762,6 +1767,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
         self.iter().filter_map(|node| match node {
             FlatOperator::ReadVar { identifier }
+            | FlatOperator::ReadVarNeg { identifier }
             | FlatOperator::WriteVar { identifier }
             | FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),
             _ => None,
@@ -1784,9 +1790,9 @@ impl<F: EvalexprFloat> FlatNode<F> {
     /// ```
     pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
         self.iter().filter_map(|node| match node {
-            FlatOperator::ReadVar { identifier } | FlatOperator::WriteVar { identifier } => {
-                Some(identifier.to_str())
-            },
+            FlatOperator::ReadVar { identifier }
+            | FlatOperator::ReadVarNeg { identifier }
+            | FlatOperator::WriteVar { identifier } => Some(identifier.to_str()),
             _ => None,
         })
     }
@@ -1808,6 +1814,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
         self.iter().filter_map(|node| match node {
             FlatOperator::ReadVar { identifier } => Some(identifier.to_str()),
+            FlatOperator::ReadVarNeg { identifier } => Some(identifier.to_str()),
             _ => None,
         })
     }
@@ -1849,4 +1856,39 @@ impl<F: EvalexprFloat> FlatNode<F> {
             _ => None,
         })
     }
+}
+
+fn read_var<F: EvalexprFloat>(
+    identifier: &IStr,
+    stack: &mut Stack<F>,
+    context: &impl Context<NumericTypes = F>,
+    override_vars: &[(IStr, F)],
+) -> EvalexprResult<Value<F>, F> {
+    for (var, val) in override_vars {
+        if *identifier == *var {
+            return Ok(Value::Float(*val));
+        }
+    }
+    Ok(if let Some(val) = context.get_value(*identifier).cloned() {
+        val
+    } else {
+        // Try as zero-argument function
+        let prev_num_args = stack.num_args;
+        stack.num_args = 0;
+        match context.unchecked_call_function(stack, *identifier) {
+            Err(EvalexprError::FunctionIdentifierNotFound(_))
+                if !context.are_builtin_functions_disabled() =>
+            {
+                return Err(EvalexprError::VariableIdentifierNotFound(
+                    identifier.to_string(),
+                ));
+            },
+            Ok(val) => {
+                stack.num_args = prev_num_args;
+
+                val
+            },
+            Err(e) => return Err(e),
+        }
+    })
 }

@@ -121,7 +121,7 @@ pub fn extract_const_float<T: EvalexprFloat>(
     }
 }
 /// Detect function calls that can be replaced with specialized ops
-pub fn compile_specialized_function<NumericTypes: EvalexprFloat>(
+pub fn compile_operator_function<NumericTypes: EvalexprFloat>(
     ident: IStr,
     arg_num: usize,
 ) -> EvalexprResult<Option<FlatOperator<NumericTypes>>, NumericTypes> {
