@@ -186,6 +186,7 @@ impl TextboxType {
 pub struct Expr<T: EvalexprFloat> {
 	pub text:         String,
 	pub node:         Option<FlatNode<T>>,
+	pub inlined_node: Option<FlatNode<T>>,
 	pub textbox_type: TextboxType,
 }
 
@@ -194,11 +195,19 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 		Self {
 			text:         Default::default(),
 			node:         Default::default(),
+			inlined_node: Default::default(),
 			textbox_type: Default::default(),
 		}
 	}
 }
 impl<T: EvalexprFloat> Expr<T> {
+	fn inline_pass(&mut self, ctx: &mut evalexpr::HashMapContext<T>) -> Result<(), String> {
+		if let Some(node) = &self.node {
+			self.inlined_node =
+				Some(evalexpr::inline_variables_and_fold(node, ctx).map_err(|e| e.to_string())?);
+		}
+		Ok(())
+	}
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
 		preprocess: bool,
@@ -260,6 +269,7 @@ impl<T: EvalexprFloat> Expr<T> {
 							return Err(e.to_string());
 						},
 					};
+					self.inlined_node = None;
 				}
 
 				changed = true;
@@ -556,6 +566,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				can_be_drawn:        true,
 				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
+					inlined_node: None,
 					text,
 					textbox_type: TextboxType::default(),
 				},
@@ -1239,9 +1250,8 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 	result
 }
 
-pub fn recompile_entry<T: EvalexprFloat>(
+pub fn prepare_entry<T: EvalexprFloat>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
-	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, reserved_vars: &ReservedVars,
 ) -> Result<(), (u64, String)> {
 	if RESERVED_NAMES.contains(&entry.name.trim()) {
 		return Ok(());
@@ -1249,7 +1259,7 @@ pub fn recompile_entry<T: EvalexprFloat>(
 	match &mut entry.ty {
 		EntryType::Folder { entries } => {
 			for entry in entries {
-				recompile_entry(entry, ctx, thread_local_context, reserved_vars)?;
+				prepare_entry(entry, ctx)?;
 			}
 		},
 		EntryType::Points { points, .. } => {
@@ -1352,21 +1362,6 @@ pub fn recompile_entry<T: EvalexprFloat>(
 		},
 		EntryType::Function { func, ty, can_be_drawn, .. } => {
 			if let Some(func_node) = func.node.clone() {
-				// struct LocalCache(Mutex<AHashMap<CacheKey, f64>>);
-				// impl Clone for LocalCache {
-				// 	fn clone(&self) -> Self {
-				// 		Self(Mutex::new(self.0.lock().unwrap().clone()))
-				// 	}
-				// }
-				// impl LocalCache {
-				// 	fn lock(&self) -> MutexGuard<'_, AHashMap<CacheKey, f64>> {
-				// 		self.0.lock().unwrap()
-				// 	}
-				// }
-				// let local_cache: LocalCache = LocalCache(Mutex::new(
-				// 	AHashMap::with_capacity(ui_state.conf.resolution),
-				// ));
-				// let animating = ui_state.animating.clone();
 				*can_be_drawn = true;
 
 				let mut has_x = false;
@@ -1393,54 +1388,43 @@ pub fn recompile_entry<T: EvalexprFloat>(
 				} else if matches!(ty, FunctionType::Implicit { .. } | FunctionType::Y) {
 					*ty = FunctionType::X;
 				}
+			}
+		},
+	}
+	Ok(())
+}
 
+pub fn inline_and_fold_entry<T: EvalexprFloat>(
+	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
+	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, reserved_vars: &ReservedVars,
+) -> Result<(), (u64, String)> {
+	match &mut entry.ty {
+		EntryType::Function { func, ty, .. } => {
+			if let Err(errs) = func.inline_pass(ctx) {
+				return Err((entry.id, errs));
+			}
+			// println!("inlined_node: {:#?}", func.inlined_node);
+			if !entry.name.is_empty()
+				&& let Some(inlined_node) = func.inlined_node.clone()
+			{
 				let thread_local_context = thread_local_context.clone();
 				let ty = *ty;
 				let reserved_vars = reserved_vars.clone();
 				let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
-					// puffin::profile_scope!("eval_function");
-
-					// let stack_depth = tl_context.stack_overflow_guard.get();
-					// tl_context.stack_overflow_guard.set(stack_depth + 1);
-					// if crate::unlikely(stack_depth > MAX_FUNCTION_NESTING) {
-					// 	tl_context.stack_overflow_guard.set(stack_depth);
-					// 	return Err(EvalexprError::CustomMessage(format!(
-					// 		"Max function nesting reached ({MAX_FUNCTION_NESTING})"
-					// 	)));
-					// }
-
 					let res = match ty {
 						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
 							let v = match stack.get_arg(0) {
 								Some(Value::Float(x)) => *x,
 								Some(Value::Float2(x, _)) => *x,
-								// Some(Value::Boolean(x)) => f64_to_float::<T>(*x as i64 as f64),
-								// Value::Int(x) => T::int_as_float(x),
-								// Some(Value::Tuple(values)) => values[0]
-								// 	.as_float()
-								// 	.or_else(|_| {
-								// 		values[0].as_boolean().map(|x| f64_to_float::<T>(x as i64 as f64))
-								// 	})
-								// 	.unwrap_or(T::Float::ZERO),
 								_ => T::ZERO,
 							};
 
 							if ty == FunctionType::Y {
-								eval_with_context_and_y(&func_node, stack, context, &reserved_vars, v)
+								eval_with_context_and_y(&inlined_node, stack, context, &reserved_vars, v)
 							} else {
-								eval_with_context_and_x(&func_node, stack, context, &reserved_vars, v)
+								eval_with_context_and_x(&inlined_node, stack, context, &reserved_vars, v)
 							}
 						},
-						// FunctionType::Implicit => {
-						// 	if v.len() == 1 {
-						// 		let v = v[0].as_fixed_len_tuple_ref(2)?;
-						// 		func_node.eval_with_context_and_xy(context, &v[0], &v[1])
-						// 	} else if v.len() == 2 {
-						// 		func_node.eval_with_context_and_xy(context, &v[0], &v[1])
-						// 	} else {
-						// 		return Err(EvalexprError::wrong_function_argument_amount(v.len(), 2));
-						// 	}
-						// },
 						FunctionType::Implicit { complex } => {
 							if complex {
 								let tl_context = thread_local_get(thread_local_context.as_ref());
@@ -1448,19 +1432,17 @@ pub fn recompile_entry<T: EvalexprFloat>(
 								let cc_y = tl_context.cc_y.get();
 								if stack.num_args() == 1 {
 									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
-										// tl_context.stack_overflow_guard.set(stack_depth);
 										return Err(EvalexprError::wrong_function_argument_amount(
 											stack.num_args(),
 											2,
 										));
 									};
-									// println!("Evaling implicit function with {v:?} and cc {cc:?}");
 									eval_with_context_and_xy_and_z(
-										&func_node, stack, context, &reserved_vars, cc_x, cc_y, v.0, v.1,
+										&inlined_node, stack, context, &reserved_vars, cc_x, cc_y, v.0, v.1,
 									)
 								} else if stack.num_args() == 2 {
 									eval_with_context_and_xy_and_z(
-										&func_node,
+										&inlined_node,
 										stack,
 										context,
 										&reserved_vars,
@@ -1470,7 +1452,6 @@ pub fn recompile_entry<T: EvalexprFloat>(
 										stack.get_arg(1).unwrap().as_float()?,
 									)
 								} else {
-									// tl_context.stack_overflow_guard.set(stack_depth);
 									return Err(EvalexprError::wrong_function_argument_amount(
 										stack.num_args(),
 										2,
@@ -1479,19 +1460,17 @@ pub fn recompile_entry<T: EvalexprFloat>(
 							} else {
 								if stack.num_args() == 1 {
 									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
-										// tl_context.stack_overflow_guard.set(stack_depth);
 										return Err(EvalexprError::wrong_function_argument_amount(
 											stack.num_args(),
 											2,
 										));
 									};
-									// println!("Evaling implicit function with {v:?} and cc {cc:?}");
 									eval_with_context_and_xy(
-										&func_node, stack, context, &reserved_vars, v.0, v.1,
+										&inlined_node, stack, context, &reserved_vars, v.0, v.1,
 									)
 								} else if stack.num_args() == 2 {
 									eval_with_context_and_xy(
-										&func_node,
+										&inlined_node,
 										stack,
 										context,
 										&reserved_vars,
@@ -1499,7 +1478,6 @@ pub fn recompile_entry<T: EvalexprFloat>(
 										stack.get_arg(1).unwrap().as_float()?,
 									)
 								} else {
-									// tl_context.stack_overflow_guard.set(stack_depth);
 									return Err(EvalexprError::wrong_function_argument_amount(
 										stack.num_args(),
 										2,
@@ -1513,11 +1491,15 @@ pub fn recompile_entry<T: EvalexprFloat>(
 					res
 				});
 
-				if !entry.name.is_empty() {
-					ctx.set_function(istr(&entry.name), fun).unwrap();
-				}
+				ctx.set_function(istr(&entry.name), fun).unwrap();
 			}
 		},
+		EntryType::Integral { func, .. } => {
+			if let Err(errs) = func.inline_pass(ctx) {
+				return Err((entry.id, errs));
+			}
+		},
+		_ => {},
 	}
 	Ok(())
 }
@@ -1577,7 +1559,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 		EntryType::Integral { func, lower, upper, calculated, resolution, style, .. } => {
 			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-			let (Some(lower_node), Some(upper_node), Some(func_node)) = (&lower.node, &upper.node, &func.node)
+			let (Some(lower_node), Some(upper_node), Some(func_node)) =
+				(&lower.node, &upper.node, &func.inlined_node)
 			else {
 				return Ok(());
 			};
@@ -1942,7 +1925,7 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				return Ok(());
 			}
-			if let Some(func_node) = &func.node {
+			if let Some(func_node) = &func.inlined_node {
 				let name = if entry.name.is_empty() {
 					match ty {
 						FunctionType::Y => format!("f(y): {}", func.text.trim()),
@@ -1953,7 +1936,7 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 							if *complex {
 								format!("F(zx,zy): {}", func.text.trim())
 							} else {
-								func.text.to_string()
+								func.text.clone()
 							}
 						},
 					}
@@ -2001,64 +1984,71 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 						let mut pp_buffer = vec![];
 						let mut prev_sampling_point: Option<(f64, f64)> = None;
 						let mut sampling_x = plot_params.first_x;
-						while sampling_x < plot_params.last_x {
-							match eval_with_context_and_x(
-								func_node,
-								&mut stack,
-								ctx,
-								reserved_vars,
-								f64_to_float::<T>(sampling_x),
-							) {
-								Ok(Value::Float(y)) => {
-									let y = y.to_f64();
+						if let Some(constant) = func_node.as_constant() {
+							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
+							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
+							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
+						} else {
+							while sampling_x < plot_params.last_x {
+								match eval_with_context_and_x(
+									func_node,
+									&mut stack,
+									ctx,
+									reserved_vars,
+									f64_to_float::<T>(sampling_x),
+								) {
+									Ok(Value::Float(y)) => {
+										let y = y.to_f64();
 
-									let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
-										zoom_in_x_on_nan_boundary(
-											(prev_x, prev_y),
-											(sampling_x, y),
-											plot_params.eps,
-											|x| {
-												eval_float_with_context_and_x(
-													func_node,
-													&mut stack,
-													ctx,
-													reserved_vars,
-													f64_to_float::<T>(x),
+										let (cur_x, cur_y) =
+											if let Some((prev_x, prev_y)) = prev_sampling_point {
+												zoom_in_x_on_nan_boundary(
+													(prev_x, prev_y),
+													(sampling_x, y),
+													plot_params.eps,
+													|x| {
+														eval_float_with_context_and_x(
+															func_node,
+															&mut stack,
+															ctx,
+															reserved_vars,
+															f64_to_float::<T>(x),
+														)
+														.map(|y| y.to_f64())
+														.ok()
+													},
 												)
-												.map(|y| y.to_f64())
-												.ok()
-											},
-										)
-									} else {
-										(sampling_x, y)
-									};
-									prev_sampling_point = Some((sampling_x, y));
+											} else {
+												(sampling_x, y)
+											};
+										prev_sampling_point = Some((sampling_x, y));
 
-									if cur_y.is_nan() {
-										if !pp_buffer.is_empty() {
-											add_line(mem::take(&mut pp_buffer));
+										if cur_y.is_nan() {
+											if !pp_buffer.is_empty() {
+												add_line(mem::take(&mut pp_buffer));
+											}
+										} else {
+											pp_buffer.push(PlotPoint::new(cur_x, cur_y));
 										}
-									} else {
-										pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-									}
-								},
-								Ok(Value::Empty) => {},
-								Ok(_) => {
-									return Err(vec![(
-										entry.id,
-										"Function must return float or empty".to_string(),
-									)]);
-								},
+									},
+									Ok(Value::Empty) => {},
+									Ok(_) => {
+										return Err(vec![(
+											entry.id,
+											"Function must return float or empty".to_string(),
+										)]);
+									},
 
-								Err(e) => {
-									return Err(vec![(entry.id, e.to_string())]);
-								},
-							}
+									Err(e) => {
+										return Err(vec![(entry.id, e.to_string())]);
+									},
+								}
 
-							let prev_x = sampling_x;
-							sampling_x += plot_params.step_size;
-							if sampling_x == prev_x {
-								break;
+								let prev_x = sampling_x;
+								sampling_x += plot_params.step_size;
+								if sampling_x == prev_x {
+									break;
+								}
 							}
 						}
 
@@ -2070,64 +2060,71 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 						let mut sampling_y = plot_params.first_y;
 						let mut pp_buffer = vec![];
 						let mut prev_sampling_point: Option<(f64, f64)> = None;
-						while sampling_y < plot_params.last_y {
-							match eval_with_context_and_y(
-								func_node,
-								&mut stack,
-								ctx,
-								reserved_vars,
-								f64_to_float::<T>(sampling_y),
-							) {
-								Ok(Value::Float(x)) => {
-									let x = x.to_f64();
+						if let Some(constant) = func_node.as_constant() {
+							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
+							pp_buffer.push(PlotPoint::new(plot_params.first_y, value.to_f64()));
+							pp_buffer.push(PlotPoint::new(plot_params.last_y, value.to_f64()));
+						} else {
+							while sampling_y < plot_params.last_y {
+								match eval_with_context_and_y(
+									func_node,
+									&mut stack,
+									ctx,
+									reserved_vars,
+									f64_to_float::<T>(sampling_y),
+								) {
+									Ok(Value::Float(x)) => {
+										let x = x.to_f64();
 
-									let (cur_x, cur_y) = if let Some((prev_x, prev_y)) = prev_sampling_point {
-										zoom_in_y_on_nan_boundary(
-											(prev_x, prev_y),
-											(x, sampling_y),
-											plot_params.eps,
-											|y| {
-												eval_float_with_context_and_y(
-													func_node,
-													&mut stack,
-													ctx,
-													reserved_vars,
-													f64_to_float::<T>(y),
+										let (cur_x, cur_y) =
+											if let Some((prev_x, prev_y)) = prev_sampling_point {
+												zoom_in_y_on_nan_boundary(
+													(prev_x, prev_y),
+													(x, sampling_y),
+													plot_params.eps,
+													|y| {
+														eval_float_with_context_and_y(
+															func_node,
+															&mut stack,
+															ctx,
+															reserved_vars,
+															f64_to_float::<T>(y),
+														)
+														.map(|x| x.to_f64())
+														.ok()
+													},
 												)
-												.map(|x| x.to_f64())
-												.ok()
-											},
-										)
-									} else {
-										(x, sampling_y)
-									};
-									prev_sampling_point = Some((x, sampling_y));
+											} else {
+												(x, sampling_y)
+											};
+										prev_sampling_point = Some((x, sampling_y));
 
-									if cur_x.is_nan() {
-										if !pp_buffer.is_empty() {
-											add_line(mem::take(&mut pp_buffer));
+										if cur_x.is_nan() {
+											if !pp_buffer.is_empty() {
+												add_line(mem::take(&mut pp_buffer));
+											}
+										} else {
+											pp_buffer.push(PlotPoint::new(cur_x, cur_y));
 										}
-									} else {
-										pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-									}
-								},
-								Ok(Value::Empty) => {},
-								Ok(_) => {
-									return Err(vec![(
-										entry.id,
-										"Function must return float or empty".to_string(),
-									)]);
-								},
+									},
+									Ok(Value::Empty) => {},
+									Ok(_) => {
+										return Err(vec![(
+											entry.id,
+											"Function must return float or empty".to_string(),
+										)]);
+									},
 
-								Err(e) => {
-									return Err(vec![(entry.id, e.to_string())]);
-								},
-							}
+									Err(e) => {
+										return Err(vec![(entry.id, e.to_string())]);
+									},
+								}
 
-							let prev_y = sampling_y;
-							sampling_y += plot_params.step_size_y;
-							if sampling_y == prev_y {
-								break;
+								let prev_y = sampling_y;
+								sampling_y += plot_params.step_size_y;
+								if sampling_y == prev_y {
+									break;
+								}
 							}
 						}
 
@@ -2291,7 +2288,7 @@ fn zoom_in_x_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,
 ) -> (f64, f64) {
 	// If both are nans or both are defined, no need to do anything
-	if a.1.is_nan() == b.1.is_nan() {
+	if a.1.is_finite() == b.1.is_finite() {
 		return b;
 	}
 
@@ -2302,7 +2299,7 @@ fn zoom_in_x_on_nan_boundary(
 	while (right.0 - left.0).abs() > eps {
 		let mid_x = (left.0 + right.0) * 0.5;
 		let Some(mid_y) = eval(mid_x) else {
-			return if left.1.is_nan() { right } else { left };
+			return if !left.1.is_finite() { right } else { left };
 		};
 		if prev_mid_x == Some(mid_x) {
 			break;
@@ -2311,14 +2308,14 @@ fn zoom_in_x_on_nan_boundary(
 
 		let mid = (mid_x, mid_y);
 
-		if left.1.is_nan() == mid_y.is_nan() {
+		if left.1.is_finite() == mid_y.is_finite() {
 			left = mid;
 		} else {
 			right = mid;
 		}
 	}
 
-	if left.1.is_nan() { right } else { left }
+	if !left.1.is_finite() { right } else { left }
 }
 fn zoom_in_y_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,

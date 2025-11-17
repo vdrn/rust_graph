@@ -897,9 +897,7 @@ fn side_panel<T: EvalexprFloat>(
 
 				for entry in state.entries.iter_mut() {
 					scope!("entry_recompile");
-					if let Err((id, e)) = entry::recompile_entry(
-						entry, &mut state.ctx, &state.thread_local_context, &ui_state.reserved_vars,
-					) {
+					if let Err((id, e)) = entry::prepare_entry(entry, &mut state.ctx) {
 						ui_state.parsing_errors.insert(id, e);
 					}
 				}
@@ -925,6 +923,31 @@ fn side_panel<T: EvalexprFloat>(
 							}
 						},
 						_ => {},
+					}
+				}
+			}
+			if needs_recompilation || state.clear_cache || animating {
+				scope!("inlining_pass");
+				for entry in state.entries.iter_mut() {
+					scope!("entry_process");
+					match &mut entry.ty {
+						EntryType::Folder { entries } => {
+							for entry in entries {
+								if let Err((id, e)) = entry::inline_and_fold_entry(
+									entry, &mut state.ctx, &state.thread_local_context,
+									&ui_state.reserved_vars,
+								) {
+									ui_state.parsing_errors.insert(id, e);
+								}
+							}
+						},
+						_ => {
+							if let Err((id, e)) = entry::inline_and_fold_entry(
+								entry, &mut state.ctx, &state.thread_local_context, &ui_state.reserved_vars,
+							) {
+								ui_state.parsing_errors.insert(id, e);
+							}
+						},
 					}
 				}
 			}

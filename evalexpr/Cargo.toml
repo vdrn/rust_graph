@@ -1,0 +1,53 @@
+[package]
+name = "evalexpr"
+version = "13.0.0"
+description = "A powerful arithmetic and boolean expression evaluator"
+keywords = ["expression", "evaluate", "evaluator", "arithmetic", "boolean"]
+categories = ["parsing", "game-engines"]
+authors = ["isibboi <isibboi@gmail.com>"]
+repository = "https://github.com/ISibboI/evalexpr.git"
+homepage = "https://github.com/ISibboI/evalexpr"
+documentation = "https://docs.rs/evalexpr"
+readme = "README.md"
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.65.0"
+
+[badges]
+maintenance = { status = "actively-developed" }
+is-it-maintained-issue-resolution = { repository = "ISibboI/evalexpr" }
+is-it-maintained-open-issues = { repository = "ISibboI/evalexpr" }
+
+[lib]
+name = "evalexpr"
+path = "src/lib.rs"
+
+[dependencies]
+regex = { version = "1.11.1", optional = true }
+serde = { version = "1.0.213", features = ["derive"], optional = true }
+rand = { version = "0.8.5", optional = true }
+
+smallvec = { version = "1.15" }
+arrayvec = { version = "0.7" }
+thin-vec = { version = "0.2" }
+# rustc-hash = "2.1"
+istr ="0.1"
+special = "0.11.4"
+
+# num-traits = { version = "0.2.19", optional = true }
+
+[features]
+serde = ["dep:serde"]
+regex = ["dep:regex"]
+rand = ["dep:rand"]
+# num-traits = ["dep:num-traits"]
+
+[dev-dependencies]
+ron = "0.8.1"
+rand = "0.8.5"
+rand_pcg = "0.3.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints.clippy]
+collapsible_else_if = "allow"

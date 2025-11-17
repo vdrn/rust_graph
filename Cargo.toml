@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = []
+default = ["puffin"]
 
 [profile.dev]
 opt-level = 1
@@ -41,7 +41,7 @@ egui_plot="0.34"
 
 # egui_extras={version = "0.33", features=["syntect"]}
 # syntect = { version = "5.3", default-features = false, features = ["default-fancy"]}
-evalexpr = { git = "https://github.com/vdrn/evalexpr" }
+evalexpr = { path = "evalexpr" }
 
 rustc-hash = "2"
 serde = { version = "1" }
@@ -57,12 +57,10 @@ regex = "1"
 # needed so dependencies downstream can compile to wasm
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # debug-cell="*"
-[patch."https://github.com/vdrn/evalexpr"]
-# evalexpr = { path = "../../contrib/evalexpr" }
 [patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }
-# puffin = { path = "../../contrib/puffin/puffin" }
-# puffin_http = { path = "../../contrib/puffin/puffin_http" }
+puffin = { path = "../../contrib/puffin/puffin" }
+puffin_http = { path = "../../contrib/puffin/puffin_http" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 puffin = { version = "0.19", optional = true }
