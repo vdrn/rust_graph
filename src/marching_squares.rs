@@ -59,13 +59,12 @@ impl MarchingSquaresCache {
 	// }
 }
 
-
-pub type  MarchingSquaresResult = Result<Vec<((f64, f64), Vec<Vec<PlotPoint>>)>, String> ;
+pub type MarchingSquaresResult = Result<Vec<((f64, f64), Vec<Vec<PlotPoint>>)>, String>;
 pub fn marching_squares<C>(
 	f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64),
 	bounds_max: (f64, f64), resolution: usize, thread_prepare: impl Fn() -> C + Sync,
 	cache: &MarchingSquaresCache,
-) -> MarchingSquaresResult{
+) -> MarchingSquaresResult {
 	scope!("marching_squares");
 	let (x_min, y_min) = bounds_min;
 	let (x_max, y_max) = bounds_max;
@@ -206,52 +205,66 @@ pub fn marching_squares<C>(
 							},
 						};
 
+						// discontinuities on outer edges
+						let discontinuous_bottom = is_edge_discontinuous(vals[0], bot_mid, vals[1]);
+						let discontinuous_right = is_edge_discontinuous(vals[1], right_mid, vals[2]);
+						let discontinuous_top = is_edge_discontinuous(vals[2], top_mid, vals[3]);
+						let discontinuous_left = is_edge_discontinuous(vals[3], left_mid, vals[0]);
+
 						// Store for next iteration
 
 						// Process 4 subcells
 						// Bottom-left subcell
-						process_subcell(
-							x,
-							y,
-							sub_dx,
-							sub_dy,
-							[vals[0], bot_mid, center, left_mid],
-							&mut polyline_builder,
-							eps,
-						);
+						if !discontinuous_bottom && !discontinuous_left {
+							process_subcell(
+								x,
+								y,
+								sub_dx,
+								sub_dy,
+								[vals[0], bot_mid, center, left_mid],
+								&mut polyline_builder,
+								eps,
+							);
+						}
 
 						// Bottom-right subcell
-						process_subcell(
-							x + sub_dx,
-							y,
-							sub_dx,
-							sub_dy,
-							[bot_mid, vals[1], right_mid, center],
-							&mut polyline_builder,
-							eps,
-						);
+						if !discontinuous_bottom && !discontinuous_right {
+							process_subcell(
+								x + sub_dx,
+								y,
+								sub_dx,
+								sub_dy,
+								[bot_mid, vals[1], right_mid, center],
+								&mut polyline_builder,
+								eps,
+							);
+						}
 
 						// Top-right subcell
-						process_subcell(
-							x + sub_dx,
-							y + sub_dy,
-							sub_dx,
-							sub_dy,
-							[center, right_mid, vals[2], top_mid],
-							&mut polyline_builder,
-							eps,
-						);
+						if !discontinuous_right && !discontinuous_top {
+							process_subcell(
+								x + sub_dx,
+								y + sub_dy,
+								sub_dx,
+								sub_dy,
+								[center, right_mid, vals[2], top_mid],
+								&mut polyline_builder,
+								eps,
+							);
+						}
 
 						// Top-left subcell
-						process_subcell(
-							x,
-							y + sub_dy,
-							sub_dx,
-							sub_dy,
-							[left_mid, center, top_mid, vals[3]],
-							&mut polyline_builder,
-							eps,
-						);
+						if !discontinuous_left && !discontinuous_top {
+							process_subcell(
+								x,
+								y + sub_dy,
+								sub_dx,
+								sub_dy,
+								[left_mid, center, top_mid, vals[3]],
+								&mut polyline_builder,
+								eps,
+							);
+						}
 						prev_right_mid = right_mid;
 						prev_row_top_mid[j] = top_mid;
 					} else {
@@ -311,6 +324,19 @@ pub fn marching_squares<C>(
 	// }
 	// println!("merged: {:?}", merged.len());
 	Ok(chunk_results)
+}
+/// edge might contain discontinuity rather than a zero crossing
+fn is_edge_discontinuous(val_start: f64, val_mid: f64, val_end: f64) -> bool {
+	if val_start.signum() == val_end.signum() {
+		return false;
+	}
+
+	let abs_change = (val_end - val_start).abs();
+	let left_change = (val_mid - val_start).abs();
+	let right_change = (val_end - val_mid).abs();
+	let max_half = left_change.max(right_change);
+
+	max_half > 0.85 * abs_change
 }
 
 fn process_subcell(

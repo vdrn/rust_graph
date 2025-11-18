@@ -947,9 +947,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     ) -> EvalexprResultValue<F> {
         use FlatOperator::*;
 
-        // println!("{:?}", self.ops);
         for op in &self.ops {
-            // println!("{:?}", op);
             match op {
                 // Binary arithmetic operators
                 Add => {
@@ -1858,6 +1856,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     }
 }
 
+#[inline(always)]
 fn read_var<F: EvalexprFloat>(
     identifier: &IStr,
     stack: &mut Stack<F>,

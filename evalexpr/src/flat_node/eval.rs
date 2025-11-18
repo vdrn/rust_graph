@@ -2,6 +2,7 @@ use thin_vec::ThinVec;
 
 use crate::{EvalexprError, EvalexprFloat, EvalexprResult, Value};
 
+#[inline(always)]
 pub fn eval_range<F: EvalexprFloat>(
     start: Value<F>,
     end: Value<F>,
@@ -58,6 +59,7 @@ pub fn eval_range<F: EvalexprFloat>(
     }
     Ok(result)
 }
+#[inline(always)]
 pub fn eval_range_with_step<F: EvalexprFloat>(
     start: Value<F>,
     end: Value<F>,

@@ -1201,11 +1201,11 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 										}
 										if value.to_f64() > end {
 											*forward = false;
-                      *value = f64_to_float::<T>(end);
+											*value = f64_to_float::<T>(end);
 										}
 										if value.to_f64() < start {
 											*forward = true;
-                      *value = f64_to_float::<T>(start);
+											*value = f64_to_float::<T>(start);
 										}
 									},
 									ConstantType::LoopForward { .. } => {
@@ -1244,13 +1244,13 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 							)
 							.changed() || clear_cache
 						{
-              // *value = f64_to_float::<T>(v);
+							// *value = f64_to_float::<T>(v);
 							// result.animating = true;
 						}
-            if original_value.to_f64() != v {
-              *value = f64_to_float::<T>(v);
+						if original_value.to_f64() != v {
+							*value = f64_to_float::<T>(v);
 							result.animating = true;
-            }
+						}
 						// *value = f64_to_float::<T>(v);
 					});
 				},
@@ -1514,6 +1514,81 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 	}
 	Ok(())
 }
+struct DiscontinuityDetector {
+	prev_value:      Option<(f64, f64)>,
+	prev_abs_change: f64,
+	eps:             f64,
+}
+impl DiscontinuityDetector {
+	fn new(step_size: f64, eps: f64) -> Self {
+		Self { prev_value: None, prev_abs_change: 0.0, eps: (step_size * 0.01).max(eps) }
+	}
+	fn detect(
+		&mut self, arg: f64, value: f64, mut eval: impl FnMut(f64) -> Option<f64>,
+	) -> Option<((f64, f64), (f64, f64))> {
+		let prev_value = self.prev_value.replace((arg, value));
+		if value.is_nan() {
+			return None;
+		}
+
+		if let Some((prev_arg, prev_value)) = prev_value {
+			if prev_value.is_nan() {
+				return None;
+			}
+			let abs_change = (value - prev_value).abs();
+
+			// println!("abs_change: {abs_change}");
+			if abs_change > self.prev_abs_change * 2.0 {
+				let midpoint = (prev_arg + arg) * 0.5;
+				let value_at_midpoint = eval(midpoint)?;
+
+				let left_change = (value_at_midpoint - prev_value).abs();
+				let right_change = (value - value_at_midpoint).abs();
+
+				let max_half = left_change.max(right_change);
+				if max_half > 0.8 * abs_change {
+				// let min_half = left_change.min(right_change);
+        // let ratio = min_half / max_half;
+// if ratio < 0.2 { 
+					// println!("max_half {max_half} abs_change {abs_change}");
+					// discontinuity detected - find exact points via bisection
+					return Some(self.bisect_discontinuity(prev_arg, prev_value, arg, value, &mut eval));
+				}
+			}
+
+			self.prev_abs_change = abs_change;
+		}
+
+		None
+	}
+
+	fn bisect_discontinuity(
+		&self, mut left_arg: f64, mut left_value: f64, mut right_arg: f64, mut right_value: f64,
+		eval: &mut impl FnMut(f64) -> Option<f64>,
+	) -> ((f64, f64), (f64, f64)) {
+		// Bisect until we're within eps
+		while (right_arg - left_arg) > self.eps {
+			let mid_arg = (left_arg + right_arg) * 0.5;
+			let Some(mid_value) = eval(mid_arg) else {
+				break;
+			};
+
+			let left_change = (mid_value - left_value).abs();
+			let right_change = (right_value - mid_value).abs();
+
+			// Move toward the side with the larger jump
+			if left_change < right_change {
+				left_arg = mid_arg;
+				left_value = mid_value;
+			} else {
+				right_arg = mid_arg;
+				right_value = mid_value;
+			}
+		}
+
+		((left_arg, left_value), (right_arg, right_value))
+	}
+}
 
 pub struct PlotParams {
 	pub eps:         f64,
@@ -1658,31 +1733,6 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 						//2 triangles
 						let diff = (prev_y_f64 - cur_y).abs();
 						let t = prev_y_f64.abs() / diff;
-						// let x_midpoint = (cur_x - step) + step * t;
-						// if visible && style.show_area {
-						// 	let triangle1 = Polygon::new(
-						// 		entry.name.clone(),
-						// 		PlotPoints::Owned(vec![
-						// 			PlotPoint::new(cur_x - step, 0.0),
-						// 			PlotPoint::new(cur_x - step, prev_y_f64),
-						// 			PlotPoint::new(x_midpoint, 0.0),
-						// 		]),
-						// 	)
-						// 	.fill_color(fill_color)
-						// 	.stroke(Stroke::new(eps, fill_color));
-						// 	polygons.push(triangle1);
-						// 	let triangle2 = Polygon::new(
-						// 		entry.name.clone(),
-						// 		PlotPoints::Owned(vec![
-						// 			PlotPoint::new(x_midpoint, 0.0),
-						// 			PlotPoint::new(cur_x, cur_y),
-						// 			PlotPoint::new(cur_x, 0.0),
-						// 		]),
-						// 	)
-						// 	.fill_color(fill_color)
-						// 	.stroke(Stroke::new(eps, fill_color));
-						// 	polygons.push(triangle2);
-						// }
 
 						let t = f64_to_float::<T>(t);
 
@@ -1694,29 +1744,6 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 						result = result + b1 * T::HALF;
 						result = result + b2 * T::HALF;
 					} else {
-						// if visible && style.show_area {
-						// 	let poly = Polygon::new(
-						// 		entry.name.clone(),
-						// 		if prev_y_f64 > 0.0 {
-						// 			PlotPoints::Owned(vec![
-						// 				PlotPoint::new(cur_x - step, 0.0),
-						// 				PlotPoint::new(cur_x - step, prev_y_f64),
-						// 				PlotPoint::new(cur_x, cur_y),
-						// 				PlotPoint::new(cur_x, 0.0),
-						// 			])
-						// 		} else {
-						// 			PlotPoints::Owned(vec![
-						// 				PlotPoint::new(cur_x - step, 0.0),
-						// 				PlotPoint::new(cur_x, 0.0),
-						// 				PlotPoint::new(cur_x, cur_y),
-						// 				PlotPoint::new(cur_x - step, prev_y_f64),
-						// 			])
-						// 		},
-						// 	)
-						// 	.fill_color(fill_color)
-						// 	.stroke(Stroke::new(eps, fill_color));
-						// 	polygons.push(poly);
-						// }
 						let dy = y - prev_y;
 						let step = f64_to_float::<T>(step);
 						let d = dy * step;
@@ -2000,6 +2027,11 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
 							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
 						} else {
+							// let mut prev_y = None;
+							let mut prev_first_derivative = 0.0;
+							let mut discontinuity_detector =
+								DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
+
 							while sampling_x < plot_params.last_x {
 								match eval_with_context_and_x(
 									func_node,
@@ -2011,8 +2043,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 									Ok(Value::Float(y)) => {
 										let y = y.to_f64();
 
-										let (cur_x, cur_y) =
-											if let Some((prev_x, prev_y)) = prev_sampling_point {
+										let zoomed_in_on_nan_boundary =
+											prev_sampling_point.and_then(|(prev_x, prev_y)| {
 												zoom_in_x_on_nan_boundary(
 													(prev_x, prev_y),
 													(sampling_x, y),
@@ -2029,18 +2061,42 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 														.ok()
 													},
 												)
-											} else {
-												(sampling_x, y)
-											};
-										prev_sampling_point = Some((sampling_x, y));
+											});
 
-										if cur_y.is_nan() {
-											if !pp_buffer.is_empty() {
-												add_line(mem::take(&mut pp_buffer));
-											}
+										let mut on_nan_boundary = false;
+										let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) =
+											zoomed_in_on_nan_boundary
+										{
+											on_nan_boundary = true;
+											zoomed_in_on_nan_boundary
 										} else {
-											pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+											(sampling_x, y)
+										};
+
+										if !on_nan_boundary
+											&& let Some((left, right)) =
+												discontinuity_detector.detect(cur_x, cur_y, |x| {
+													eval_float_with_context_and_x(
+														func_node,
+														&mut stack,
+														ctx,
+														reserved_vars,
+														f64_to_float::<T>(x),
+													)
+													.map(|y| y.to_f64())
+													.ok()
+												}) {
+											pp_buffer.push(PlotPoint::new(left.0, left.1));
+											// start a new line
+											add_line(mem::take(&mut pp_buffer));
+											pp_buffer.push(PlotPoint::new(right.0, right.1));
+										} else {
+											if !cur_y.is_nan() {
+												pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+											}
 										}
+
+										prev_sampling_point = Some((sampling_x, y));
 									},
 									Ok(Value::Empty) => {},
 									Ok(_) => {
@@ -2076,6 +2132,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 							pp_buffer.push(PlotPoint::new(plot_params.first_y, value.to_f64()));
 							pp_buffer.push(PlotPoint::new(plot_params.last_y, value.to_f64()));
 						} else {
+							let mut discontinuity_detector =
+								DiscontinuityDetector::new(plot_params.step_size_y, plot_params.eps);
 							while sampling_y < plot_params.last_y {
 								match eval_with_context_and_y(
 									func_node,
@@ -2087,8 +2145,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 									Ok(Value::Float(x)) => {
 										let x = x.to_f64();
 
-										let (cur_x, cur_y) =
-											if let Some((prev_x, prev_y)) = prev_sampling_point {
+										let zoomed_in_on_nan_boundary =
+											prev_sampling_point.and_then(|(prev_x, prev_y)| {
 												zoom_in_y_on_nan_boundary(
 													(prev_x, prev_y),
 													(x, sampling_y),
@@ -2105,17 +2163,39 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 														.ok()
 													},
 												)
-											} else {
-												(x, sampling_y)
-											};
+											});
+										let mut on_nan_boundary = false;
+										let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) =
+											zoomed_in_on_nan_boundary
+										{
+											on_nan_boundary = true;
+											zoomed_in_on_nan_boundary
+										} else {
+											(x, sampling_y)
+										};
 										prev_sampling_point = Some((x, sampling_y));
 
-										if cur_x.is_nan() {
-											if !pp_buffer.is_empty() {
-												add_line(mem::take(&mut pp_buffer));
-											}
+										if !on_nan_boundary
+											&& let Some((left, right)) =
+												discontinuity_detector.detect(cur_y, cur_x, |y| {
+													eval_float_with_context_and_y(
+														func_node,
+														&mut stack,
+														ctx,
+														reserved_vars,
+														f64_to_float::<T>(y),
+													)
+													.map(|x| x.to_f64())
+													.ok()
+												}) {
+											pp_buffer.push(PlotPoint::new(left.1, left.0));
+											// start a new line
+											add_line(mem::take(&mut pp_buffer));
+											pp_buffer.push(PlotPoint::new(right.1, right.0));
 										} else {
-											pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+											if !cur_x.is_nan() {
+												pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+											}
 										}
 									},
 									Ok(Value::Empty) => {},
@@ -2163,6 +2243,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 								if start + step == end {
 									return Ok(());
 								}
+								let mut discontinuity_detector =
+									DiscontinuityDetector::new(step, plot_params.eps);
 								for i in 0..(plot_params.resolution + 1) {
 									let x = start + step * i as f64;
 									match eval_with_context_and_x(
@@ -2173,38 +2255,49 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 										f64_to_float::<T>(x),
 									) {
 										Ok(Value::Float(y)) => {
-											if y.is_nan() {
-												if !pp_buffer.is_empty() {
-													add_line(mem::take(&mut pp_buffer));
-												}
+											if let Some((left, right)) =
+												discontinuity_detector.detect(x, y.to_f64(), |x| {
+													eval_float_with_context_and_x(
+														func_node,
+														&mut stack,
+														ctx,
+														reserved_vars,
+														f64_to_float::<T>(x),
+													)
+													.map(|y| y.to_f64())
+													.ok()
+												}) {
+												pp_buffer.push(PlotPoint::new(left.0, left.0));
+												add_line(mem::take(&mut pp_buffer));
+												pp_buffer.push(PlotPoint::new(right.0, right.0));
 											} else {
-												pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+												if !y.is_nan() {
+													pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+												}
 											}
 										},
 										Ok(Value::Empty) => {},
 										Ok(Value::Float2(x, y)) => {
-											// if values.len() != 2 {
-											// 	return Err(vec![(
-											// 		entry.id,
-											// 		format!(
-											// 			"Ranged function must return 1 or 2 float values, \
-											// 			 got {}",
-											// 			values.len()
-											// 		),
-											// 	)]);
-											// }
-											// let x = values[0]
-											// 	.as_float()
-											// 	.map_err(|e| vec![(entry.id, e.to_string())])?;
-											// let y = values[1]
-											// 	.as_float()
-											// 	.map_err(|e| vec![(entry.id, e.to_string())])?;
-											if y.is_nan() {
-												if !pp_buffer.is_empty() {
-													add_line(mem::take(&mut pp_buffer));
-												}
+											if let Some((left, right)) =
+												discontinuity_detector.detect(x.to_f64(), y.to_f64(), |x| {
+													eval_with_context_and_x(
+														func_node,
+														&mut stack,
+														ctx,
+														reserved_vars,
+														f64_to_float::<T>(x),
+													)
+													.and_then(|y| y.as_float2())
+													.map(|y| y.1.to_f64())
+													.ok()
+												}) {
+												pp_buffer.push(PlotPoint::new(left.0, left.0));
+												add_line(mem::take(&mut pp_buffer));
+												pp_buffer.push(PlotPoint::new(right.0, right.0));
 											} else {
-												pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+												if !y.is_nan() {
+													pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+												}
 											}
 										},
 										Ok(_) => {
@@ -2297,10 +2390,10 @@ pub fn eval_point<T: EvalexprFloat>(
 }
 fn zoom_in_x_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,
-) -> (f64, f64) {
+) -> Option<(f64, f64)> {
 	// If both are nans or both are defined, no need to do anything
-	if a.1.is_finite() == b.1.is_finite() {
-		return b;
+	if a.1.is_nan() == b.1.is_nan() {
+		return None;
 	}
 
 	let mut left = a;
@@ -2309,9 +2402,7 @@ fn zoom_in_x_on_nan_boundary(
 	let mut prev_mid_x = None;
 	while (right.0 - left.0).abs() > eps {
 		let mid_x = (left.0 + right.0) * 0.5;
-		let Some(mid_y) = eval(mid_x) else {
-			return if !left.1.is_finite() { right } else { left };
-		};
+		let mid_y = eval(mid_x)?;
 		if prev_mid_x == Some(mid_x) {
 			break;
 		}
@@ -2319,21 +2410,21 @@ fn zoom_in_x_on_nan_boundary(
 
 		let mid = (mid_x, mid_y);
 
-		if left.1.is_finite() == mid_y.is_finite() {
+		if left.1.is_nan() == mid_y.is_nan() {
 			left = mid;
 		} else {
 			right = mid;
 		}
 	}
 
-	if !left.1.is_finite() { right } else { left }
+	Some(if left.1.is_nan() { right } else { left })
 }
 fn zoom_in_y_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,
-) -> (f64, f64) {
+) -> Option<(f64, f64)> {
 	// If both are nans or both are defined, no need to do anything
 	if a.0.is_nan() == b.0.is_nan() {
-		return b;
+		return None;
 	}
 
 	let mut left = a;
@@ -2342,9 +2433,7 @@ fn zoom_in_y_on_nan_boundary(
 	let mut prev_mid_y = None;
 	while (right.1 - left.1).abs() > eps {
 		let mid_y = (left.1 + right.1) * 0.5;
-		let Some(mid_x) = eval(mid_y) else {
-			return if left.0.is_nan() { right } else { left };
-		};
+		let mid_x = eval(mid_y)?;
 		if prev_mid_y == Some(mid_y) {
 			break;
 		}
@@ -2359,7 +2448,7 @@ fn zoom_in_y_on_nan_boundary(
 		}
 	}
 
-	if left.0.is_nan() { right } else { left }
+	Some(if left.0.is_nan() { right } else { left })
 }
 
 pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::f64_to_float(x)) }
