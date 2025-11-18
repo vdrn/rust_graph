@@ -131,14 +131,14 @@ pub fn marching_squares<C>(
 			let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
 
 			// Cache for bottom-mid values from previous row
-			let mut prev_row_top_mid: Vec<f64> = vec![f64::NAN; resolution];
+			let mut prev_row_top_mid: Vec<(f64, bool)> = vec![(f64::NAN, false); resolution];
 			let sub_dx = dx * 0.5;
 			let sub_dy = dy * 0.5;
 
 			let y_start = y_min + start as f64 * dy;
 			let y_end = y_min + end as f64 * dy;
 			for i in start..end {
-				let mut prev_right_mid = f64::NAN;
+				let mut prev_right_mid = (f64::NAN, false);
 				let y = y_min + i as f64 * dy;
 				// println!("NEW ROT Y = {y}");
 
@@ -158,9 +158,14 @@ pub fn marching_squares<C>(
 						// Adaptive subdivision
 
 						// Calculate mid-edge and center points
-						let left_mid = if prev_right_mid.is_nan() {
+						let (left_mid, discontinuous_left) = if prev_right_mid.0.is_nan() {
 							match f(&mut ctx, x, y + sub_dy) {
-								Ok(v) => v,
+								Ok(v) => (
+									v,
+									is_edge_discontinuous(vals[0], v, vals[3], (x, y), (x, y + dy), |x, y| {
+										f(&mut ctx, x, y).ok()
+									}),
+								),
 								Err(e) => {
 									*error.lock().unwrap() = Some(e);
 									return ((0.0, 0.0), vec![]);
@@ -170,9 +175,14 @@ pub fn marching_squares<C>(
 							prev_right_mid
 						};
 
-						let bot_mid = if prev_row_top_mid[j].is_nan() {
+						let (bot_mid, discontinuous_bottom) = if prev_row_top_mid[j].0.is_nan() {
 							match f(&mut ctx, x + sub_dx, y) {
-								Ok(v) => v,
+								Ok(v) => (
+									v,
+									is_edge_discontinuous(vals[0], v, vals[1], (x, y), (x + dx, y), |x, y| {
+										f(&mut ctx, x, y).ok()
+									}),
+								),
 								Err(e) => {
 									*error.lock().unwrap() = Some(e);
 									return ((0.0, 0.0), vec![]);
@@ -206,10 +216,22 @@ pub fn marching_squares<C>(
 						};
 
 						// discontinuities on outer edges
-						let discontinuous_bottom = is_edge_discontinuous(vals[0], bot_mid, vals[1]);
-						let discontinuous_right = is_edge_discontinuous(vals[1], right_mid, vals[2]);
-						let discontinuous_top = is_edge_discontinuous(vals[2], top_mid, vals[3]);
-						let discontinuous_left = is_edge_discontinuous(vals[3], left_mid, vals[0]);
+						let discontinuous_right = is_edge_discontinuous(
+							vals[1],
+							right_mid,
+							vals[2],
+							(x + dx, y),
+							(x + dx, y + dy),
+							|x, y| f(&mut ctx, x, y).ok(),
+						);
+						let discontinuous_top = is_edge_discontinuous(
+							vals[2],
+							top_mid,
+							vals[3],
+							(x + dx, y + dy),
+							(x, y + dy),
+							|x, y| f(&mut ctx, x, y).ok(),
+						);
 
 						// Store for next iteration
 
@@ -265,8 +287,8 @@ pub fn marching_squares<C>(
 								eps,
 							);
 						}
-						prev_right_mid = right_mid;
-						prev_row_top_mid[j] = top_mid;
+						prev_right_mid = (right_mid, discontinuous_right);
+						prev_row_top_mid[j] = (top_mid, discontinuous_top);
 					} else {
 						// No subdivision needed
 						// for (edge1, edge2) in get_edges_for_config(config) {
@@ -281,8 +303,8 @@ pub fn marching_squares<C>(
 						// }
 
 						// Reset cache entries since we didn't subdivide
-						prev_right_mid = f64::NAN;
-						prev_row_top_mid[j] = f64::NAN;
+						prev_right_mid = (f64::NAN, false);
+						prev_row_top_mid[j] = (f64::NAN, false);
 					}
 				}
 			}
@@ -326,7 +348,11 @@ pub fn marching_squares<C>(
 	Ok(chunk_results)
 }
 /// edge might contain discontinuity rather than a zero crossing
-fn is_edge_discontinuous(val_start: f64, val_mid: f64, val_end: f64) -> bool {
+fn is_edge_discontinuous(
+	val_start: f64, val_mid: f64, val_end: f64, start_param: (f64, f64), end_param: (f64, f64),
+	mut eval: impl FnMut(f64, f64) -> Option<f64>,
+) -> bool {
+	// Only check if there's a sign change across the full edge
 	if val_start.signum() == val_end.signum() {
 		return false;
 	}
@@ -336,7 +362,46 @@ fn is_edge_discontinuous(val_start: f64, val_mid: f64, val_end: f64) -> bool {
 	let right_change = (val_end - val_mid).abs();
 	let max_half = left_change.max(right_change);
 
-	max_half > 0.85 * abs_change
+  const TOLERANCE: f64 = 0.95;
+	if max_half < TOLERANCE * abs_change {
+		return false;
+	}
+	// potential discontinuity
+	let mid_param = ((start_param.0 + end_param.0) * 0.5, (start_param.1 + end_param.1) * 0.5);
+
+	// Determine which half has the larger change
+	if left_change > right_change {
+		// Check left half: val_start -> val_mid
+		let left_mid_param = ((start_param.0 + mid_param.0) * 0.5, (start_param.1 + mid_param.1) * 0.5);
+
+		if let Some(val_left_mid) = eval(left_mid_param.0, left_mid_param.1) {
+			let left_abs_change = (val_mid - val_start).abs();
+			let left_left_change = (val_left_mid - val_start).abs();
+			let left_right_change = (val_mid - val_left_mid).abs();
+			let left_max_half = left_left_change.max(left_right_change);
+
+			// If still highly asymmetric, it's a discontinuity
+			if left_max_half > TOLERANCE * left_abs_change {
+				return true;
+			}
+		}
+	} else {
+		let right_mid_param = ((mid_param.0 + end_param.0) * 0.5, (mid_param.1 + end_param.1) * 0.5);
+
+		if let Some(val_right_mid) = eval(right_mid_param.0, right_mid_param.1) {
+			let right_abs_change = (val_end - val_mid).abs();
+			let right_left_change = (val_right_mid - val_mid).abs();
+			let right_right_change = (val_end - val_right_mid).abs();
+			let right_max_half = right_left_change.max(right_right_change);
+
+			// If still highly asymmetric, it's a discontinuity
+			if right_max_half > TOLERANCE * right_abs_change {
+				return true;
+			}
+		}
+	}
+
+	false
 }
 
 fn process_subcell(

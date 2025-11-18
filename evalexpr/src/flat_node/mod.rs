@@ -4,21 +4,27 @@ use std::vec::Drain;
 use smallvec::SmallVec;
 
 use crate::{
-    error::{expect_operator_argument_amount, EvalexprResultValue},
-    flat_node::eval::eval_range_with_step,
-    function::builtin::builtin_function,
-    Context, ContextWithMutableVariables, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult,
-    HashMapContext, IStr, Node, Operator, TupleType, Value, EMPTY_VALUE,
+    Context, ContextWithMutableVariables, EMPTY_VALUE, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, HashMapContext, IStr, Node, Operator, TupleType, Value, error::{EvalexprResultValue, expect_operator_argument_amount}, flat_node::{eval::eval_range_with_step, inlining::inline_variables_and_fold}, function::builtin::builtin_function
 };
 pub(crate) mod eval;
-pub(crate) mod inlining;
+mod inlining;
 mod optimization;
+mod subexpression_elemination;
 
 use eval::eval_range;
 use optimization::{
     compile_operator_function, extract_const_float, fuse_comutative, fuse_left, nary_op,
     FusingReturn,
 };
+
+/// Optimizes a FlatNode by inlining variables and eliminating subexpressions
+/// Returns optimized FlatNode without modifying the original
+pub fn optimize_flat_node<F: EvalexprFloat>(node: &FlatNode<F>, context: &mut HashMapContext<F>) -> EvalexprResult<FlatNode<F>,F> {
+  let mut inlined = inline_variables_and_fold(node, context)?;
+  // println!("Inlined node: {:#?}", inlined);
+  subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
+  Ok(inlined)
+}
 
 #[cold]
 pub fn cold() {}
@@ -196,9 +202,9 @@ pub enum FlatOperator<F: EvalexprFloat> {
 
     Tan,
     Atan,
-    TanH, 
+    TanH,
     AtanH,
-    Atan2,//2 params
+    Atan2, //2 params
     Hypot, // 2 params
     Signum,
 
@@ -221,8 +227,9 @@ pub enum FlatOperator<F: EvalexprFloat> {
         expr: Box<FlatNode<F>>,
     },
 
-    /// Duplicates the top value on the stack
-    Duplicate,
+    ReadLocalVar {
+        idx: u32,
+    },
 }
 
 /// Flat compiled node - linear sequence of operations
@@ -619,18 +626,7 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
             ops.push(FlatOperator::PushConst { value });
         },
         VariableIdentifierRead { identifier } => {
-            if let Some(FlatOperator::ReadVar {
-                identifier: other_identifier,
-            }) = ops.last()
-            {
-                if identifier == *other_identifier {
-                    ops.push(FlatOperator::Duplicate);
-                } else {
-                    ops.push(FlatOperator::ReadVar { identifier });
-                }
-            } else {
-                ops.push(FlatOperator::ReadVar { identifier });
-            }
+            ops.push(FlatOperator::ReadVar { identifier });
         },
         VariableIdentifierWrite { identifier } => {
             ops.push(FlatOperator::WriteVar { identifier });
@@ -805,6 +801,16 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
         debug_assert!(arg_i < self.stack.len());
         Some(unsafe { self.stack.get_unchecked(arg_i) })
     }
+    fn get_unchecked(&self, index: usize) -> &Value<T> {
+        unsafe{self.stack.get_unchecked(index)}
+    }
+    fn get(&self, index: usize) -> Option<&Value<T>> {
+        if index >= self.stack.len() {
+            cold();
+            return None;
+        }
+        self.stack.get(index)
+    }
     fn len(&self) -> usize {
         self.stack.len()
     }
@@ -947,6 +953,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     ) -> EvalexprResultValue<F> {
         use FlatOperator::*;
 
+        let base_index = stack.len();
         for op in &self.ops {
             match op {
                 // Binary arithmetic operators
@@ -1460,15 +1467,16 @@ impl<F: EvalexprFloat> FlatNode<F> {
                     }
                     stack.push(Value::Float(result));
                 },
-                Duplicate => {
-                    let value = stack.last().cloned().unwrap();
+                ReadLocalVar { idx } => {
+                    let value = stack.get_unchecked(base_index + *idx as usize);
                     stack.push(value.clone());
                 },
             }
         }
 
-        // Return the top value or Empty if stack is empty
-        Ok(stack.pop().unwrap_or(Value::Empty))
+        let result = stack.pop().unwrap();
+        stack.truncate(base_index);
+        Ok(result)
     }
     /// Evaluates the operator with the given arguments and mutable context.
     fn eval_mut_priv<C: ContextWithMutableVariables + Context<NumericTypes = F>>(

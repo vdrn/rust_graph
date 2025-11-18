@@ -387,7 +387,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
                     }
                 }
             },
-            FlatOperator::Duplicate
+            FlatOperator::ReadLocalVar { .. }
             | FlatOperator::Eq
             | FlatOperator::Neq
             | FlatOperator::Gt

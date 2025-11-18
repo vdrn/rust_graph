@@ -577,7 +577,7 @@ pub use crate::{
         EmptyContextWithBuiltinFunctions, HashMapContext, IterateVariablesContext,
     },
     error::{EvalexprError, EvalexprResult},
-    flat_node::{FlatNode, Stack, inlining::inline_variables_and_fold},
+    flat_node::{FlatNode, Stack, optimize_flat_node},
     function::Function,
     interface::*,
     operator::Operator,

@@ -291,9 +291,9 @@ impl<NumericTypes> Default for EmptyContextWithBuiltinFunctions<NumericTypes> {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HashMapContext<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
-    variables: IStrMap<Value<NumericTypes>>,
+    pub(crate ) variables: IStrMap<Value<NumericTypes>>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    functions: IStrMap<Function<NumericTypes, HashMapContext<NumericTypes>>>,
+    pub(crate ) functions: IStrMap<Function<NumericTypes, HashMapContext<NumericTypes>>>,
 
     /// True if builtin functions are disabled.
     without_builtin_functions: bool,

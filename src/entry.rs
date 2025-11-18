@@ -203,8 +203,7 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 impl<T: EvalexprFloat> Expr<T> {
 	fn inline_pass(&mut self, ctx: &mut evalexpr::HashMapContext<T>) -> Result<(), String> {
 		if let Some(node) = &self.node {
-			self.inlined_node =
-				Some(evalexpr::inline_variables_and_fold(node, ctx).map_err(|e| e.to_string())?);
+			self.inlined_node = Some(evalexpr::optimize_flat_node(node, ctx).map_err(|e| e.to_string())?);
 		}
 		Ok(())
 	}
@@ -1547,9 +1546,9 @@ impl DiscontinuityDetector {
 
 				let max_half = left_change.max(right_change);
 				if max_half > 0.8 * abs_change {
-				// let min_half = left_change.min(right_change);
-        // let ratio = min_half / max_half;
-// if ratio < 0.2 { 
+					// let min_half = left_change.min(right_change);
+					// let ratio = min_half / max_half;
+					// if ratio < 0.2 {
 					// println!("max_half {max_half} abs_change {abs_change}");
 					// discontinuity detected - find exact points via bisection
 					return Some(self.bisect_discontinuity(prev_arg, prev_value, arg, value, &mut eval));
@@ -2278,26 +2277,35 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 										},
 										Ok(Value::Empty) => {},
 										Ok(Value::Float2(x, y)) => {
-											if let Some((left, right)) =
-												discontinuity_detector.detect(x.to_f64(), y.to_f64(), |x| {
-													eval_with_context_and_x(
-														func_node,
-														&mut stack,
-														ctx,
-														reserved_vars,
-														f64_to_float::<T>(x),
-													)
-													.and_then(|y| y.as_float2())
-													.map(|y| y.1.to_f64())
-													.ok()
-												}) {
-												pp_buffer.push(PlotPoint::new(left.0, left.0));
-												add_line(mem::take(&mut pp_buffer));
-												pp_buffer.push(PlotPoint::new(right.0, right.0));
-											} else {
-												if !y.is_nan() {
-													pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+											// TODO: detect discontinuity for ranged thar teturn Float2
+
+											// if let Some((left, right)) =
+											// 	discontinuity_detector.detect(x.to_f64(), y.to_f64(), |x| {
+											// 		eval_with_context_and_x(
+											// 			func_node,
+											// 			&mut stack,
+											// 			ctx,
+											// 			reserved_vars,
+											// 			f64_to_float::<T>(x),
+											// 		)
+											// 		.and_then(|y| y.as_float2())
+											// 		.map(|y| y.1.to_f64())
+											// 		.ok()
+											// 	}) {
+											// 	pp_buffer.push(PlotPoint::new(left.0, left.0));
+											// 	add_line(mem::take(&mut pp_buffer));
+											// 	pp_buffer.push(PlotPoint::new(right.0, right.0));
+											// } else {
+											// 	if !y.is_nan() {
+											// 		pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+											// 	}
+											// }
+											if y.is_nan() {
+												if !pp_buffer.is_empty() {
+													add_line(mem::take(&mut pp_buffer));
 												}
+											} else {
+												pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
 											}
 										},
 										Ok(_) => {
