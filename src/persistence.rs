@@ -52,6 +52,7 @@ impl ExprSer {
 		Expr {
 			node:         evalexpr::build_operator_tree::<T>(txt).ok(),
       inlined_node: None,
+      expr_function: None,
 			text:         self.text,
 			textbox_type: self.textbox_type,
 		}

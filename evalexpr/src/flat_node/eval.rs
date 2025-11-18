@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::{
-    error::EvalexprResultValue,
+    error::{expect_function_argument_amount, EvalexprResultValue},
     flat_node::{cold, FlatOperator},
     function::builtin::builtin_function,
     EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value,
@@ -159,6 +159,9 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
     }
     fn get_unchecked(&self, index: usize) -> &Value<T> {
         unsafe { self.stack.get_unchecked(index) }
+    }
+    fn get(&self, index: usize) -> Option<&Value<T>> {
+        self.stack.get(index)
     }
     fn len(&self) -> usize {
         self.stack.len()
@@ -418,18 +421,16 @@ fn eval_priv_inner<F: EvalexprFloat>(
             } => {
                 let prev_num_args = stack.num_args;
                 stack.num_args = *arg_num as usize;
-                let result = match context.unchecked_call_function(stack, *identifier) {
-                    Err(EvalexprError::FunctionIdentifierNotFound(_)) => {
-                        if let Some(builtin_function) = builtin_function(identifier) {
-                            builtin_function.call(stack, context)?
-                        } else {
-                            return Err(EvalexprError::FunctionIdentifierNotFound(
-                                identifier.to_string(),
-                            ));
-                        }
-                    },
-                    Ok(val) => val,
-                    Err(e) => return Err(e),
+                let result = if let Some(expr_function) = context.expr_functions.get(identifier) {
+                    expr_function.unchecked_call(stack, context)?
+                } else if let Some(function) = context.functions.get(identifier) {
+                    function.unchecked_call(stack, context)?
+                } else if let Some(builtin_function) = builtin_function(identifier) {
+                    builtin_function.unchecked_call(stack, context)?
+                } else {
+                    return Err(EvalexprError::FunctionIdentifierNotFound(
+                        identifier.to_string(),
+                    ));
                 };
 
                 stack.pop_args();
@@ -779,6 +780,10 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 let value = stack.get_unchecked(base_index + *idx as usize);
                 stack.push(value.clone());
             },
+            ReadParam { inverse_index } => {
+                let value = stack.get_unchecked(base_index - *inverse_index as usize );
+                stack.push(value.clone());
+            },
         }
     }
 
@@ -901,18 +906,16 @@ fn read_var<F: EvalexprFloat>(
         // Try as zero-argument function
         let prev_num_args = stack.num_args;
         stack.num_args = 0;
-        match context.unchecked_call_function(stack, *identifier) {
-            Err(EvalexprError::FunctionIdentifierNotFound(_)) => {
-                return Err(EvalexprError::VariableIdentifierNotFound(
-                    identifier.to_string(),
-                ));
-            },
-            Ok(val) => {
-                stack.num_args = prev_num_args;
-
-                val
-            },
-            Err(e) => return Err(e),
-        }
+        let val = if let Some(expr_function) = context.expr_functions.get(identifier) {
+            expr_function.unchecked_call(stack, context)?
+        } else if let Some(function) = context.functions.get(identifier) {
+            function.unchecked_call(stack, context)?
+        } else {
+            return Err(EvalexprError::VariableIdentifierNotFound(
+                identifier.to_string(),
+            ));
+        };
+        stack.num_args = prev_num_args;
+        val
     })
 }

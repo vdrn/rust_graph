@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::{
     error::EvalexprResultValue, value::numeric_types::default_numeric_types::DefaultNumericTypes,
-    EvalexprFloat, HashMapContext, Stack,
+    EvalexprFloat, HashMapContext, Stack, Value,
 };
 
 pub(crate) mod builtin;
@@ -22,7 +22,7 @@ where
     FN: Send + Sync + 'static,
     FN: Clone,
 {
-    fn dyn_clone(&self) -> Box<dyn ClonableFn< F>> {
+    fn dyn_clone(&self) -> Box<dyn ClonableFn<F>> {
         Box::new(self.clone()) as _
     }
 }
@@ -42,10 +42,10 @@ where
 /// assert_eq!(eval_with_context("id(4)", &context), Ok(Value::from_float(4.0)));
 /// ```
 pub struct Function<F: EvalexprFloat> {
-    function: Box<dyn ClonableFn< F>>,
+    function: Box<dyn ClonableFn<F>>,
 }
 
-impl<F: EvalexprFloat > Clone for Function<F> {
+impl<F: EvalexprFloat> Clone for Function<F> {
     fn clone(&self) -> Self {
         Self {
             function: self.function.dyn_clone(),
@@ -68,8 +68,28 @@ impl<F: EvalexprFloat + 'static> Function<F> {
         }
     }
 
-    pub(crate) fn call(&self, stack: &mut Stack<F>, context: &HashMapContext<F>) -> EvalexprResultValue<F> {
-        (self.function)(stack, context)
+    pub(crate) fn call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+        arguments: &[Value<F>],
+    ) -> EvalexprResultValue<F> {
+        stack.push_args(arguments);
+
+        let value = self.unchecked_call(stack, context);
+
+        stack.pop_args();
+        value
+    }
+    pub(crate) fn unchecked_call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+    ) -> EvalexprResultValue<F> {
+        stack.function_called()?;
+        let value = (self.function)(stack, context);
+        stack.function_returned();
+        value
     }
 }
 

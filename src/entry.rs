@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
+	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -184,19 +184,21 @@ impl TextboxType {
 }
 #[derive(Clone, Debug)]
 pub struct Expr<T: EvalexprFloat> {
-	pub text:         String,
-	pub node:         Option<FlatNode<T>>,
-	pub inlined_node: Option<FlatNode<T>>,
-	pub textbox_type: TextboxType,
+	pub text:          String,
+	pub node:          Option<FlatNode<T>>,
+	pub inlined_node:  Option<FlatNode<T>>,
+	pub expr_function: Option<ExpressionFunction<T>>,
+	pub textbox_type:  TextboxType,
 }
 
 impl<T: EvalexprFloat> Default for Expr<T> {
 	fn default() -> Self {
 		Self {
-			text:         Default::default(),
-			node:         Default::default(),
-			inlined_node: Default::default(),
-			textbox_type: Default::default(),
+			text:          Default::default(),
+			node:          Default::default(),
+			inlined_node:  Default::default(),
+			expr_function: Default::default(),
+			textbox_type:  Default::default(),
 		}
 	}
 }
@@ -259,12 +261,12 @@ impl<T: EvalexprFloat> Expr<T> {
 
 					self.node = match evalexpr::build_operator_tree::<T>(txt) {
 						Ok(func) => {
-							println!("func: {:#?}", func);
+							// println!("func: {:#?}", func);
 
 							Some(func)
 						},
 						Err(e) => {
-							println!("Error: {e}");
+							// println!("Error: {e}");
 							return Err(e.to_string());
 						},
 					};
@@ -566,6 +568,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
 					inlined_node: None,
+					expr_function: None,
 					text,
 					textbox_type: TextboxType::default(),
 				},
@@ -1241,8 +1244,9 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 									.step_by(*step)
 									.clamping(egui::SliderClamping::Never),
 							)
-							.changed() || clear_cache
+							.dragged()
 						{
+               entry.visible = false;
 							// *value = f64_to_float::<T>(v);
 							// result.animating = true;
 						}
@@ -1414,94 +1418,113 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 				return Err((entry.id, errs));
 			}
 			// println!("inlined_node: {:#?}", func.inlined_node);
-			if !entry.name.is_empty()
-				&& let Some(inlined_node) = func.inlined_node.clone()
-			{
+			if let Some(inlined_node) = func.inlined_node.clone() {
 				let thread_local_context = thread_local_context.clone();
 				let ty = *ty;
 				let reserved_vars = reserved_vars.clone();
-				let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
-					let res = match ty {
-						FunctionType::X | FunctionType::Ranged | FunctionType::Y => {
-							let v = match stack.get_arg(0) {
-								Some(Value::Float(x)) => *x,
-								Some(Value::Float2(x, _)) => *x,
-								_ => T::ZERO,
-							};
+				match ty {
+					FunctionType::X => {
+						let expr_function = ExpressionFunction::new(inlined_node, vec![istr("x")]);
+            // println!("expr_function: {:#?}", expr_function);
 
-							if ty == FunctionType::Y {
-								eval_with_context_and_y(&inlined_node, stack, context, &reserved_vars, v)
-							} else {
-								eval_with_context_and_x(&inlined_node, stack, context, &reserved_vars, v)
-							}
-						},
-						FunctionType::Implicit { complex } => {
-							if complex {
-								let tl_context = thread_local_get(thread_local_context.as_ref());
-								let cc_x = tl_context.cc_x.get();
-								let cc_y = tl_context.cc_y.get();
-								if stack.num_args() == 1 {
-									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+						if !entry.name.trim().is_empty() {
+							ctx.set_expression_function(istr(entry.name.trim()), expr_function.clone());
+						}
+						func.expr_function = Some(expr_function);
+
+						return Ok(());
+					},
+					FunctionType::Ranged | FunctionType::Y => {},
+					_ => {},
+				}
+				if !entry.name.trim().is_empty() {
+					let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
+						let res = match ty {
+							FunctionType::X => {
+								unreachable!()
+							},
+							FunctionType::Ranged | FunctionType::Y => {
+								let v = match stack.get_arg(0) {
+									Some(Value::Float(x)) => *x,
+									Some(Value::Float2(x, _)) => *x,
+									_ => T::ZERO,
+								};
+
+								if ty == FunctionType::Y {
+									eval_with_context_and_y(&inlined_node, stack, context, &reserved_vars, v)
+								} else {
+									eval_with_context_and_x(&inlined_node, stack, context, &reserved_vars, v)
+								}
+							},
+							FunctionType::Implicit { complex } => {
+								if complex {
+									let tl_context = thread_local_get(thread_local_context.as_ref());
+									let cc_x = tl_context.cc_x.get();
+									let cc_y = tl_context.cc_y.get();
+									if stack.num_args() == 1 {
+										let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+											return Err(EvalexprError::wrong_function_argument_amount(
+												stack.num_args(),
+												2,
+											));
+										};
+										eval_with_context_and_xy_and_z(
+											&inlined_node, stack, context, &reserved_vars, cc_x, cc_y, v.0,
+											v.1,
+										)
+									} else if stack.num_args() == 2 {
+										eval_with_context_and_xy_and_z(
+											&inlined_node,
+											stack,
+											context,
+											&reserved_vars,
+											cc_x,
+											cc_y,
+											stack.get_arg(0).unwrap().as_float()?,
+											stack.get_arg(1).unwrap().as_float()?,
+										)
+									} else {
 										return Err(EvalexprError::wrong_function_argument_amount(
 											stack.num_args(),
 											2,
 										));
-									};
-									eval_with_context_and_xy_and_z(
-										&inlined_node, stack, context, &reserved_vars, cc_x, cc_y, v.0, v.1,
-									)
-								} else if stack.num_args() == 2 {
-									eval_with_context_and_xy_and_z(
-										&inlined_node,
-										stack,
-										context,
-										&reserved_vars,
-										cc_x,
-										cc_y,
-										stack.get_arg(0).unwrap().as_float()?,
-										stack.get_arg(1).unwrap().as_float()?,
-									)
+									}
 								} else {
-									return Err(EvalexprError::wrong_function_argument_amount(
-										stack.num_args(),
-										2,
-									));
-								}
-							} else {
-								if stack.num_args() == 1 {
-									let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+									if stack.num_args() == 1 {
+										let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
+											return Err(EvalexprError::wrong_function_argument_amount(
+												stack.num_args(),
+												2,
+											));
+										};
+										eval_with_context_and_xy(
+											&inlined_node, stack, context, &reserved_vars, v.0, v.1,
+										)
+									} else if stack.num_args() == 2 {
+										eval_with_context_and_xy(
+											&inlined_node,
+											stack,
+											context,
+											&reserved_vars,
+											stack.get_arg(0).unwrap().as_float()?,
+											stack.get_arg(1).unwrap().as_float()?,
+										)
+									} else {
 										return Err(EvalexprError::wrong_function_argument_amount(
 											stack.num_args(),
 											2,
 										));
-									};
-									eval_with_context_and_xy(
-										&inlined_node, stack, context, &reserved_vars, v.0, v.1,
-									)
-								} else if stack.num_args() == 2 {
-									eval_with_context_and_xy(
-										&inlined_node,
-										stack,
-										context,
-										&reserved_vars,
-										stack.get_arg(0).unwrap().as_float()?,
-										stack.get_arg(1).unwrap().as_float()?,
-									)
-								} else {
-									return Err(EvalexprError::wrong_function_argument_amount(
-										stack.num_args(),
-										2,
-									));
+									}
 								}
-							}
-						},
-					};
+							},
+						};
 
-					// tl_context.stack_overflow_guard.set(stack_depth);
-					res
-				});
+						// tl_context.stack_overflow_guard.set(stack_depth);
+						res
+					});
 
-				ctx.set_function(istr(&entry.name), fun).unwrap();
+					ctx.set_function(istr(&entry.name.trim()), fun);
+				}
 			}
 		},
 		EntryType::Integral { func, .. } => {
@@ -1962,66 +1985,66 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				return Ok(());
 			}
-			if let Some(func_node) = &func.inlined_node {
-				let name = if entry.name.is_empty() {
-					match ty {
-						FunctionType::Y => format!("f(y): {}", func.text.trim()),
-						FunctionType::Ranged | FunctionType::X => {
-							format!("f(x):  {}", func.text.trim())
-						},
-						FunctionType::Implicit { complex } => {
-							if *complex {
-								format!("F(zx,zy): {}", func.text.trim())
-							} else {
-								func.text.clone()
-							}
-						},
-					}
-				} else {
-					match ty {
-						FunctionType::Y => format!("{}(y):  {}", entry.name.trim(), func.text.trim()),
-						FunctionType::Ranged | FunctionType::X => {
-							format!("{}(x): {}", entry.name.trim(), func.text.trim())
-						},
-						FunctionType::Implicit { complex } => {
-							if *complex {
-								format!("{}(zx,zy): {}", entry.name.trim(), func.text.trim())
-							} else {
-								format!("{}: {}", entry.name.trim(), func.text.trim())
-							}
-						},
-					}
-				};
-				let selected = selected_id == Some(id);
-				let width = if selected { style.line_width + 2.5 } else { style.line_width };
+			let name = if entry.name.is_empty() {
+				match ty {
+					FunctionType::Y => format!("f(y): {}", func.text.trim()),
+					FunctionType::Ranged | FunctionType::X => {
+						format!("f(x):  {}", func.text.trim())
+					},
+					FunctionType::Implicit { complex } => {
+						if *complex {
+							format!("F(zx,zy): {}", func.text.trim())
+						} else {
+							func.text.clone()
+						}
+					},
+				}
+			} else {
+				match ty {
+					FunctionType::Y => format!("{}(y):  {}", entry.name.trim(), func.text.trim()),
+					FunctionType::Ranged | FunctionType::X => {
+						format!("{}(x): {}", entry.name.trim(), func.text.trim())
+					},
+					FunctionType::Implicit { complex } => {
+						if *complex {
+							format!("{}(zx,zy): {}", entry.name.trim(), func.text.trim())
+						} else {
+							format!("{}: {}", entry.name.trim(), func.text.trim())
+						}
+					},
+				}
+			};
+			let selected = selected_id == Some(id);
+			let width = if selected { style.line_width + 2.5 } else { style.line_width };
 
-				// let mut cache = (!animating).then(|| {
-				// 	state
-				// 		.points_cache
-				// 		.entry(text.clone())
-				// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
-				// });
-				let add_line = |line: Vec<PlotPoint>| {
-					let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-					draw_buffer.lines.push(DrawLine::new(
-						sorting_idx,
-						id,
-						width,
-						Line::new(&name, PlotPoints::Owned(line))
-							.id(id)
-							.width(width)
-							.style(style.egui_line_style())
-							.color(color),
-					));
-				};
+			// let mut cache = (!animating).then(|| {
+			// 	state
+			// 		.points_cache
+			// 		.entry(text.clone())
+			// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
+			// });
+			let add_line = |line: Vec<PlotPoint>| {
+				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
+				draw_buffer.lines.push(DrawLine::new(
+					sorting_idx,
+					id,
+					width,
+					Line::new(&name, PlotPoints::Owned(line))
+						.id(id)
+						.width(width)
+						.style(style.egui_line_style())
+						.color(color),
+				));
+			};
 
+			if let Some(expr_func) = &func.expr_function {
 				match ty {
 					FunctionType::X => {
 						let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 						let mut pp_buffer = vec![];
 						let mut prev_sampling_point: Option<(f64, f64)> = None;
 						let mut sampling_x = plot_params.first_x;
-						if let Some(constant) = func_node.as_constant() {
+						if let Some(constant) = expr_func.as_constant() {
 							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
 							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
 							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
@@ -2032,13 +2055,13 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 								DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
 
 							while sampling_x < plot_params.last_x {
-								match eval_with_context_and_x(
-									func_node,
-									&mut stack,
-									ctx,
-									reserved_vars,
-									f64_to_float::<T>(sampling_x),
-								) {
+								match expr_func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_x)]) {
+									// eval_with_context_and_x(
+									// func_node,
+									// &mut stack,
+									// ctx,
+									// reserved_vars,
+									// f64_to_float::<T>(sampling_x),)
 									Ok(Value::Float(y)) => {
 										let y = y.to_f64();
 
@@ -2049,15 +2072,18 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 													(sampling_x, y),
 													plot_params.eps,
 													|x| {
-														eval_float_with_context_and_x(
-															func_node,
-															&mut stack,
-															ctx,
-															reserved_vars,
-															f64_to_float::<T>(x),
-														)
-														.map(|y| y.to_f64())
-														.ok()
+														expr_func
+															.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
+															// eval_float_with_context_and_x(
+															// 	func_node,
+															// 	&mut stack,
+															// 	ctx,
+															// 	reserved_vars,
+															// 	f64_to_float::<T>(x),
+															// )
+															.and_then(|y| y.as_float())
+															.map(|y| y.to_f64())
+															.ok()
 													},
 												)
 											});
@@ -2075,15 +2101,11 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 										if !on_nan_boundary
 											&& let Some((left, right)) =
 												discontinuity_detector.detect(cur_x, cur_y, |x| {
-													eval_float_with_context_and_x(
-														func_node,
-														&mut stack,
-														ctx,
-														reserved_vars,
-														f64_to_float::<T>(x),
-													)
-													.map(|y| y.to_f64())
-													.ok()
+													expr_func
+														.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
+														.and_then(|y| y.as_float())
+														.map(|y| y.to_f64())
+														.ok()
 												}) {
 											pp_buffer.push(PlotPoint::new(left.0, left.1));
 											// start a new line
@@ -2120,6 +2142,16 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 
 						add_line(pp_buffer);
 					},
+					FunctionType::Y => {
+						todo!()
+					},
+					_ => {
+						todo!()
+					},
+				}
+			} else if let Some(func_node) = &func.inlined_node {
+				match ty {
+					FunctionType::X => {},
 
 					FunctionType::Y => {
 						let mut stack = thread_local_get(tl_context).stack.borrow_mut();

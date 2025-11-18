@@ -228,6 +228,11 @@ pub enum FlatOperator<F: EvalexprFloat> {
     ReadLocalVar {
         idx: u32,
     },
+    ReadParam {
+        /// for arguments           (a,b,c)
+        /// inverse indices will be (3,2,1)
+        inverse_index: u32,
+    },
 }
 
 /// Flat compiled node - linear sequence of operations
@@ -364,8 +369,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
     /// Evaluates the operator tree rooted at this node into a float with an the given mutable context.
     ///
     /// Fails, if one of the operators in the expression tree fails.
-    pub fn eval_float_with_context_mut
-    (
+    pub fn eval_float_with_context_mut(
         &self,
         stack: &mut Stack<F>,
         context: &mut HashMapContext<F>,
@@ -466,6 +470,18 @@ impl<F: EvalexprFloat> FlatNode<F> {
             }
         }
         ops.into_iter()
+    }
+    pub(crate) fn iter_mut(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {
+        for op in self.ops.iter_mut() {
+            match op {
+                FlatOperator::Product { expr, .. } | FlatOperator::Sum { expr, .. } => {
+                    expr.iter_mut(f);
+                },
+                op => {
+                    f(op);
+                },
+            }
+        }
     }
     /// Returns an iterator over all identifiers in this expression.
     /// Each occurrence of an identifier is returned separately.

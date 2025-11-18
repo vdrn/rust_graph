@@ -97,6 +97,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
         | FlatOperator::ReadVar { .. }
         | FlatOperator::ReadVarNeg { .. }
         | FlatOperator::ReadLocalVar { .. }
+        | FlatOperator::ReadParam { .. }
         | FlatOperator::WriteVar { .. } => 0,
 
         FlatOperator::Neg

@@ -160,22 +160,20 @@ fn test_with_context() {
 #[test]
 fn test_functions() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
-    context
-        .set_function(
-            istr("sub2"),
-            Function::new(|s, _| {
-                // if let Value::Int(int) = argument {
-                //     Ok(Value::Int(int - 2))
-                // } else
-                let arg = s.get_arg(0).unwrap();
-                if let Value::Float(float) = arg {
-                    Ok(Value::Float(float - 2.0))
-                } else {
-                    Err(EvalexprError::expected_float(arg.clone()))
-                }
-            }),
-        )
-        .unwrap();
+    context.set_function(
+        istr("sub2"),
+        Function::new(|s, _| {
+            // if let Value::Int(int) = argument {
+            //     Ok(Value::Int(int - 2))
+            // } else
+            let arg = s.get_arg(0).unwrap();
+            if let Value::Float(float) = arg {
+                Ok(Value::Float(float - 2.0))
+            } else {
+                Err(EvalexprError::expected_float(arg.clone()))
+            }
+        }),
+    );
     context.set_value(istr("five"), Value::Float(5.0)).unwrap();
 
     assert_eq!(eval_with_context("sub2 5", &context), Ok(Value::Float(3.0)));
@@ -200,66 +198,57 @@ fn test_functions() {
 #[test]
 fn test_n_ary_functions() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
-    context
-        .set_function(
-            istr("sub2"),
-            Function::new(|s, _| {
-                // if let Value::Int(int) = argument {
-                //     Ok(Value::Int(int - 2))
-                // } else
-                let arg = s.get_arg(0).unwrap();
-                if let Value::Float(float) = arg {
-                    Ok(Value::Float(float - 2.0))
-                } else {
-                    Err(EvalexprError::expected_float(arg.clone()))
-                }
-            }),
-        )
-        .unwrap();
-    context
-        .set_function(
-            istr("avg"),
-            Function::new(|s, _| {
-                expect_function_argument_amount(s.num_args(), 2)?;
-                let a1 = s.get_arg(0).unwrap().as_float()?;
-                let a2 = s.get_arg(1).unwrap().as_float()?;
+    context.set_function(
+        istr("sub2"),
+        Function::new(|s, _| {
+            // if let Value::Int(int) = argument {
+            //     Ok(Value::Int(int - 2))
+            // } else
+            let arg = s.get_arg(0).unwrap();
+            if let Value::Float(float) = arg {
+                Ok(Value::Float(float - 2.0))
+            } else {
+                Err(EvalexprError::expected_float(arg.clone()))
+            }
+        }),
+    );
+    context.set_function(
+        istr("avg"),
+        Function::new(|s, _| {
+            expect_function_argument_amount(s.num_args(), 2)?;
+            let a1 = s.get_arg(0).unwrap().as_float()?;
+            let a2 = s.get_arg(1).unwrap().as_float()?;
 
-                Ok(Value::Float((a1 + a2) / 2.0))
-            }),
-        )
-        .unwrap();
-    context
-        .set_function(
-            istr("muladd"),
-            Function::new(|s, _| {
-                expect_function_argument_amount(s.num_args(), 3)?;
-                let a = s.get_arg(0).unwrap().as_float()?;
-                let b = s.get_arg(1).unwrap().as_float()?;
-                let c = s.get_arg(2).unwrap().as_float()?;
+            Ok(Value::Float((a1 + a2) / 2.0))
+        }),
+    );
 
-                Ok(Value::Float(a * b + c))
-            }),
-        )
-        .unwrap();
-    context
-        .set_function(
-            istr("count"),
-            Function::new(|s, _| match &s.get_arg(0).unwrap() {
-                Value::Tuple(tuple) => Ok(Value::from_float(DefaultNumericTypes::from_usize(
-                    tuple.len(),
-                ))),
-                Value::Empty => Ok(Value::from_float(0.0)),
-                _ => Ok(Value::from_float(1.0)),
-            }),
-        )
-        .unwrap();
+    context.set_function(
+        istr("muladd"),
+        Function::new(|s, _| {
+            expect_function_argument_amount(s.num_args(), 3)?;
+            let a = s.get_arg(0).unwrap().as_float()?;
+            let b = s.get_arg(1).unwrap().as_float()?;
+            let c = s.get_arg(2).unwrap().as_float()?;
+
+            Ok(Value::Float(a * b + c))
+        }),
+    );
+    context.set_function(
+        istr("count"),
+        Function::new(|s, _| match &s.get_arg(0).unwrap() {
+            Value::Tuple(tuple) => Ok(Value::from_float(DefaultNumericTypes::from_usize(
+                tuple.len(),
+            ))),
+            Value::Empty => Ok(Value::from_float(0.0)),
+            _ => Ok(Value::from_float(1.0)),
+        }),
+    );
     context.set_value(istr("five"), Value::Float(5.0)).unwrap();
-    context
-        .set_function(
-            istr("function_four"),
-            Function::new(|_, _| Ok(Value::Float(4.0))),
-        )
-        .unwrap();
+    context.set_function(
+        istr("function_four"),
+        Function::new(|_, _| Ok(Value::Float(4.0))),
+    );
 
     assert_eq!(
         eval_with_context("avg(7, 5)", &context),
@@ -304,26 +293,22 @@ fn test_capturing_functions() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
     // this variable is captured by the function
     let three = 3;
-    context
-        .set_function(
-            istr("mult_3"),
-            Function::new(move |s, _| {
-                if let Value::Float(float) = s.get_arg(0).unwrap() {
-                    Ok(Value::Float(float * three as DefaultNumericTypes))
-                } else {
-                    Err(EvalexprError::expected_float(s.get_arg(0).unwrap().clone()))
-                }
-            }),
-        )
-        .unwrap();
+    context.set_function(
+        istr("mult_3"),
+        Function::new(move |s, _| {
+            if let Value::Float(float) = s.get_arg(0).unwrap() {
+                Ok(Value::Float(float * three as DefaultNumericTypes))
+            } else {
+                Err(EvalexprError::expected_float(s.get_arg(0).unwrap().clone()))
+            }
+        }),
+    );
 
     let four = 4.0;
-    context
-        .set_function(
-            istr("function_four"),
-            Function::new(move |_, _| Ok(Value::Float(four))),
-        )
-        .unwrap();
+    context.set_function(
+        istr("function_four"),
+        Function::new(move |_, _| Ok(Value::Float(four))),
+    );
 
     assert_eq!(
         eval_with_context("mult_3 2", &context),
@@ -1503,8 +1488,6 @@ fn test_type_errors_in_binary_operators() {
     // );
 }
 
-
-
 #[test]
 fn test_hashmap_context_type_safety() {
     let mut context: HashMapContext<DefaultNumericTypes> =
@@ -1549,26 +1532,22 @@ fn test_hashmap_context_clone_debug() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
     // this variable is captured by the function
     let three = 3;
-    context
-        .set_function(
-            istr("mult_3"),
-            Function::new(move |s, _| {
-                if let Value::Float(float) = s.get_arg(0).unwrap() {
-                    Ok(Value::Float(float * three as DefaultNumericTypes))
-                } else {
-                    Err(EvalexprError::expected_float(s.get_arg(0).unwrap().clone()))
-                }
-            }),
-        )
-        .unwrap();
+    context.set_function(
+        istr("mult_3"),
+        Function::new(move |s, _| {
+            if let Value::Float(float) = s.get_arg(0).unwrap() {
+                Ok(Value::Float(float * three as DefaultNumericTypes))
+            } else {
+                Err(EvalexprError::expected_float(s.get_arg(0).unwrap().clone()))
+            }
+        }),
+    );
 
     let four = 4.0;
-    context
-        .set_function(
-            istr("function_four"),
-            Function::new(move |_, _| Ok(Value::Float(four))),
-        )
-        .unwrap();
+    context.set_function(
+        istr("function_four"),
+        Function::new(move |_, _| Ok(Value::Float(four))),
+    );
     context
         .set_value(istr("variable_five"), Value::from_float(5.0))
         .unwrap();
@@ -2247,7 +2226,6 @@ fn test_clear() {
     assert!(context.get_value(istr("five")).is_none());
     assert!(eval_with_context("abc(5)", &context).is_err());
 }
-
 
 #[test]
 fn test_compare_different_numeric_types() {

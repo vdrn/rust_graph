@@ -178,9 +178,7 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 			let exponent = -(diff.pow(&two)) / (T::f64_to_float(2.0) * std_dev.pow(&two));
 			Ok(Value::Float(coefficient * exponent.exp()))
 		}),
-	)
-	.unwrap();
-
+	);
 	ctx.set_function(
 		istr("g"),
 		evalexpr::Function::new(|s, _| {
@@ -198,8 +196,7 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 			})?;
 			Ok(value.clone())
 		}),
-	)
-	.unwrap();
+	);
 	ctx.set_function(
 		istr("get"),
 		evalexpr::Function::new(|s, _| {
@@ -217,8 +214,7 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 			})?;
 			Ok(value.clone())
 		}),
-	)
-	.unwrap();
+	);
 	// };
 }
 #[rustfmt::skip]

@@ -5,13 +5,75 @@
 //! The HashMapContext is type-safe and returns an error if the user tries to assign a value of a different type than before to an identifier.
 
 use crate::{
-    error::EvalexprResultValue,
+    error::{expect_function_argument_amount, EvalexprResultValue},
+    flat_node::FlatOperator,
     function::Function,
     value::{
         numeric_types::default_numeric_types::DefaultNumericTypes, value_type::ValueType, Value,
     },
-    EvalexprError, EvalexprFloat, EvalexprResult, IStr, IStrMap, Stack,
+    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, IStrMap, Stack,
 };
+
+#[derive(Clone, Debug)]
+/// Struct that represents expression function
+pub struct ExpressionFunction<F: EvalexprFloat> {
+    expr: FlatNode<F>,
+    args: Box<[IStr]>,
+}
+impl<F: EvalexprFloat> ExpressionFunction<F> {
+    /// Creates new ExpressionFunction from FlatNode and arguments
+    pub fn new(mut expr: FlatNode<F>, args: Vec<IStr>) -> Self {
+        expr.iter_mut(&mut |op| {
+            if let FlatOperator::ReadVar { identifier } | FlatOperator::ReadVarNeg { identifier } =
+                op
+            {
+                if let Some(idx) = args.iter().position(|e| e == identifier) {
+                    *op = FlatOperator::ReadParam {
+                        inverse_index: (args.len() - idx) as u32,
+                    };
+                }
+            }
+        });
+
+        Self {
+            expr,
+            args: args.into_boxed_slice(),
+        }
+    }
+    /// Returns the constant value of this node it it only contains a single PushConst operator.
+    pub fn as_constant(&self) -> Option<Value<F>> {
+        self.expr.as_constant()
+    }
+
+    /// Returns the number of arguments this expression function takes.
+    pub fn arg_num(&self) -> usize {
+        self.args.len()
+    }
+    pub(crate) fn unchecked_call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+    ) -> EvalexprResultValue<F> {
+        expect_function_argument_amount(stack.num_args(), self.args.len())?;
+
+        stack.function_called()?;
+        let value = self.expr.eval_with_context(stack, context);
+        stack.function_returned();
+        value
+    }
+    ///. Calls the expression function with the given arguments.
+    pub fn call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+        args: &[Value<F>],
+    ) -> EvalexprResultValue<F> {
+        stack.push_args(args);
+        let value = self.unchecked_call(stack, context)?;
+        stack.pop_args();
+        Ok(value)
+    }
+}
 
 //mod predefined;
 
@@ -26,6 +88,8 @@ pub struct HashMapContext<F: EvalexprFloat = DefaultNumericTypes> {
     pub(crate) variables: IStrMap<Value<F>>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) functions: IStrMap<Function<F>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) expr_functions: IStrMap<ExpressionFunction<F>>,
 }
 
 impl<F: EvalexprFloat> HashMapContext<F> {
@@ -77,26 +141,27 @@ impl<F: EvalexprFloat> HashMapContext<F> {
         self.clear_functions();
     }
 
+    /// Returns the value that is linked to the given identifier.
+    pub fn get_value(&self, identifier: IStr) -> Option<&Value<F>> {
+        self.variables.get(&identifier)
+    }
+
+    /// Sets the function with the given identifier to the given function.
+    pub fn set_function(&mut self, identifier: IStr, function: Function<F>) {
+        self.functions.insert(identifier, function);
+    }
     pub(crate) fn unchecked_call_function(
         &self,
         stack: &mut Stack<F>,
         identifier: IStr,
     ) -> EvalexprResultValue<F> {
         if let Some(function) = self.functions.get(&identifier) {
-            stack.function_called()?;
-            let value = function.call(stack, self);
-            stack.function_returned();
-            value
+            function.unchecked_call(stack, self)
         } else {
             Err(EvalexprError::FunctionIdentifierNotFound(
                 identifier.to_string(),
             ))
         }
-    }
-
-    /// Returns the value that is linked to the given identifier.
-    pub fn get_value(&self, identifier: IStr) -> Option<&Value<F>> {
-        self.variables.get(&identifier)
     }
 
     /// Calls the function that is linked to the given identifier with the given argument.
@@ -109,12 +174,41 @@ impl<F: EvalexprFloat> HashMapContext<F> {
         argument: &[Value<F>],
     ) -> EvalexprResultValue<F> {
         if let Some(function) = self.functions.get(&identifier) {
-            stack.push_args(argument);
-            stack.function_called()?;
-            let value = function.call(stack, context);
-            stack.function_returned();
-            stack.pop_args();
-            value
+            function.call(stack, context, argument)
+        } else {
+            Err(EvalexprError::FunctionIdentifierNotFound(
+                identifier.to_string(),
+            ))
+        }
+    }
+
+    /// Sets the expression function with the given identifier to the given function.
+    pub fn set_expression_function(&mut self, identifier: IStr, expr: ExpressionFunction<F>) {
+        self.expr_functions.insert(identifier, expr);
+    }
+    // pub(crate) fn unchecked_call_expression_function(
+    //     &self,
+    //     stack: &mut Stack<F>,
+    //     identifier: IStr,
+    // ) -> EvalexprResultValue<F> {
+    //     if let Some(function) = self.expr_functions.get(&identifier) {
+    //         function.unchecked_call(stack, self)
+    //     } else {
+    //         Err(EvalexprError::FunctionIdentifierNotFound(
+    //             identifier.to_string(),
+    //         ))
+    //     }
+    // }
+
+    /// Calls the expression function with the given identifier with the given argument.
+    pub fn call_expression_function(
+        &self,
+        stack: &mut Stack<F>,
+        identifier: IStr,
+        args: &[Value<F>],
+    ) -> EvalexprResultValue<F> {
+        if let Some(function) = self.expr_functions.get(&identifier) {
+            function.call(stack, self, args)
         } else {
             Err(EvalexprError::FunctionIdentifierNotFound(
                 identifier.to_string(),
@@ -143,15 +237,6 @@ impl<F: EvalexprFloat> HashMapContext<F> {
         // Removes a value from the `self.variables`, returning the value at the key if the key was previously in the map.
         Ok(self.variables.remove(&identifier))
     }
-    /// Sets the function with the given identifier to the given function.
-    pub fn set_function(
-        &mut self,
-        identifier: IStr,
-        function: Function<F>,
-    ) -> EvalexprResult<(), F> {
-        self.functions.insert(identifier, function);
-        Ok(())
-    }
 
     /// Returns an iterator over pairs of variable names and values.
     pub fn iter_variables(&self) -> impl Iterator<Item = (&IStr, &Value<F>)> {
@@ -169,6 +254,7 @@ impl<NumericTypes: EvalexprFloat> Default for HashMapContext<NumericTypes> {
         Self {
             variables: Default::default(),
             functions: Default::default(),
+            expr_functions: Default::default(),
         }
     }
 }
