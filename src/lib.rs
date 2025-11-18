@@ -14,7 +14,7 @@ use egui_plot::{
 	HLine, Legend, Plot, PlotBounds, PlotGeometry, PlotItem, PlotPoint, PlotTransform, Points, VLine
 };
 use evalexpr::{
-	Context, ContextWithMutableFunctions, ContextWithMutableVariables, DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprResult, F32NumericTypes, FlatNode, IStr, Stack, Value, istr
+	DefaultNumericTypes, EvalexprError, EvalexprFloat, EvalexprResult, F32NumericTypes, FlatNode, IStr, Stack, Value, istr
 };
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator
@@ -889,7 +889,6 @@ fn side_panel<T: EvalexprFloat>(
 				}
 
 				state.ctx.clear();
-				state.ctx.set_builtin_functions_disabled(false).unwrap();
 				init_functions::<T>(&mut state.ctx);
 				init_consts::<T>(&mut state.ctx);
 

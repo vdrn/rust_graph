@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::{flat_node::FlatOperator, Context, EvalexprFloat, FlatNode, HashMapContext};
+use crate::{flat_node::FlatOperator, EvalexprFloat, FlatNode, HashMapContext};
 
 pub fn eliminate_subexpressions<F: EvalexprFloat>(
     node: &mut FlatNode<F>,
@@ -89,19 +89,6 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
         local_vars.ops.append(&mut node.ops);
         *node = local_vars;
     }
-}
-
-fn find_local_var<F: EvalexprFloat>(
-    local_vars: &[FlatOperator<F>],
-    local_vars_indices: &[u32],
-    op: &FlatOperator<F>,
-) -> Option<u32> {
-    for idx in local_vars_indices.iter() {
-        if local_vars.get(*idx as usize) == Some(op) {
-            return Some(*idx);
-        }
-    }
-    None
 }
 
 fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {

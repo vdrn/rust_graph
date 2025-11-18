@@ -572,12 +572,9 @@
 #![feature(vec_into_raw_parts)]
 
 pub use crate::{
-    context::{
-        Context, ContextWithMutableFunctions, ContextWithMutableVariables, EmptyContext,
-        EmptyContextWithBuiltinFunctions, HashMapContext, IterateVariablesContext,
-    },
+    context::HashMapContext,
     error::{EvalexprError, EvalexprResult},
-    flat_node::{FlatNode, Stack, optimize_flat_node},
+    flat_node::{optimize_flat_node, FlatNode, Stack},
     function::Function,
     interface::*,
     operator::Operator,

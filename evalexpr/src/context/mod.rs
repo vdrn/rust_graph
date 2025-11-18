@@ -4,284 +4,16 @@
 //! This crate implements two basic variants, the `EmptyContext`, that returns `None` for each identifier and cannot be manipulated, and the `HashMapContext`, that stores its mappings in hash maps.
 //! The HashMapContext is type-safe and returns an error if the user tries to assign a value of a different type than before to an identifier.
 
-use std::{iter, marker::PhantomData};
-
 use crate::{
     error::EvalexprResultValue,
-    EvalexprFloat,
     function::Function,
     value::{
-        numeric_types::{default_numeric_types::DefaultNumericTypes },
-        value_type::ValueType,
-        Value,
+        numeric_types::default_numeric_types::DefaultNumericTypes, value_type::ValueType, Value,
     },
-    EvalexprError, EvalexprResult, IStr, IStrMap, Stack,
+    EvalexprError, EvalexprFloat, EvalexprResult, IStr, IStrMap, Stack,
 };
 
-mod predefined;
-
-pub(crate) trait UncheckedCallFunction<NumericTypes: EvalexprFloat> {
-    fn unchecked_call_function(
-        &self,
-        stack: &mut Stack<NumericTypes>,
-        identifier: IStr,
-    ) -> EvalexprResultValue<NumericTypes>;
-}
-/// An immutable context.
-#[allow(private_bounds)]
-pub trait Context: UncheckedCallFunction<Self::NumericTypes> {
-    /// The numeric types used for evaluation.
-    type NumericTypes: EvalexprFloat;
-
-    /// Returns the value that is linked to the given identifier.
-    fn get_value(&self, identifier: IStr) -> Option<&Value<Self::NumericTypes>>;
-
-    /// Calls the function that is linked to the given identifier with the given argument.
-    /// If no function with the given identifier is found, this method returns `EvalexprError::FunctionIdentifierNotFound`.
-    fn call_function(
-        &self,
-        stack: &mut Stack<Self::NumericTypes>,
-        context: &Self,
-        identifier: IStr,
-        argument: &[Value<Self::NumericTypes>],
-    ) -> EvalexprResultValue<Self::NumericTypes>;
-
-    /// Checks if builtin functions are disabled.
-    fn are_builtin_functions_disabled(&self) -> bool;
-
-    /// Disables builtin functions if `disabled` is `true`, and enables them otherwise.
-    /// If the context does not support enabling or disabling builtin functions, an error is returned.
-    fn set_builtin_functions_disabled(
-        &mut self,
-        disabled: bool,
-    ) -> EvalexprResult<(), Self::NumericTypes>;
-}
-
-/// A context that allows to assign to variables.
-pub trait ContextWithMutableVariables: Context {
-    /// Sets the variable with the given identifier to the given value.
-    fn set_value(
-        &mut self,
-        _identifier: IStr,
-        _value: Value<Self::NumericTypes>,
-    ) -> EvalexprResult<(), Self::NumericTypes> {
-        Err(EvalexprError::ContextNotMutable)
-    }
-
-    /// Removes the variable with the given identifier from the context.
-    fn remove_value(
-        &mut self,
-        _identifier: IStr,
-    ) -> EvalexprResult<Option<Value<Self::NumericTypes>>, Self::NumericTypes> {
-        Err(EvalexprError::ContextNotMutable)
-    }
-}
-
-/// A context that allows to assign to function identifiers.
-pub trait ContextWithMutableFunctions: Context {
-    /// Sets the function with the given identifier to the given function.
-    fn set_function(
-        &mut self,
-        _identifier: IStr,
-        _function: Function<Self::NumericTypes, Self>,
-    ) -> EvalexprResult<(), Self::NumericTypes>
-    where
-        Self: Sized,
-    {
-        Err(EvalexprError::ContextNotMutable)
-    }
-}
-
-/// A context that allows to iterate over its variable names with their values.
-pub trait IterateVariablesContext: Context {
-    /// The iterator type for iterating over variable name-value pairs.
-    type VariableIterator<'a>: Iterator<Item = (IStr, Value<Self::NumericTypes>)>
-    where
-        Self: 'a;
-    /// The iterator type for iterating over variable names.
-    type VariableNameIterator<'a>: Iterator<Item = IStr>
-    where
-        Self: 'a;
-
-    /// Returns an iterator over pairs of variable names and values.
-    fn iter_variables(&self) -> Self::VariableIterator<'_>;
-
-    /// Returns an iterator over variable names.
-    fn iter_variable_names(&self) -> Self::VariableNameIterator<'_>;
-}
-
-/*/// A context that allows to retrieve functions programmatically.
-pub trait GetFunctionContext: Context {
-    /// Returns the function that is linked to the given identifier.
-    ///
-    /// This might not be possible for all functions, as some might be hard-coded.
-    /// In this case, a special error variant should be returned (Not yet implemented).
-    fn get_function(&self, identifier: &str) -> Option<&Function>;
-}*/
-
-/// A context that returns `None` for each identifier.
-/// Builtin functions are disabled and cannot be enabled.
-#[derive(Debug)]
-pub struct EmptyContext<NumericTypes>(PhantomData<NumericTypes>);
-
-impl<NumericTypes: EvalexprFloat> UncheckedCallFunction<NumericTypes>
-    for EmptyContext<NumericTypes>
-{
-    fn unchecked_call_function(
-        &self,
-        _stack: &mut Stack<NumericTypes>,
-        _identifier: IStr,
-    ) -> EvalexprResultValue<NumericTypes> {
-        Err(EvalexprError::FunctionIdentifierNotFound(
-            "EmptyContext".to_string(),
-        ))
-    }
-}
-impl<NumericTypes: EvalexprFloat> Context for EmptyContext<NumericTypes> {
-    type NumericTypes = NumericTypes;
-
-    fn get_value(&self, _identifier: IStr) -> Option<&Value<Self::NumericTypes>> {
-        None
-    }
-
-    fn call_function(
-        &self,
-        _stack: &mut Stack<Self::NumericTypes>,
-        _context: &Self,
-        identifier: IStr,
-        _argument: &[Value<Self::NumericTypes>],
-    ) -> EvalexprResultValue<Self::NumericTypes> {
-        Err(EvalexprError::FunctionIdentifierNotFound(
-            identifier.to_string(),
-        ))
-    }
-
-    /// Builtin functions are always disabled for `EmptyContext`.
-    fn are_builtin_functions_disabled(&self) -> bool {
-        true
-    }
-
-    /// Builtin functions can't be enabled for `EmptyContext`.
-    fn set_builtin_functions_disabled(
-        &mut self,
-        disabled: bool,
-    ) -> EvalexprResult<(), Self::NumericTypes> {
-        if disabled {
-            Ok(())
-        } else {
-            Err(EvalexprError::BuiltinFunctionsCannotBeEnabled)
-        }
-    }
-}
-
-impl<NumericTypes: EvalexprFloat> IterateVariablesContext for EmptyContext<NumericTypes> {
-    type VariableIterator<'a>
-        = iter::Empty<(IStr, Value<Self::NumericTypes>)>
-    where
-        Self: 'a;
-    type VariableNameIterator<'a>
-        = iter::Empty<IStr>
-    where
-        Self: 'a;
-
-    fn iter_variables(&self) -> Self::VariableIterator<'_> {
-        iter::empty()
-    }
-
-    fn iter_variable_names(&self) -> Self::VariableNameIterator<'_> {
-        iter::empty()
-    }
-}
-
-impl<NumericTypes> Default for EmptyContext<NumericTypes> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-impl<NumericTypes: EvalexprFloat> UncheckedCallFunction<NumericTypes>
-    for EmptyContextWithBuiltinFunctions<NumericTypes>
-{
-    fn unchecked_call_function(
-        &self,
-        _stack: &mut Stack<NumericTypes>,
-        _identifier: IStr,
-    ) -> EvalexprResultValue<NumericTypes> {
-        Err(EvalexprError::FunctionIdentifierNotFound(
-            "EmptyContextWithBuiltinFunctions".to_string(),
-        ))
-    }
-}
-
-/// A context that returns `None` for each identifier.
-/// Builtin functions are enabled and cannot be disabled.
-#[derive(Debug)]
-pub struct EmptyContextWithBuiltinFunctions<NumericTypes>(PhantomData<NumericTypes>);
-
-impl<NumericTypes: EvalexprFloat> Context
-    for EmptyContextWithBuiltinFunctions<NumericTypes>
-{
-    type NumericTypes = NumericTypes;
-
-    fn get_value(&self, _identifier: IStr) -> Option<&Value<Self::NumericTypes>> {
-        None
-    }
-
-    fn call_function(
-        &self,
-        _stack: &mut Stack<Self::NumericTypes>,
-        _context: &Self,
-        identifier: IStr,
-        _argument: &[Value<Self::NumericTypes>],
-    ) -> EvalexprResultValue<Self::NumericTypes> {
-        Err(EvalexprError::FunctionIdentifierNotFound(
-            identifier.to_string(),
-        ))
-    }
-
-    /// Builtin functions are always enabled for EmptyContextWithBuiltinFunctions.
-    fn are_builtin_functions_disabled(&self) -> bool {
-        false
-    }
-
-    /// Builtin functions can't be disabled for EmptyContextWithBuiltinFunctions.
-    fn set_builtin_functions_disabled(
-        &mut self,
-        disabled: bool,
-    ) -> EvalexprResult<(), Self::NumericTypes> {
-        if disabled {
-            Err(EvalexprError::BuiltinFunctionsCannotBeDisabled)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl<NumericTypes: EvalexprFloat> IterateVariablesContext
-    for EmptyContextWithBuiltinFunctions<NumericTypes>
-{
-    type VariableIterator<'a>
-        = iter::Empty<(IStr, Value<Self::NumericTypes>)>
-    where
-        Self: 'a;
-    type VariableNameIterator<'a>
-        = iter::Empty<IStr>
-    where
-        Self: 'a;
-
-    fn iter_variables(&self) -> Self::VariableIterator<'_> {
-        iter::empty()
-    }
-
-    fn iter_variable_names(&self) -> Self::VariableNameIterator<'_> {
-        iter::empty()
-    }
-}
-
-impl<NumericTypes> Default for EmptyContextWithBuiltinFunctions<NumericTypes> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
+//mod predefined;
 
 /// A context that stores its mappings in hash maps.
 ///
@@ -290,16 +22,13 @@ impl<NumericTypes> Default for EmptyContextWithBuiltinFunctions<NumericTypes> {
 /// This context is type-safe, meaning that an identifier that is assigned a value of some type once cannot be assigned a value of another type.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct HashMapContext<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
-    pub(crate ) variables: IStrMap<Value<NumericTypes>>,
+pub struct HashMapContext<F: EvalexprFloat = DefaultNumericTypes> {
+    pub(crate) variables: IStrMap<Value<F>>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate ) functions: IStrMap<Function<NumericTypes, HashMapContext<NumericTypes>>>,
-
-    /// True if builtin functions are disabled.
-    without_builtin_functions: bool,
+    pub(crate) functions: IStrMap<Function<F>>,
 }
 
-impl<NumericTypes: EvalexprFloat> HashMapContext<NumericTypes> {
+impl<F: EvalexprFloat> HashMapContext<F> {
     /// Constructs a `HashMapContext` with no mappings.
     pub fn new() -> Self {
         Default::default()
@@ -347,15 +76,12 @@ impl<NumericTypes: EvalexprFloat> HashMapContext<NumericTypes> {
         self.clear_variables();
         self.clear_functions();
     }
-}
-impl<NumericTypes: EvalexprFloat> UncheckedCallFunction<NumericTypes>
-    for HashMapContext<NumericTypes>
-{
-    fn unchecked_call_function(
+
+    pub(crate) fn unchecked_call_function(
         &self,
-        stack: &mut Stack<NumericTypes>,
+        stack: &mut Stack<F>,
         identifier: IStr,
-    ) -> EvalexprResultValue<NumericTypes> {
+    ) -> EvalexprResultValue<F> {
         if let Some(function) = self.functions.get(&identifier) {
             stack.function_called()?;
             let value = function.call(stack, self);
@@ -367,22 +93,21 @@ impl<NumericTypes: EvalexprFloat> UncheckedCallFunction<NumericTypes>
             ))
         }
     }
-}
 
-impl<NumericTypes: EvalexprFloat> Context for HashMapContext<NumericTypes> {
-    type NumericTypes = NumericTypes;
-
-    fn get_value(&self, identifier: IStr) -> Option<&Value<Self::NumericTypes>> {
+    /// Returns the value that is linked to the given identifier.
+    pub fn get_value(&self, identifier: IStr) -> Option<&Value<F>> {
         self.variables.get(&identifier)
     }
 
-    fn call_function(
+    /// Calls the function that is linked to the given identifier with the given argument.
+    /// If no function with the given identifier is found, this method returns `EvalexprError::FunctionIdentifierNotFound`.
+    pub fn call_function(
         &self,
-        stack: &mut Stack<Self::NumericTypes>,
+        stack: &mut Stack<F>,
         context: &Self,
         identifier: IStr,
-        argument: &[Value<Self::NumericTypes>],
-    ) -> EvalexprResultValue<Self::NumericTypes> {
+        argument: &[Value<F>],
+    ) -> EvalexprResultValue<F> {
         if let Some(function) = self.functions.get(&identifier) {
             stack.push_args(argument);
             stack.function_called()?;
@@ -397,27 +122,8 @@ impl<NumericTypes: EvalexprFloat> Context for HashMapContext<NumericTypes> {
         }
     }
 
-    fn are_builtin_functions_disabled(&self) -> bool {
-        self.without_builtin_functions
-    }
-
-    fn set_builtin_functions_disabled(
-        &mut self,
-        disabled: bool,
-    ) -> EvalexprResult<(), NumericTypes> {
-        self.without_builtin_functions = disabled;
-        Ok(())
-    }
-}
-
-impl<NumericTypes: EvalexprFloat> ContextWithMutableVariables
-    for HashMapContext<NumericTypes>
-{
-    fn set_value(
-        &mut self,
-        identifier: IStr,
-        value: Value<Self::NumericTypes>,
-    ) -> EvalexprResult<(), NumericTypes> {
+    /// Sets the variable with the given identifier to the given value.
+    pub fn set_value(&mut self, identifier: IStr, value: Value<F>) -> EvalexprResult<(), F> {
         if let Some(existing_value) = self.variables.get_mut(&identifier) {
             if ValueType::from(&existing_value) == ValueType::from(&value) {
                 *existing_value = value;
@@ -432,48 +138,28 @@ impl<NumericTypes: EvalexprFloat> ContextWithMutableVariables
         Ok(())
     }
 
-    fn remove_value(
-        &mut self,
-        identifier: IStr,
-    ) -> EvalexprResult<Option<Value<Self::NumericTypes>>, Self::NumericTypes> {
+    /// Removes the variable with the given identifier from the context.
+    pub fn remove_value(&mut self, identifier: IStr) -> EvalexprResult<Option<Value<F>>, F> {
         // Removes a value from the `self.variables`, returning the value at the key if the key was previously in the map.
         Ok(self.variables.remove(&identifier))
     }
-}
-
-impl<NumericTypes: EvalexprFloat> ContextWithMutableFunctions
-    for HashMapContext<NumericTypes>
-{
-    fn set_function(
+    /// Sets the function with the given identifier to the given function.
+    pub fn set_function(
         &mut self,
         identifier: IStr,
-        function: Function<NumericTypes, Self>,
-    ) -> EvalexprResult<(), Self::NumericTypes> {
+        function: Function<F>,
+    ) -> EvalexprResult<(), F> {
         self.functions.insert(identifier, function);
         Ok(())
     }
-}
 
-impl<NumericTypes: EvalexprFloat> IterateVariablesContext for HashMapContext<NumericTypes> {
-    type VariableIterator<'a>
-        = std::iter::Map<
-        std::collections::hash_map::Iter<'a, IStr, Value<NumericTypes>>,
-        fn((&IStr, &Value<NumericTypes>)) -> (IStr, Value<NumericTypes>),
-    >
-    where
-        Self: 'a;
-    type VariableNameIterator<'a>
-        = std::iter::Cloned<std::collections::hash_map::Keys<'a, IStr, Value<NumericTypes>>>
-    where
-        Self: 'a;
-
-    fn iter_variables(&self) -> Self::VariableIterator<'_> {
-        self.variables
-            .iter()
-            .map(|(string, value)| (*string, value.clone()))
+    /// Returns an iterator over pairs of variable names and values.
+    pub fn iter_variables(&self) -> impl Iterator<Item = (&IStr, &Value<F>)> {
+        self.variables.iter()
     }
 
-    fn iter_variable_names(&self) -> Self::VariableNameIterator<'_> {
+    /// Returns an iterator over variable names.
+    pub fn iter_variable_names(&self) -> impl Iterator<Item = IStr> + '_ {
         self.variables.keys().cloned()
     }
 }
@@ -483,7 +169,6 @@ impl<NumericTypes: EvalexprFloat> Default for HashMapContext<NumericTypes> {
         Self {
             variables: Default::default(),
             functions: Default::default(),
-            without_builtin_functions: false,
         }
     }
 }
@@ -518,7 +203,7 @@ macro_rules! context_map {
 
     // The user has to specify a literal 'Function::new' in order to create a function
     ( ($ctx:expr) $k:expr => Function::new($($v:tt)*) , $($tt:tt)*) => {{
-        $crate::ContextWithMutableFunctions::set_function($ctx, $k.into(), $crate::Function::new($($v)*))
+        $crate::HashMapContext::set_function($ctx, $k.into(), $crate::Function::new($($v)*))
             .and($crate::context_map!(($ctx) $($tt)*))
     }};
     // // add an integer value, and chain the eventual error with the ones in the next values
@@ -528,12 +213,12 @@ macro_rules! context_map {
     // }};
     // add a float value, and chain the eventual error with the ones in the next values
     ( ($ctx:expr) $k:expr => float $v:expr , $($tt:tt)*) => {{
-        $crate::ContextWithMutableVariables::set_value($ctx, $crate::istr($k), $crate::Value::from_float($v.into()))
+        $crate::HashMapContext::set_value($ctx, $crate::istr($k), $crate::Value::from_float($v.into()))
             .and($crate::context_map!(($ctx) $($tt)*))
     }};
     // add a value, and chain the eventual error with the ones in the next values
     ( ($ctx:expr) $k:expr => $v:expr , $($tt:tt)*) => {{
-        $crate::ContextWithMutableVariables::set_value($ctx, $k.into(), $v.into())
+        $crate::HashMapContext::set_value($ctx, $k.into(), $v.into())
             .and($crate::context_map!(($ctx) $($tt)*))
     }};
 

@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	ContextWithMutableFunctions, ContextWithMutableVariables, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
+	EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};

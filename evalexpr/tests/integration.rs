@@ -1503,47 +1503,7 @@ fn test_type_errors_in_binary_operators() {
     // );
 }
 
-#[test]
-fn test_empty_context() {
-    let mut context = EmptyContext::<DefaultNumericTypes>::default();
-    let mut stack = Stack::new();
-    assert_eq!(context.get_value(istr("abc")), None);
-    assert_eq!(
-        context.call_function(&mut stack, &context, istr("abc"), &[Value::Empty]),
-        Err(EvalexprError::FunctionIdentifierNotFound("abc".to_owned()))
-    );
-    assert_eq!(
-        eval_with_context("max(1,3)", &context),
-        Err(EvalexprError::FunctionIdentifierNotFound(String::from(
-            "max"
-        )))
-    );
-    assert_eq!(context.set_builtin_functions_disabled(true), Ok(()));
-    assert_eq!(
-        context.set_builtin_functions_disabled(false),
-        Err(EvalexprError::BuiltinFunctionsCannotBeEnabled)
-    )
-}
 
-#[test]
-fn test_empty_context_with_builtin_functions() {
-    let mut context = EmptyContextWithBuiltinFunctions::<DefaultNumericTypes>::default();
-    assert_eq!(context.get_value(istr("abc")), None);
-    let mut stack = Stack::new();
-    assert_eq!(
-        context.call_function(&mut stack, &context, istr("abc"), &[Value::Empty]),
-        Err(EvalexprError::FunctionIdentifierNotFound("abc".to_owned()))
-    );
-    assert_eq!(
-        eval_with_context("max(1,3)", &context),
-        Ok(Value::Float(3.0))
-    );
-    assert_eq!(context.set_builtin_functions_disabled(false), Ok(()));
-    assert_eq!(
-        context.set_builtin_functions_disabled(true),
-        Err(EvalexprError::BuiltinFunctionsCannotBeDisabled)
-    );
-}
 
 #[test]
 fn test_hashmap_context_type_safety() {
@@ -2149,8 +2109,8 @@ fn test_variable_assignment_and_iteration() {
     assert_eq!(
         variables,
         vec![
-            (istr("a"), Value::from_float(5.0)),
-            (istr("b"), Value::from_float(5.0))
+            (&istr("a"), &Value::from_float(5.0)),
+            (&istr("b"), &Value::from_float(5.0))
         ],
     );
 
@@ -2175,14 +2135,12 @@ fn test_negative_power() {
 
 #[test]
 fn test_builtin_functions_context() {
-    let mut context = HashMapContext::<DefaultNumericTypes>::new();
+    let context = HashMapContext::<DefaultNumericTypes>::new();
     // Builtin functions are enabled by default for HashMapContext.
     assert_eq!(
         eval_with_context("max(1,3)", &context),
         Ok(Value::from_float(3.0))
     );
-    // Disabling builtin function in Context.
-    context.set_builtin_functions_disabled(true).unwrap();
     // Builtin functions are disabled and using them returns an error.
     assert_eq!(
         eval_with_context("max(1,3)", &context),
@@ -2290,42 +2248,6 @@ fn test_clear() {
     assert!(eval_with_context("abc(5)", &context).is_err());
 }
 
-#[test]
-fn test_iter_empty_contexts() {
-    assert_eq!(
-        EmptyContext::<DefaultNumericTypes>::default()
-            .iter_variables()
-            .next(),
-        None
-    );
-    assert_eq!(
-        EmptyContext::<DefaultNumericTypes>::default()
-            .iter_variable_names()
-            .next(),
-        None
-    );
-    assert_eq!(
-        EmptyContextWithBuiltinFunctions::<DefaultNumericTypes>::default()
-            .iter_variables()
-            .next(),
-        None
-    );
-    assert_eq!(
-        EmptyContextWithBuiltinFunctions::<DefaultNumericTypes>::default()
-            .iter_variable_names()
-            .next(),
-        None
-    );
-}
-
-#[test]
-fn test_empty_context_builtin_functions() {
-    assert!(EmptyContext::<DefaultNumericTypes>::default().are_builtin_functions_disabled());
-    assert!(
-        !EmptyContextWithBuiltinFunctions::<DefaultNumericTypes>::default()
-            .are_builtin_functions_disabled()
-    );
-}
 
 #[test]
 fn test_compare_different_numeric_types() {

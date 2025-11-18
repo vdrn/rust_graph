@@ -2,13 +2,13 @@
 use regex::Regex;
 
 use crate::{
-    error::expect_function_argument_amount, value::numeric_types::EvalexprFloat, Context,
+    error::expect_function_argument_amount, value::numeric_types::EvalexprFloat, 
     EvalexprError, Function, Value, ValueType,
 };
 
-fn float_is<NumericTypes: EvalexprFloat, C: Context<NumericTypes = NumericTypes>>(
-    func: fn(&NumericTypes) -> bool,
-) -> Option<Function<NumericTypes, C>> {
+fn float_is<F: EvalexprFloat>(
+    func: fn(&F) -> bool,
+) -> Option<Function<F>> {
     Some(Function::new(move |s, _c| {
         Ok(func(
             &s.get_arg(0)
@@ -19,14 +19,14 @@ fn float_is<NumericTypes: EvalexprFloat, C: Context<NumericTypes = NumericTypes>
     }))
 }
 
-pub fn builtin_function<NumericTypes: EvalexprFloat, C: Context<NumericTypes = NumericTypes>>(
+pub fn builtin_function<F: EvalexprFloat>(
     identifier: &str,
-) -> Option<Function<NumericTypes, C>> {
+) -> Option<Function<F>> {
     match identifier {
-        "is_nan" => float_is(NumericTypes::is_nan),
-        "is_finite" => float_is(NumericTypes::is_finite),
-        "is_infinite" => float_is(NumericTypes::is_infinite),
-        "is_normal" => float_is(NumericTypes::is_normal),
+        "is_nan" => float_is(F::is_nan),
+        "is_finite" => float_is(F::is_finite),
+        "is_infinite" => float_is(F::is_infinite),
+        "is_normal" => float_is(F::is_normal),
         "if" => Some(Function::new(|s, _c| {
             expect_function_argument_amount(s.num_args(), 3)?;
             let result_index = if s.get_arg(0).unwrap().as_boolean()? {
@@ -93,12 +93,12 @@ pub fn builtin_function<NumericTypes: EvalexprFloat, C: Context<NumericTypes = N
         "len" => Some(Function::new(|s, _c| {
             expect_function_argument_amount(s.num_args(), 1)?;
             // if let Ok(subject) = arguments[0].as_str() {
-            //     Ok(Value::Float(NumericTypes::int_as_float(
-            //         &NumericTypes::Int::from_usize(subject.len())?,
+            //     Ok(Value::Float(F::int_as_float(
+            //         &F::Int::from_usize(subject.len())?,
             //     )))
             // } else
             if let Ok(subject) = s.get_arg(0).unwrap().as_tuple_ref() {
-                Ok(Value::Float(NumericTypes::from_usize(subject.len())))
+                Ok(Value::Float(F::from_usize(subject.len())))
             } else {
                 Err(EvalexprError::type_error(
                     s.get_arg(0).unwrap().clone(),
@@ -109,7 +109,7 @@ pub fn builtin_function<NumericTypes: EvalexprFloat, C: Context<NumericTypes = N
         #[cfg(feature = "rand")]
         "random" => Some(Function::new(|argument| {
             argument.as_empty()?;
-            Ok(Value::Float(NumericTypes::Float::random()?))
+            Ok(Value::Float(F::Float::random()?))
         })),
         // Bitwise operators
         // "bitand" => int_function!(bitand, 2),

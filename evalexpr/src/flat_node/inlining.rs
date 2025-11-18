@@ -5,8 +5,7 @@ use crate::{
         eval::{eval_range, eval_range_with_step},
         FlatOperator,
     },
-    Context, ContextWithMutableVariables, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext,
-    Value,
+    EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value,
 };
 
 /// Inlines variables and folds the expression tree
@@ -589,6 +588,7 @@ fn get_last_3_if_const_as_float<F: EvalexprFloat>(
 
     Ok(None)
 }
+#[allow(clippy::type_complexity)]
 fn get_last_2_if_const<F: EvalexprFloat>(
     ops: &[FlatOperator<F>],
 ) -> EvalexprResult<Option<(Value<F>, Value<F>)>, F> {
@@ -602,6 +602,7 @@ fn get_last_2_if_const<F: EvalexprFloat>(
 
     Ok(None)
 }
+#[allow(clippy::type_complexity)]
 fn get_last_3_if_const<F: EvalexprFloat>(
     ops: &[FlatOperator<F>],
 ) -> EvalexprResult<Option<(Value<F>, Value<F>, Value<F>)>, F> {
