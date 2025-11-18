@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, Function, HashMapContext, IStr, Stack, Value, istr
+	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, RustFunction, Stack, Value, istr
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1246,7 +1246,7 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 							)
 							.dragged()
 						{
-               entry.visible = false;
+							entry.visible = false;
 							// *value = f64_to_float::<T>(v);
 							// result.animating = true;
 						}
@@ -1425,7 +1425,7 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 				match ty {
 					FunctionType::X => {
 						let expr_function = ExpressionFunction::new(inlined_node, vec![istr("x")]);
-            // println!("expr_function: {:#?}", expr_function);
+						// println!("expr_function: {:#?}", expr_function);
 
 						if !entry.name.trim().is_empty() {
 							ctx.set_expression_function(istr(entry.name.trim()), expr_function.clone());
@@ -1438,7 +1438,7 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 					_ => {},
 				}
 				if !entry.name.trim().is_empty() {
-					let fun = Function::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
+					let fun = RustFunction::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
 						let res = match ty {
 							FunctionType::X => {
 								unreachable!()
@@ -1523,7 +1523,7 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 						res
 					});
 
-					ctx.set_function(istr(&entry.name.trim()), fun);
+					ctx.set_function(istr(entry.name.trim()), fun);
 				}
 			}
 		},
@@ -2050,18 +2050,11 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
 						} else {
 							// let mut prev_y = None;
-							let mut prev_first_derivative = 0.0;
 							let mut discontinuity_detector =
 								DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
 
 							while sampling_x < plot_params.last_x {
 								match expr_func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_x)]) {
-									// eval_with_context_and_x(
-									// func_node,
-									// &mut stack,
-									// ctx,
-									// reserved_vars,
-									// f64_to_float::<T>(sampling_x),)
 									Ok(Value::Float(y)) => {
 										let y = y.to_f64();
 
@@ -2074,13 +2067,6 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 													|x| {
 														expr_func
 															.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-															// eval_float_with_context_and_x(
-															// 	func_node,
-															// 	&mut stack,
-															// 	ctx,
-															// 	reserved_vars,
-															// 	f64_to_float::<T>(x),
-															// )
 															.and_then(|y| y.as_float())
 															.map(|y| y.to_f64())
 															.ok()

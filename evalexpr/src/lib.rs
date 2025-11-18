@@ -572,14 +572,13 @@
 #![feature(vec_into_raw_parts)]
 
 pub use crate::{
-    context::{ExpressionFunction, HashMapContext},
+    context::HashMapContext,
     error::{EvalexprError, EvalexprResult},
     flat_node::{optimize_flat_node, FlatNode, Stack},
-    function::Function,
+    function::{expression_function::ExpressionFunction, rust_function::RustFunction},
     interface::*,
-    operator::Operator,
     token::PartialToken,
-    tree::Node,
+    tree::{Node, Operator},
     value::{
         numeric_types::{
             default_numeric_types::DefaultNumericTypes, f32_numeric_types::F32NumericTypes,
@@ -605,7 +604,6 @@ mod feature_serde;
 mod flat_node;
 mod function;
 mod interface;
-mod operator;
 mod token;
 mod tree;
 mod value;

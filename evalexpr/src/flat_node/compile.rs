@@ -1,5 +1,7 @@
 use crate::{
-    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value, error::{expect_function_argument_amount, expect_operator_argument_amount}, flat_node::FlatOperator
+    error::{expect_function_argument_amount, expect_operator_argument_amount},
+    flat_node::FlatOperator,
+    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value,
 };
 /// Helper function to extract exactly one child node
 fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<Node<F>, F> {
@@ -42,10 +44,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
     node: Node<F>,
     ops: &mut Vec<FlatOperator<F>>,
 ) -> EvalexprResult<(), F> {
-    use Operator::*;
-
     match node.operator {
-        RootNode => {
+        Operator::RootNode => {
             if node.children.len() > 1 {
                 return Err(EvalexprError::wrong_operator_argument_amount(
                     node.children.len(),
@@ -64,18 +64,18 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Binary operators - compile left child, right child, then operation
-        Add => {
+        Operator::Add => {
             let [a, b] = extract_two_nodes(node.children)?;
 
             // a + (b1 * b2) or (a1 * a2) + b
             let FusingReturn::DidNotFuse(a, b) =
-                fuse_comutative(ops, a, b, Mul, FlatOperator::MulAdd)?
+                fuse_comutative(ops, a, b, Operator::Mul, FlatOperator::MulAdd)?
             else {
                 return Ok(());
             };
             // a + (b1 / b2) or (a1 / a2) + b
             let FusingReturn::DidNotFuse(a, b) =
-                fuse_comutative(ops, a, b, Div, FlatOperator::DivAdd)?
+                fuse_comutative(ops, a, b, Operator::Div, FlatOperator::DivAdd)?
             else {
                 return Ok(());
             };
@@ -93,19 +93,21 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Add, FlatOperator::Add, |n| FlatOperator::AddN {
+            nary_op(ops, a, b, Operator::Add, FlatOperator::Add, |n| FlatOperator::AddN {
                 n,
             })?;
         },
-        Sub => {
+        Operator::Sub => {
             let [a, b] = extract_two_nodes(node.children)?;
             // (a1 * a2) - b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Mul, FlatOperator::MulSub)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Mul, FlatOperator::MulSub)?
             else {
                 return Ok(());
             };
             // (a1 / a2) - b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Div, FlatOperator::DivSub)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Div, FlatOperator::DivSub)?
             else {
                 return Ok(());
             };
@@ -123,28 +125,29 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Sub, FlatOperator::Sub, |n| FlatOperator::SubN {
+            nary_op(ops, a, b, Operator::Sub, FlatOperator::Sub, |n| FlatOperator::SubN {
                 n,
             })?;
         },
-        Mul => {
+        Operator::Mul => {
             let [a, b] = extract_two_nodes(node.children)?;
 
             //  (a1 + a2) * b  or a * (b1 + b2)
             let FusingReturn::DidNotFuse(a, b) =
-                fuse_comutative(ops, a, b, Add, FlatOperator::AddMul)?
+                fuse_comutative(ops, a, b, Operator::Add, FlatOperator::AddMul)?
             else {
                 return Ok(());
             };
             //  (a1 - a2) * b  or a * (b1 - b2)
             let FusingReturn::DidNotFuse(a, b) =
-                fuse_comutative(ops, a, b, Sub, FlatOperator::SubMul)?
+                fuse_comutative(ops, a, b, Operator::Sub, FlatOperator::SubMul)?
             else {
                 return Ok(());
             };
 
             // DivMul: (a1 / a2) * b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Div, FlatOperator::DivMul)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Div, FlatOperator::DivMul)?
             else {
                 return Ok(());
             };
@@ -162,26 +165,29 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Mul, FlatOperator::Mul, |n| FlatOperator::MulN {
+            nary_op(ops, a, b, Operator::Mul, FlatOperator::Mul, |n| FlatOperator::MulN {
                 n,
             })?;
         },
-        Div => {
+        Operator::Div => {
             let [a, b] = extract_two_nodes(node.children)?;
 
             //  (a1 + a2) / b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Add, FlatOperator::AddDiv)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Add, FlatOperator::AddDiv)?
             else {
                 return Ok(());
             };
             //  (a1 - a2) / b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Sub, FlatOperator::SubDiv)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Sub, FlatOperator::SubDiv)?
             else {
                 return Ok(());
             };
 
             // MulDiv: (a1 * a2) / b
-            let FusingReturn::DidNotFuse(a, b) = fuse_left(ops, a, b, Mul, FlatOperator::MulDiv)?
+            let FusingReturn::DidNotFuse(a, b) =
+                fuse_left(ops, a, b, Operator::Mul, FlatOperator::MulDiv)?
             else {
                 return Ok(());
             };
@@ -199,11 +205,11 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Div, FlatOperator::Div, |n| FlatOperator::DivN {
+            nary_op(ops, a, b, Operator::Div, FlatOperator::Div, |n| FlatOperator::DivN {
                 n,
             })?;
         },
-        Mod => {
+        Operator::Mod => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             if let Some(c) = extract_const_float(&b)? {
@@ -215,7 +221,7 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
             // compile_to_flat_inner(b, ops)?;
             // ops.push(FlatOperator::Mod);
         },
-        Exp => {
+        Operator::Exp => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             if let Some(c) = extract_const_float(&b)? {
@@ -236,7 +242,7 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Unary operators
-        Neg => {
+        Operator::Neg => {
             let child = extract_one_node(node.children)?;
             if let Operator::Const { value } = &child.operator {
                 let val = value.as_float()?;
@@ -250,49 +256,49 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 ops.push(FlatOperator::Neg);
             }
         },
-        Not => {
+        Operator::Not => {
             let child = extract_one_node(node.children)?;
             compile_to_flat_inner(child, ops)?;
             ops.push(FlatOperator::Not);
         },
-        Factorial => {
+        Operator::Factorial => {
             let child = extract_one_node(node.children)?;
             compile_to_flat_inner(child, ops)?;
             ops.push(FlatOperator::Factorial);
         },
 
         // Comparison operators
-        Eq => {
+        Operator::Eq => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::Eq);
         },
-        Neq => {
+        Operator::Neq => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::Neq);
         },
-        Gt => {
+        Operator::Gt => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::Gt);
         },
-        Lt => {
+        Operator::Lt => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::Lt);
         },
-        Geq => {
+        Operator::Geq => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::Geq);
         },
-        Leq => {
+        Operator::Leq => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
@@ -300,13 +306,13 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Logical operators
-        And => {
+        Operator::And => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
             ops.push(FlatOperator::And);
         },
-        Or => {
+        Operator::Or => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
@@ -314,55 +320,55 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Assignment operators
-        Assign => {
+        Operator::Assign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?; // Value first
             compile_to_flat_inner(a, ops)?; // Variable second (should emit WriteVar)
             ops.push(FlatOperator::Assign);
         },
-        AddAssign => {
+        Operator::AddAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::AddAssign);
         },
-        SubAssign => {
+        Operator::SubAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::SubAssign);
         },
-        MulAssign => {
+        Operator::MulAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::MulAssign);
         },
-        DivAssign => {
+        Operator::DivAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::DivAssign);
         },
-        ModAssign => {
+        Operator::ModAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::ModAssign);
         },
-        ExpAssign => {
+        Operator::ExpAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::ExpAssign);
         },
-        AndAssign => {
+        Operator::AndAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
             ops.push(FlatOperator::AndAssign);
         },
-        OrAssign => {
+        Operator::OrAssign => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(b, ops)?;
             compile_to_flat_inner(a, ops)?;
@@ -370,21 +376,21 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Variable-length operators
-        Tuple => {
+        Operator::Tuple => {
             let len = into_u32(node.children.len())?;
             for child in node.children {
                 compile_to_flat_inner(child, ops)?;
             }
             ops.push(FlatOperator::Tuple { len });
         },
-        Chain => {
+        Operator::Chain => {
             let len = into_u32(node.children.len())?;
             for child in node.children {
                 compile_to_flat_inner(child, ops)?;
             }
             ops.push(FlatOperator::Chain { len });
         },
-        Range => {
+        Operator::Range => {
             let [a, b] = extract_two_nodes(node.children)?;
             compile_to_flat_inner(a, ops)?;
             compile_to_flat_inner(b, ops)?;
@@ -392,16 +398,16 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
         },
 
         // Leaf nodes
-        Const { value } => {
+        Operator::Const { value } => {
             ops.push(FlatOperator::PushConst { value });
         },
-        VariableIdentifierRead { identifier } => {
+        Operator::VariableIdentifierRead { identifier } => {
             ops.push(FlatOperator::ReadVar { identifier });
         },
-        VariableIdentifierWrite { identifier } => {
+        Operator::VariableIdentifierWrite { identifier } => {
             ops.push(FlatOperator::WriteVar { identifier });
         },
-        FunctionIdentifier { identifier } => {
+        Operator::FunctionIdentifier { identifier } => {
             let CompileNativeResult::NotNative(node) =
                 compile_special_function(ops, identifier, node)?
             else {

@@ -405,7 +405,7 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
                     third: Option<PartialToken<F>>,
                 ) -> Option<(Token<F>, usize)> {
                     let mut result = None;
-                    if let Ok(number) = parse_dec_or_hex::<F>(&literal) {
+                    if let Ok(number) = parse_dec_or_hex::<F>(literal) {
                         result = Some((Token::Int(number), 1));
                     } else if let Ok(number) = literal.parse::<F>() {
                         result = Some((Token::Float(number), 1));
@@ -430,7 +430,7 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
                             _ => {},
                         }
                     }
-                    return result;
+                    result
                 }
 
                 if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, second, third) {

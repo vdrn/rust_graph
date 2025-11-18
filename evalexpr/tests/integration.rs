@@ -1,6 +1,6 @@
 #![cfg(not(tarpaulin_include))]
 
-use evalexpr::{error::*, istr, *};
+use evalexpr::{error::*, istr,  *};
 use std::convert::TryFrom;
 use thin_vec::thin_vec;
 
@@ -162,7 +162,7 @@ fn test_functions() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
     context.set_function(
         istr("sub2"),
-        Function::new(|s, _| {
+        RustFunction::new(|s, _| {
             // if let Value::Int(int) = argument {
             //     Ok(Value::Int(int - 2))
             // } else
@@ -200,7 +200,7 @@ fn test_n_ary_functions() {
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
     context.set_function(
         istr("sub2"),
-        Function::new(|s, _| {
+        RustFunction::new(|s, _| {
             // if let Value::Int(int) = argument {
             //     Ok(Value::Int(int - 2))
             // } else
@@ -214,7 +214,7 @@ fn test_n_ary_functions() {
     );
     context.set_function(
         istr("avg"),
-        Function::new(|s, _| {
+        RustFunction::new(|s, _| {
             expect_function_argument_amount(s.num_args(), 2)?;
             let a1 = s.get_arg(0).unwrap().as_float()?;
             let a2 = s.get_arg(1).unwrap().as_float()?;
@@ -225,7 +225,7 @@ fn test_n_ary_functions() {
 
     context.set_function(
         istr("muladd"),
-        Function::new(|s, _| {
+        RustFunction::new(|s, _| {
             expect_function_argument_amount(s.num_args(), 3)?;
             let a = s.get_arg(0).unwrap().as_float()?;
             let b = s.get_arg(1).unwrap().as_float()?;
@@ -236,7 +236,7 @@ fn test_n_ary_functions() {
     );
     context.set_function(
         istr("count"),
-        Function::new(|s, _| match &s.get_arg(0).unwrap() {
+        RustFunction::new(|s, _| match &s.get_arg(0).unwrap() {
             Value::Tuple(tuple) => Ok(Value::from_float(DefaultNumericTypes::from_usize(
                 tuple.len(),
             ))),
@@ -247,7 +247,7 @@ fn test_n_ary_functions() {
     context.set_value(istr("five"), Value::Float(5.0)).unwrap();
     context.set_function(
         istr("function_four"),
-        Function::new(|_, _| Ok(Value::Float(4.0))),
+        RustFunction::new(|_, _| Ok(Value::Float(4.0))),
     );
 
     assert_eq!(
@@ -295,7 +295,7 @@ fn test_capturing_functions() {
     let three = 3;
     context.set_function(
         istr("mult_3"),
-        Function::new(move |s, _| {
+        RustFunction::new(move |s, _| {
             if let Value::Float(float) = s.get_arg(0).unwrap() {
                 Ok(Value::Float(float * three as DefaultNumericTypes))
             } else {
@@ -307,7 +307,7 @@ fn test_capturing_functions() {
     let four = 4.0;
     context.set_function(
         istr("function_four"),
-        Function::new(move |_, _| Ok(Value::Float(four))),
+        RustFunction::new(move |_, _| Ok(Value::Float(four))),
     );
 
     assert_eq!(
@@ -1534,7 +1534,7 @@ fn test_hashmap_context_clone_debug() {
     let three = 3;
     context.set_function(
         istr("mult_3"),
-        Function::new(move |s, _| {
+        RustFunction::new(move |s, _| {
             if let Value::Float(float) = s.get_arg(0).unwrap() {
                 Ok(Value::Float(float * three as DefaultNumericTypes))
             } else {
@@ -1546,7 +1546,7 @@ fn test_hashmap_context_clone_debug() {
     let four = 4.0;
     context.set_function(
         istr("function_four"),
-        Function::new(move |_, _| Ok(Value::Float(four))),
+        RustFunction::new(move |_, _| Ok(Value::Float(four))),
     );
     context
         .set_value(istr("variable_five"), Value::from_float(5.0))

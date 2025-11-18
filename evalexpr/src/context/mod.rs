@@ -5,75 +5,13 @@
 //! The HashMapContext is type-safe and returns an error if the user tries to assign a value of a different type than before to an identifier.
 
 use crate::{
-    error::{expect_function_argument_amount, EvalexprResultValue},
-    flat_node::FlatOperator,
-    function::Function,
+    error::EvalexprResultValue,
+    function::{expression_function::ExpressionFunction, rust_function::RustFunction},
     value::{
         numeric_types::default_numeric_types::DefaultNumericTypes, value_type::ValueType, Value,
     },
-    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, IStrMap, Stack,
+    EvalexprError, EvalexprFloat, EvalexprResult, IStr, IStrMap, Stack,
 };
-
-#[derive(Clone, Debug)]
-/// Struct that represents expression function
-pub struct ExpressionFunction<F: EvalexprFloat> {
-    expr: FlatNode<F>,
-    args: Box<[IStr]>,
-}
-impl<F: EvalexprFloat> ExpressionFunction<F> {
-    /// Creates new ExpressionFunction from FlatNode and arguments
-    pub fn new(mut expr: FlatNode<F>, args: Vec<IStr>) -> Self {
-        expr.iter_mut(&mut |op| {
-            if let FlatOperator::ReadVar { identifier } | FlatOperator::ReadVarNeg { identifier } =
-                op
-            {
-                if let Some(idx) = args.iter().position(|e| e == identifier) {
-                    *op = FlatOperator::ReadParam {
-                        inverse_index: (args.len() - idx) as u32,
-                    };
-                }
-            }
-        });
-
-        Self {
-            expr,
-            args: args.into_boxed_slice(),
-        }
-    }
-    /// Returns the constant value of this node it it only contains a single PushConst operator.
-    pub fn as_constant(&self) -> Option<Value<F>> {
-        self.expr.as_constant()
-    }
-
-    /// Returns the number of arguments this expression function takes.
-    pub fn arg_num(&self) -> usize {
-        self.args.len()
-    }
-    pub(crate) fn unchecked_call(
-        &self,
-        stack: &mut Stack<F>,
-        context: &HashMapContext<F>,
-    ) -> EvalexprResultValue<F> {
-        expect_function_argument_amount(stack.num_args(), self.args.len())?;
-
-        stack.function_called()?;
-        let value = self.expr.eval_with_context(stack, context);
-        stack.function_returned();
-        value
-    }
-    ///. Calls the expression function with the given arguments.
-    pub fn call(
-        &self,
-        stack: &mut Stack<F>,
-        context: &HashMapContext<F>,
-        args: &[Value<F>],
-    ) -> EvalexprResultValue<F> {
-        stack.push_args(args);
-        let value = self.unchecked_call(stack, context)?;
-        stack.pop_args();
-        Ok(value)
-    }
-}
 
 //mod predefined;
 
@@ -87,7 +25,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 pub struct HashMapContext<F: EvalexprFloat = DefaultNumericTypes> {
     pub(crate) variables: IStrMap<Value<F>>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) functions: IStrMap<Function<F>>,
+    pub(crate) functions: IStrMap<RustFunction<F>>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) expr_functions: IStrMap<ExpressionFunction<F>>,
 }
@@ -147,21 +85,8 @@ impl<F: EvalexprFloat> HashMapContext<F> {
     }
 
     /// Sets the function with the given identifier to the given function.
-    pub fn set_function(&mut self, identifier: IStr, function: Function<F>) {
+    pub fn set_function(&mut self, identifier: IStr, function: RustFunction<F>) {
         self.functions.insert(identifier, function);
-    }
-    pub(crate) fn unchecked_call_function(
-        &self,
-        stack: &mut Stack<F>,
-        identifier: IStr,
-    ) -> EvalexprResultValue<F> {
-        if let Some(function) = self.functions.get(&identifier) {
-            function.unchecked_call(stack, self)
-        } else {
-            Err(EvalexprError::FunctionIdentifierNotFound(
-                identifier.to_string(),
-            ))
-        }
     }
 
     /// Calls the function that is linked to the given identifier with the given argument.

@@ -1,15 +1,122 @@
+use core::fmt;
+
 #[cfg(feature = "regex")]
 use regex::Regex;
 
-use crate::{
-    error::expect_function_argument_amount, value::numeric_types::EvalexprFloat, 
-    EvalexprError, Function, Value, ValueType,
-};
+use crate::{DefaultNumericTypes, EvalexprError, EvalexprFloat, HashMapContext, Stack, Value, ValueType, error::{EvalexprResultValue, expect_function_argument_amount}};
+
+
+/// A helper trait to enable cloning through `Fn` trait objects.
+trait ClonableFn<F: EvalexprFloat = DefaultNumericTypes>
+where
+    Self: Fn(&mut Stack<F>, &HashMapContext<F>) -> EvalexprResultValue<F>,
+    Self: Send + Sync + 'static,
+{
+    fn dyn_clone(&self) -> Box<dyn ClonableFn<F>>;
+}
+
+impl<FN, F: EvalexprFloat> ClonableFn<F> for FN
+where
+    FN: Fn(&mut Stack<F>, &HashMapContext<F>) -> EvalexprResultValue<F>,
+    FN: Send + Sync + 'static,
+    FN: Clone,
+{
+    fn dyn_clone(&self) -> Box<dyn ClonableFn<F>> {
+        Box::new(self.clone()) as _
+    }
+}
+
+/// A user-defined function.
+/// Functions can be used in expressions by storing them in a `Context`.
+///
+/// # Examples
+///
+/// ```rust
+/// use evalexpr::*;
+///
+/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
+/// context.set_function("id".into(), Function::new(|argument| {
+///     Ok(argument.clone())
+/// })).unwrap(); // Do proper error handling here
+/// assert_eq!(eval_with_context("id(4)", &context), Ok(Value::from_float(4.0)));
+/// ```
+pub struct RustFunction<F: EvalexprFloat> {
+    function: Box<dyn ClonableFn<F>>,
+}
+
+impl<F: EvalexprFloat> Clone for RustFunction<F> {
+    fn clone(&self) -> Self {
+        Self {
+            function: self.function.dyn_clone(),
+        }
+    }
+}
+
+impl<F: EvalexprFloat + 'static> RustFunction<F> {
+    /// Creates a user-defined function.
+    ///
+    /// The `function` is boxed for storage.
+    pub fn new<FN>(function: FN) -> Self
+    where
+        FN: Fn(&mut Stack<F>, &HashMapContext<F>) -> EvalexprResultValue<F>,
+        FN: Send + Sync + 'static,
+        FN: Clone,
+    {
+        Self {
+            function: Box::new(function) as _,
+        }
+    }
+
+    pub(crate) fn call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+        arguments: &[Value<F>],
+    ) -> EvalexprResultValue<F> {
+        stack.push_args(arguments);
+
+        let value = self.unchecked_call(stack, context);
+
+        stack.pop_args();
+        value
+    }
+    pub(crate) fn unchecked_call(
+        &self,
+        stack: &mut Stack<F>,
+        context: &HashMapContext<F>,
+    ) -> EvalexprResultValue<F> {
+        stack.function_called()?;
+        let value = (self.function)(stack, context);
+        stack.function_returned();
+        value
+    }
+}
+
+impl<F: EvalexprFloat> fmt::Debug for RustFunction<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(f, "Function {{ [...] }}")
+    }
+}
+impl<F: EvalexprFloat> fmt::Display for RustFunction<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(f, "Function {{ [...] }}")
+    }
+}
+
+/// A trait to ensure a type is `Send` and `Sync`.
+/// If implemented for a type, the crate will not compile if the type is not `Send` and `Sync`.
+#[allow(dead_code)]
+#[doc(hidden)]
+trait IsSendAndSync: Send + Sync {}
+
+impl<F: EvalexprFloat> IsSendAndSync for RustFunction<F> {}
+
+
 
 fn float_is<F: EvalexprFloat>(
     func: fn(&F) -> bool,
-) -> Option<Function<F>> {
-    Some(Function::new(move |s, _c| {
+) -> Option<RustFunction<F>> {
+    Some(RustFunction::new(move |s, _c| {
         Ok(func(
             &s.get_arg(0)
                 .ok_or_else(|| EvalexprError::wrong_function_argument_amount(0, 1))?
@@ -21,13 +128,13 @@ fn float_is<F: EvalexprFloat>(
 
 pub fn builtin_function<F: EvalexprFloat>(
     identifier: &str,
-) -> Option<Function<F>> {
+) -> Option<RustFunction<F>> {
     match identifier {
         "is_nan" => float_is(F::is_nan),
         "is_finite" => float_is(F::is_finite),
         "is_infinite" => float_is(F::is_infinite),
         "is_normal" => float_is(F::is_normal),
-        "if" => Some(Function::new(|s, _c| {
+        "if" => Some(RustFunction::new(|s, _c| {
             expect_function_argument_amount(s.num_args(), 3)?;
             let result_index = if s.get_arg(0).unwrap().as_boolean()? {
                 1
@@ -36,7 +143,7 @@ pub fn builtin_function<F: EvalexprFloat>(
             };
             Ok(s.get_arg(result_index).unwrap().clone())
         })),
-        "contains" => Some(Function::new(move |s, _c| {
+        "contains" => Some(RustFunction::new(move |s, _c| {
             expect_function_argument_amount(s.num_args(), 2)?;
             if let (Value::Tuple(a), b) = (s.get_arg(0).unwrap(), s.get_arg(1).unwrap()) {
                 if let Value::Float(_) | Value::Boolean(_) = b {
@@ -56,7 +163,7 @@ pub fn builtin_function<F: EvalexprFloat>(
                 Err(EvalexprError::expected_tuple(s.get_arg(0).unwrap().clone()))
             }
         })),
-        "contains_any" => Some(Function::new(move |s, _c| {
+        "contains_any" => Some(RustFunction::new(move |s, _c| {
             expect_function_argument_amount(s.num_args(), 2)?;
             if let (Value::Tuple(a), b) = (&s.get_arg(0).unwrap(), s.get_arg(1).unwrap()) {
                 if let Value::Tuple(b) = b {
@@ -90,7 +197,7 @@ pub fn builtin_function<F: EvalexprFloat>(
                 Err(EvalexprError::expected_tuple(s.get_arg(0).unwrap().clone()))
             }
         })),
-        "len" => Some(Function::new(|s, _c| {
+        "len" => Some(RustFunction::new(|s, _c| {
             expect_function_argument_amount(s.num_args(), 1)?;
             // if let Ok(subject) = arguments[0].as_str() {
             //     Ok(Value::Float(F::int_as_float(
@@ -107,7 +214,7 @@ pub fn builtin_function<F: EvalexprFloat>(
             }
         })),
         #[cfg(feature = "rand")]
-        "random" => Some(Function::new(|argument| {
+        "random" => Some(RustFunction::new(|argument| {
             argument.as_empty()?;
             Ok(Value::Float(F::Float::random()?))
         })),

@@ -4,11 +4,12 @@ use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::{
-    error::{expect_function_argument_amount, EvalexprResultValue},
+    error::EvalexprResultValue,
     flat_node::{cold, FlatOperator},
-    function::builtin::builtin_function,
+    function::rust_function::builtin_function,
     EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value,
 };
+
 #[inline(always)]
 pub fn eval_flat_node<F: EvalexprFloat>(
     node: &FlatNode<F>,
@@ -160,9 +161,9 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
     fn get_unchecked(&self, index: usize) -> &Value<T> {
         unsafe { self.stack.get_unchecked(index) }
     }
-    fn get(&self, index: usize) -> Option<&Value<T>> {
-        self.stack.get(index)
-    }
+    // fn get(&self, index: usize) -> Option<&Value<T>> {
+    //     self.stack.get(index)
+    // }
     fn len(&self) -> usize {
         self.stack.len()
     }
@@ -266,126 +267,125 @@ fn eval_priv_inner<F: EvalexprFloat>(
     context: &HashMapContext<F>,
     override_vars: &[(IStr, F)],
 ) -> EvalexprResultValue<F> {
-    use FlatOperator::*;
 
     let base_index = stack.len();
     for op in &node.ops {
         match op {
             // Binary arithmetic operators
-            Add => {
+            FlatOperator::Add => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a + b));
             },
-            Sub => {
+            FlatOperator::Sub => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a - b));
             },
-            Mul => {
+            FlatOperator::Mul => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a * b));
             },
-            Div => {
+            FlatOperator::Div => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a / b));
             },
-            Mod => {
+            FlatOperator::Mod => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a % b));
             },
-            Exp => {
+            FlatOperator::Exp => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a.pow(&b)));
             },
-            Neg => {
+            FlatOperator::Neg => {
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(-a));
             },
 
             // Comparison operators
-            Eq => {
+            FlatOperator::Eq => {
                 let b = stack.pop_unchecked();
                 let a = stack.pop_unchecked();
                 stack.push(Value::Boolean(a == b));
             },
-            Neq => {
+            FlatOperator::Neq => {
                 let b = stack.pop_unchecked();
                 let a = stack.pop_unchecked();
                 stack.push(Value::Boolean(a != b));
             },
-            Gt => {
+            FlatOperator::Gt => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Boolean(a > b));
             },
-            Lt => {
+            FlatOperator::Lt => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Boolean(a < b));
             },
-            Geq => {
+            FlatOperator::Geq => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Boolean(a >= b));
             },
-            Leq => {
+            FlatOperator::Leq => {
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Boolean(a <= b));
             },
 
             // Logical operators
-            And => {
+            FlatOperator::And => {
                 let b = stack.pop_unchecked().as_boolean()?;
                 let a = stack.pop_unchecked().as_boolean()?;
                 stack.push(Value::Boolean(a && b));
             },
-            Or => {
+            FlatOperator::Or => {
                 let b = stack.pop_unchecked().as_boolean()?;
                 let a = stack.pop_unchecked().as_boolean()?;
                 stack.push(Value::Boolean(a || b));
             },
-            Not => {
+            FlatOperator::Not => {
                 let a = stack.pop_unchecked().as_boolean()?;
                 stack.push(Value::Boolean(!a));
             },
 
             // Assignment operators
-            Assign => {
+            FlatOperator::Assign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            AddAssign => {
+            FlatOperator::AddAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            SubAssign => {
+            FlatOperator::SubAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            MulAssign => {
+            FlatOperator::MulAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            DivAssign => {
+            FlatOperator::DivAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            ModAssign => {
+            FlatOperator::ModAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            ExpAssign => {
+            FlatOperator::ExpAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            AndAssign => {
+            FlatOperator::AndAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
-            OrAssign => {
+            FlatOperator::OrAssign => {
                 return Err(EvalexprError::ContextNotMutable);
             },
 
             // Variable-length operators
-            Tuple { len } => {
+            FlatOperator::Tuple { len } => {
                 // Special case: 2-element tuple with floats becomes Float2
                 if *len == 2 {
                     let b = stack.pop_unchecked();
@@ -404,7 +404,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                     stack.push(Value::Tuple(values));
                 }
             },
-            Chain { len } => {
+            FlatOperator::Chain { len } => {
                 debug_assert!(
                     *len > 0,
                     "Chain with 0 length should be caught at compile time"
@@ -415,7 +415,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 // let start_idx = stack.len() - *len as usize;
                 // stack.drain(start_idx..stack.len() - 1);
             },
-            FunctionCall {
+            FlatOperator::FunctionCall {
                 identifier,
                 arg_num,
             } => {
@@ -439,24 +439,24 @@ fn eval_priv_inner<F: EvalexprFloat>(
             },
 
             // Constants and variables
-            PushConst { value } => {
+            FlatOperator::PushConst { value } => {
                 stack.push(value.clone());
             },
-            ReadVar { identifier } => {
+            FlatOperator::ReadVar { identifier } => {
                 let value = read_var(identifier, stack, context, override_vars)?;
                 stack.push(value);
             },
-            ReadVarNeg { identifier } => {
+            FlatOperator::ReadVarNeg { identifier } => {
                 let value = read_var(identifier, stack, context, override_vars)?;
                 stack.push(Value::Float(-value.as_float()?));
             },
-            WriteVar { .. } => {
+            FlatOperator::WriteVar { .. } => {
                 // Not implemented in immutable context
                 return Err(EvalexprError::ContextNotMutable);
             },
 
             // N-ary operations
-            AddN { n } => {
+            FlatOperator::AddN { n } => {
                 let n = *n as usize;
                 let mut sum = stack.pop_unchecked().as_float()?;
                 for _ in 0..n - 1 {
@@ -464,7 +464,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(sum));
             },
-            SubN { n } => {
+            FlatOperator::SubN { n } => {
                 let n = *n as usize;
                 let mut diff = stack.pop_unchecked().as_float()?;
                 for _ in 0..n - 1 {
@@ -472,7 +472,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(diff));
             },
-            MulN { n } => {
+            FlatOperator::MulN { n } => {
                 let n = *n as usize;
                 let mut product = stack.pop_unchecked().as_float()?;
                 for _ in 0..n - 1 {
@@ -480,7 +480,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(product));
             },
-            DivN { n } => {
+            FlatOperator::DivN { n } => {
                 let n = *n as usize;
                 let mut res = stack.pop_unchecked().as_float()?;
                 for _ in 0..n - 1 {
@@ -490,233 +490,233 @@ fn eval_priv_inner<F: EvalexprFloat>(
             },
 
             // Fused operations
-            MulAdd => {
+            FlatOperator::MulAdd => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a * b + c));
             },
-            MulSub => {
+            FlatOperator::MulSub => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a * b - c));
             },
-            DivAdd => {
+            FlatOperator::DivAdd => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a / b + c));
             },
-            DivSub => {
+            FlatOperator::DivSub => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a / b - c));
             },
-            AddMul => {
+            FlatOperator::AddMul => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float((a + b) * c));
             },
-            SubMul => {
+            FlatOperator::SubMul => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float((a - b) * c));
             },
-            AddDiv => {
+            FlatOperator::AddDiv => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float((a + b) / c));
             },
-            SubDiv => {
+            FlatOperator::SubDiv => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float((a - b) / c));
             },
-            MulDiv => {
+            FlatOperator::MulDiv => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a * b / c));
             },
-            DivMul => {
+            FlatOperator::DivMul => {
                 let c = stack.pop_unchecked().as_float()?;
                 let b = stack.pop_unchecked().as_float()?;
                 let a = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(a / b * c));
             },
-            MulConst { value } => {
+            FlatOperator::MulConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x * *value));
             },
-            AddConst { value } => {
+            FlatOperator::AddConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x + *value));
             },
-            DivConst { value } => {
+            FlatOperator::DivConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x / *value));
             },
-            ConstDiv { value } => {
+            FlatOperator::ConstDiv { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(*value / x));
             },
-            SubConst { value } => {
+            FlatOperator::SubConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x - *value));
             },
-            ConstSub { value } => {
+            FlatOperator::ConstSub { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(*value - x));
             },
-            ExpConst { value } => {
+            FlatOperator::ExpConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.pow(value)));
             },
-            ModConst { value } => {
+            FlatOperator::ModConst { value } => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x % *value));
             },
 
             // Specialized math operations
-            Square => {
+            FlatOperator::Square => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x * x));
             },
-            Cube => {
+            FlatOperator::Cube => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x * x * x));
             },
-            Sqrt => {
+            FlatOperator::Sqrt => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.sqrt()));
             },
-            Cbrt => {
+            FlatOperator::Cbrt => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.cbrt()));
             },
 
-            Abs => {
+            FlatOperator::Abs => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.abs()));
             },
-            Floor => {
+            FlatOperator::Floor => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.floor()));
             },
-            Round => {
+            FlatOperator::Round => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.round()));
             },
-            Ceil => {
+            FlatOperator::Ceil => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.ceil()));
             },
-            Ln => {
+            FlatOperator::Ln => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.ln()));
             },
-            Log => {
+            FlatOperator::Log => {
                 let x = stack.pop_unchecked().as_float()?;
                 let base = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.log(&base)));
             },
-            Log2 => {
+            FlatOperator::Log2 => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.log2()));
             },
-            Log10 => {
+            FlatOperator::Log10 => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.log10()));
             },
-            ExpE => {
+            FlatOperator::ExpE => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.exp()));
             },
-            Exp2 => {
+            FlatOperator::Exp2 => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.exp2()));
             },
-            Cos => {
+            FlatOperator::Cos => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.cos()));
             },
-            Acos => {
+            FlatOperator::Acos => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.acos()));
             },
-            CosH => {
+            FlatOperator::CosH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.cosh()));
             },
-            AcosH => {
+            FlatOperator::AcosH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.acosh()));
             },
-            Sin => {
+            FlatOperator::Sin => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.sin()));
             },
-            Asin => {
+            FlatOperator::Asin => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.asin()));
             },
-            SinH => {
+            FlatOperator::SinH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.sinh()));
             },
-            AsinH => {
+            FlatOperator::AsinH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.asinh()));
             },
-            Tan => {
+            FlatOperator::Tan => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.tan()));
             },
-            Atan => {
+            FlatOperator::Atan => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.atan()));
             },
-            TanH => {
+            FlatOperator::TanH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.tanh()));
             },
-            AtanH => {
+            FlatOperator::AtanH => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.atanh()));
             },
-            Atan2 => {
+            FlatOperator::Atan2 => {
                 let x = stack.pop_unchecked().as_float()?;
                 let y = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(y.atan2(&x)));
             },
-            Hypot => {
+            FlatOperator::Hypot => {
                 let y = stack.pop_unchecked().as_float()?;
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.hypot(&y)));
             },
 
-            Signum => {
+            FlatOperator::Signum => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.signum()));
             },
 
-            Min => {
+            FlatOperator::Min => {
                 let y = stack.pop_unchecked().as_float()?;
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.min(&y)));
             },
-            Max => {
+            FlatOperator::Max => {
                 let y = stack.pop_unchecked().as_float()?;
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.max(&y)));
             },
-            Clamp => {
+            FlatOperator::Clamp => {
                 let mut max = stack.pop_unchecked().as_float()?;
                 let mut min = stack.pop_unchecked().as_float()?;
                 let x = stack.pop_unchecked().as_float()?;
@@ -725,12 +725,12 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(x.clamp(&min, &max)));
             },
-            Factorial => {
+            FlatOperator::Factorial => {
                 let x = stack.pop_unchecked().as_float()?;
                 stack.push(Value::Float(x.factorial()));
             },
 
-            Range => {
+            FlatOperator::Range => {
                 let end = stack.pop_unchecked();
                 let start = stack.pop_unchecked();
 
@@ -738,7 +738,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 
                 stack.push(Value::Tuple(result))
             },
-            RangeWithStep => {
+            FlatOperator::RangeWithStep => {
                 let step = stack.pop_unchecked();
                 let end = stack.pop_unchecked();
                 let start = stack.pop_unchecked();
@@ -746,7 +746,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 stack.push(Value::Tuple(result))
             },
             // Native functions
-            Sum { variable, expr } => {
+            FlatOperator::Sum { variable, expr } => {
                 let tuple = stack.pop_unchecked().as_tuple()?;
                 let mut result = F::ZERO;
                 let mut o_override_vars: SmallVec<[(IStr, F); 5]> =
@@ -761,7 +761,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(result));
             },
-            Product { variable, expr } => {
+            FlatOperator::Product { variable, expr } => {
                 let tuple = stack.pop_unchecked().as_tuple()?;
                 let mut result = F::ONE;
                 let mut o_override_vars: SmallVec<[(IStr, F); 5]> =
@@ -776,12 +776,12 @@ fn eval_priv_inner<F: EvalexprFloat>(
                 }
                 stack.push(Value::Float(result));
             },
-            ReadLocalVar { idx } => {
+            FlatOperator::ReadLocalVar { idx } => {
                 let value = stack.get_unchecked(base_index + *idx as usize);
                 stack.push(value.clone());
             },
-            ReadParam { inverse_index } => {
-                let value = stack.get_unchecked(base_index - *inverse_index as usize );
+            FlatOperator::ReadParam { inverse_index } => {
+                let value = stack.get_unchecked(base_index - *inverse_index as usize);
                 stack.push(value.clone());
             },
         }

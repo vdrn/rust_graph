@@ -155,7 +155,7 @@ pub fn expect_function_argument_amount<NumericTypes: EvalexprFloat>(
 fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	ctx.set_function(
 		istr("normaldist"),
-		evalexpr::Function::new(move |s, _| {
+		evalexpr::RustFunction::new(move |s, _| {
 			let zero = T::f64_to_float(0.0);
 			let one = T::f64_to_float(1.0);
 			if s.num_args() == 0 {
@@ -181,7 +181,7 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	);
 	ctx.set_function(
 		istr("g"),
-		evalexpr::Function::new(|s, _| {
+		evalexpr::RustFunction::new(|s, _| {
 			expect_function_argument_amount(s.num_args(), 2)?;
 			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
 			let index: T = s.get_arg(1).unwrap().as_float()?;
@@ -199,7 +199,7 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	);
 	ctx.set_function(
 		istr("get"),
-		evalexpr::Function::new(|s, _| {
+		evalexpr::RustFunction::new(|s, _| {
 			expect_function_argument_amount(s.num_args(), 2)?;
 			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
 			let index: T = s.get_arg(1).unwrap().as_float()?;

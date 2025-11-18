@@ -13,7 +13,7 @@ use crate::{
     EvalexprFloat,
 };
 
-use crate::{operator::Operator, value::Value};
+use crate::{tree::Operator, value::Value};
 
 // Exclude error display code from test coverage, as the code does not make sense to test.
 #[cfg(not(tarpaulin_include))]
