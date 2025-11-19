@@ -188,6 +188,7 @@ pub struct Expr<T: EvalexprFloat> {
 	pub node:          Option<FlatNode<T>>,
 	pub inlined_node:  Option<FlatNode<T>>,
 	pub expr_function: Option<ExpressionFunction<T>>,
+	pub args:          Vec<IStr>,
 	pub textbox_type:  TextboxType,
 }
 
@@ -197,6 +198,7 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 			text:          Default::default(),
 			node:          Default::default(),
 			inlined_node:  Default::default(),
+			args:          Default::default(),
 			expr_function: Default::default(),
 			textbox_type:  Default::default(),
 		}
@@ -571,6 +573,7 @@ impl<T: EvalexprFloat> Entry<T> {
 					expr_function: None,
 					text,
 					textbox_type: TextboxType::default(),
+					args: Vec::new(),
 				},
 				range_start:         Expr::default(),
 				range_end:           Expr::default(),
@@ -1377,6 +1380,7 @@ pub fn prepare_entry<T: EvalexprFloat>(
 		EntryType::Function { func, ty, can_be_drawn, .. } => {
 			if let Some(func_node) = func.node.clone() {
 				*can_be_drawn = true;
+				func.args.clear();
 
 				let mut has_x = false;
 				let mut has_y = false;
@@ -1390,6 +1394,18 @@ pub fn prepare_entry<T: EvalexprFloat>(
 						has_complex = true;
 					}
 				}
+				// TODO: this is temprary while we're adapting to new API
+				if has_x {
+					func.args.push(istr("x"));
+				}
+				if has_y {
+					func.args.push(istr("y"));
+				}
+				if has_complex {
+					func.args.push(istr("zx"));
+					func.args.push(istr("zy"));
+				}
+
 				if (has_x && has_y) || has_complex {
 					if !func.text.contains('=') {
 						*can_be_drawn = false;
@@ -1424,7 +1440,11 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 				let reserved_vars = reserved_vars.clone();
 				match ty {
 					FunctionType::X => {
-						let expr_function = ExpressionFunction::new(inlined_node, vec![istr("x")]);
+						let mut args = vec![];
+						if let Some(x_arg) = func.args.iter().find(|arg| arg.to_str() == "x") {
+							args.push(*x_arg);
+						}
+						let expr_function = ExpressionFunction::new(inlined_node, args);
 						// println!("expr_function: {:#?}", expr_function);
 
 						if !entry.name.trim().is_empty() {
@@ -2046,6 +2066,13 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 						let mut sampling_x = plot_params.first_x;
 						if let Some(constant) = expr_func.as_constant() {
 							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
+							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
+							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
+						} else if func.args.is_empty() {
+							let value = expr_func
+								.call(&mut stack, ctx, &[])
+								.and_then(|v| v.as_float())
+								.map_err(|e| vec![(entry.id, e.to_string())])?;
 							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
 							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
 						} else {

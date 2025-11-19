@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
-use evalexpr::{EvalexprFloat,  istr};
+use evalexpr::{EvalexprFloat, istr};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
@@ -50,11 +50,12 @@ impl ExprSer {
 			txt = &temp;
 		};
 		Expr {
-			node:         evalexpr::build_operator_tree::<T>(txt).ok(),
-      inlined_node: None,
-      expr_function: None,
-			text:         self.text,
-			textbox_type: self.textbox_type,
+			node:          evalexpr::build_operator_tree::<T>(txt).ok(),
+			inlined_node:  None,
+			args:          Vec::new(),
+			expr_function: None,
+			text:          self.text,
+			textbox_type:  self.textbox_type,
 		}
 	}
 }
@@ -324,9 +325,7 @@ pub fn deserialize_from_json<T: EvalexprFloat>(
 // pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
 // }
 #[cfg(target_arch = "wasm32")]
-pub fn save_file<T: EvalexprFloat>(
-	ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame,
-) {
+pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame) {
 	let file = format!("{}.json", state.name);
 	let mut output = Vec::new();
 	if let Err(e) = serialize_to_json(&mut output, &state.entries, Some(&ui_state.plot_bounds)) {
@@ -340,9 +339,7 @@ pub fn save_file<T: EvalexprFloat>(
 	}
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_file<T: EvalexprFloat>(
-	ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame,
-) {
+pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame) {
 	use std::path::PathBuf;
 
 	let save_path = PathBuf::from(&ui_state.cur_dir).join(format!("{}.json", state.name));

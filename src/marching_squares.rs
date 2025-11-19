@@ -428,23 +428,22 @@ fn process_subcell(
 
 /// Get the edges that the contour crosses for a given configuration
 /// Returns pairs of edges: (entry_edge, exit_edge)
-/// 0 - bottom, 1 - right, 2 - top, 3 - left
 fn get_edges_for_config(config: u8) -> ArrayVec<(Edge, Edge), 2> {
 	let mut result = ArrayVec::new();
 	match config {
-		0 | 15 => {}, // All same sign
-		1 | 14 => result.push((Edge::Bottom, Edge::Left)),
-		2 | 13 => result.push((Edge::Bottom, Edge::Right)),
-		3 | 12 => result.push((Edge::Right, Edge::Left)),
-		4 | 11 => result.push((Edge::Right, Edge::Top)),
-		5 => {
+		0b0000 | 0b1111 => {}, // All same sign
+		0b0001 | 0b1110 => result.push((Edge::Bottom, Edge::Left)),
+		0b0010 | 0b1101 => result.push((Edge::Bottom, Edge::Right)),
+		0b0011 | 0b1100 => result.push((Edge::Right, Edge::Left)),
+		0b0100 | 0b1011 => result.push((Edge::Right, Edge::Top)),
+		0b0101 => {
 			// ambiguous
 			result.push((Edge::Bottom, Edge::Right));
 			result.push((Edge::Top, Edge::Left));
 		},
-		6 | 9 => result.push((Edge::Bottom, Edge::Top)),
-		7 | 8 => result.push((Edge::Top, Edge::Left)),
-		10 => {
+		0b0110 | 0b1001 => result.push((Edge::Bottom, Edge::Top)),
+		0b0111 | 0b1000 => result.push((Edge::Top, Edge::Left)),
+		0b1010 => {
 			// ambiguous
 			result.push((Edge::Bottom, Edge::Left));
 			result.push((Edge::Right, Edge::Top));
