@@ -1,4 +1,6 @@
-use crate::{EvalexprError, EvalexprResult};
+use std::sync::OnceLock;
+
+use crate::{EvalexprError, EvalexprResult, math::integrate::Precision};
 
 use super::EvalexprFloat;
 
@@ -16,6 +18,16 @@ impl EvalexprFloat for f64 {
     const HALF: Self = 0.5;
     const EPSILON: f64 = f64::EPSILON;
 
+    const INTEGRATION_PRECISION: Precision<Self> = Precision {
+        lower: 1e-12,
+        upper: 1e-8,
+        precision: 1e-10,
+    };
+    fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self> {
+        static PRECOMPUTED: OnceLock<crate::math::integrate::AbscissasWeights<f64>> = OnceLock::new();
+        PRECOMPUTED.get_or_init(crate::math::integrate::get_tanh_sinh_abscissas_and_weights)
+    }
+
     fn from_usize(int: usize) -> Self {
         int as Self
     }
@@ -26,6 +38,9 @@ impl EvalexprFloat for f64 {
         } else {
             Err(EvalexprError::FloatIntoUsize { float: *self })
         }
+    }
+    fn from_i32(int: i32) -> Self {
+        int as Self
     }
 
     fn from_hex_str(literal: &str) -> Result<Self, ()> {
@@ -192,5 +207,8 @@ impl EvalexprFloat for f64 {
 
     fn factorial(&self) -> Self {
         <f64 as special::Gamma>::gamma(*self + 1.0)
+    }
+    fn recip(&self) -> Self {
+        (*self).recip()
     }
 }

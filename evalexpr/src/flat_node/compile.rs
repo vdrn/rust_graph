@@ -1,7 +1,8 @@
 use crate::{
     error::{expect_function_argument_amount, expect_operator_argument_amount},
-    flat_node::FlatOperator,
-    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value,
+    flat_node::{FlatOperator, IntegralNode},
+    EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, IStr, Node,
+    Operator, Value,
 };
 /// Helper function to extract exactly one child node
 fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<Node<F>, F> {
@@ -13,7 +14,11 @@ fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprRes
 pub fn compile_to_flat<F: EvalexprFloat>(node: Node<F>) -> EvalexprResult<FlatNode<F>, F> {
     let mut ops = Vec::new();
     compile_to_flat_inner(node, &mut ops)?;
-    Ok(FlatNode { ops })
+    Ok(FlatNode {
+        ops,
+        num_local_vars: 0,
+        last_local_var_op_idx: 0,
+    })
 }
 
 /// Helper function to extract exactly two child nodes
@@ -93,8 +98,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Operator::Add, FlatOperator::Add, |n| FlatOperator::AddN {
-                n,
+            nary_op(ops, a, b, Operator::Add, FlatOperator::Add, |n| {
+                FlatOperator::AddN { n }
             })?;
         },
         Operator::Sub => {
@@ -125,8 +130,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Operator::Sub, FlatOperator::Sub, |n| FlatOperator::SubN {
-                n,
+            nary_op(ops, a, b, Operator::Sub, FlatOperator::Sub, |n| {
+                FlatOperator::SubN { n }
             })?;
         },
         Operator::Mul => {
@@ -165,8 +170,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Operator::Mul, FlatOperator::Mul, |n| FlatOperator::MulN {
-                n,
+            nary_op(ops, a, b, Operator::Mul, FlatOperator::Mul, |n| {
+                FlatOperator::MulN { n }
             })?;
         },
         Operator::Div => {
@@ -205,8 +210,8 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
                 return Ok(());
             }
 
-            nary_op(ops, a, b, Operator::Div, FlatOperator::Div, |n| FlatOperator::DivN {
-                n,
+            nary_op(ops, a, b, Operator::Div, FlatOperator::Div, |n| {
+                FlatOperator::DivN { n }
             })?;
         },
         Operator::Mod => {
@@ -483,6 +488,41 @@ fn compile_special_function<F: EvalexprFloat>(
                 },
                 _ => unreachable!(),
             }
+            Ok(CompileNativeResult::Compiled)
+        },
+        "Integral" => {
+            let len = node.children.len();
+            if len != 4 {
+                return Err(EvalexprError::CustomMessage(
+                    "Integral function must have 4 arguments: Integral(lower_bound, upper_bound, \
+                     expression, variable)"
+                        .to_string(),
+                ));
+            }
+            let variable_name = node.children.pop().unwrap();
+            let Operator::VariableIdentifierRead {
+                identifier: variable_name,
+            } = variable_name.operator()
+            else {
+                return Err(EvalexprError::CustomMessage(
+                    "Forth argument of Integral function must be a variable name ".to_string(),
+                ));
+            };
+            let expr = node.children.pop().unwrap();
+            let exp_node = compile_to_flat(expr)?;
+            // let expr_func = ExpressionFunction::new(exp_node, vec![*variable_name]);
+            let upper_bound = node.children.pop().unwrap();
+            let lower_bound = node.children.pop().unwrap();
+
+            compile_to_flat_inner(upper_bound, ops)?;
+            compile_to_flat_inner(lower_bound, ops)?;
+            ops.push(FlatOperator::Integral(Box::new(
+                IntegralNode::UnpreparedExpr {
+                    expr: exp_node,
+                    variable: *variable_name,
+                },
+            )));
+
             Ok(CompileNativeResult::Compiled)
         },
         _ => Ok(CompileNativeResult::NotNative(node)),

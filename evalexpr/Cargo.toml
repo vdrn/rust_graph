@@ -11,7 +11,6 @@ documentation = "https://docs.rs/evalexpr"
 readme = "README.md"
 license = "AGPL-3.0-only"
 edition = "2021"
-rust-version = "1.65.0"
 
 [badges]
 maintenance = { status = "actively-developed" }

@@ -6,7 +6,7 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
     node: &mut FlatNode<F>,
     context: &HashMapContext<F>,
 ) {
-    let mut local_vars: FlatNode<F> = FlatNode { ops: Vec::new() };
+    let mut local_vars: Vec<FlatOperator<F>> = Vec::new();
     // let mut local_vars_indices: Vec<u32> = Vec::new();
     let mut local_var_idx = 0;
 
@@ -66,7 +66,7 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
                         idx: cur_local_var_idx,
                     }],
                 );
-                local_vars.ops.extend(extracted);
+                local_vars.extend(extracted);
 
                 for (i, (start, end)) in found_matching_ranges.iter().enumerate() {
                     let start = *start - (i + 1) * (cur_len);
@@ -85,9 +85,15 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
         cur_idx += 1;
     }
 
-    if !local_vars.ops.is_empty() {
-        local_vars.ops.append(&mut node.ops);
-        *node = local_vars;
+    if !local_vars.is_empty() {
+        let num_local_vars = cur_idx as u32;
+        let last_local_var_op_idx = (local_vars.len() - 1) as u32;
+        local_vars.append(&mut node.ops);
+        *node = FlatNode {
+            ops: local_vars,
+            num_local_vars,
+            last_local_var_op_idx,
+        };
     }
 }
 
@@ -191,6 +197,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
         FlatOperator::RangeWithStep => 3,
 
         FlatOperator::Sum { .. } | FlatOperator::Product { .. } => 1,
+        FlatOperator::Integral { .. } => 2,
 
         FlatOperator::Clamp => 3,
     }
@@ -224,4 +231,21 @@ fn get_operator_range<F: EvalexprFloat>(
     }
 
     Some(current)
+}
+pub fn get_arg_ranges<F: EvalexprFloat>(
+    ops: &[FlatOperator<F>],
+    op_index: usize,
+) -> SmallVec<[(usize, usize); 3]> {
+    use smallvec::smallvec;
+    let num_args = num_args(&ops[op_index]);
+    let mut result = smallvec![];
+
+    let mut cur_arg_idx = op_index - 1;
+    for _ in 0..num_args {
+        let start = get_operator_range(ops, cur_arg_idx, 0).unwrap();
+        result.push((start, cur_arg_idx));
+        cur_arg_idx = start - 1;
+    }
+
+    result
 }

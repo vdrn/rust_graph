@@ -1,3 +1,4 @@
+#![feature(adt_const_params)]
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

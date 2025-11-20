@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::EvalexprResult;
+use crate::{EvalexprResult, math::integrate::Precision};
 
 pub mod default_numeric_types;
 pub mod f32_numeric_types;
@@ -26,8 +26,14 @@ pub trait EvalexprFloat:
     + Mul<Output = Self>
     + Div<Output = Self>
     + Rem<Output = Self>
-    +'static
+    + 'static
 {
+    /// Precomputed abscissas and weights for the Tanh-Sinh quadrature
+    fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self>;
+
+    /// Precision bounds for integration
+    const INTEGRATION_PRECISION: Precision<Self>;
+
     /// The smallest non-NaN floating point value.
     ///
     /// Typically, this is negative infinity.
@@ -47,13 +53,16 @@ pub trait EvalexprFloat:
     /// epsilon
     const EPSILON: f64;
     /// usize -> Self
-    fn from_usize(int: usize) -> Self ;
+    fn from_usize(int: usize) -> Self;
+
+    /// i32 -> Self
+    fn from_i32(int: i32) -> Self;
 
     /// Self -> usize
-    fn into_usize(&self) -> EvalexprResult<usize, Self> ;
+    fn into_usize(&self) -> EvalexprResult<usize, Self>;
 
     /// 0x -> usize
-    fn from_hex_str(literal: &str) -> Result<Self, ()> ;
+    fn from_hex_str(literal: &str) -> Result<Self, ()>;
 
     ///  Self > f64
     fn to_f64(&self) -> f64;
@@ -165,12 +174,13 @@ pub trait EvalexprFloat:
     /// Clamps `self` between `min` and `max`.
     fn clamp(&self, min: &Self, max: &Self) -> Self;
 
+    /// Reciprocal.
+    fn recip(&self) -> Self;
+
     /// Returns the factorial of `self`.
     fn factorial(&self) -> Self;
     /// Generate a random float value between 0.0 and 1.0.
     ///
     /// If the feature `rand` is not enabled, then this method always returns [`EvalexprError::RandNotEnabled`](crate::EvalexprError::RandNotEnabled).
     fn random() -> EvalexprResult<Self, Self>;
-
-
 }

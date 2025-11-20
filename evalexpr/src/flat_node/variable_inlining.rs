@@ -1,11 +1,10 @@
+use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::{
-    flat_node::{
-        eval::{eval_range, eval_range_with_step},
-        FlatOperator,
-    },
-    EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value,
+    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value, flat_node::{
+        FlatOperator, IntegralNode, eval::{eval_range, eval_range_with_step}, subexpression_elemination::get_arg_ranges
+    }
 };
 
 /// Inlines variables and folds the expression tree
@@ -386,8 +385,22 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
                     }
                 }
             },
+            FlatOperator::Integral(int) => match int.as_ref() {
+                IntegralNode::UnpreparedExpr { expr, variable } => {
+                    let new_expr = inline_variables_and_fold(expr, context)?;
+                    new_ops.push(FlatOperator::Integral(Box::new(
+                        IntegralNode::UnpreparedExpr {
+                            expr: new_expr,
+                            variable: *variable,
+                        },
+                    )));
+                },
+                IntegralNode::PreparedFunc { .. } => {
+                    new_ops.push(source_op.clone());
+                },
+            },
             FlatOperator::ReadLocalVar { .. }
-            |FlatOperator::ReadParam { .. }
+            | FlatOperator::ReadParam { .. }
             | FlatOperator::Eq
             | FlatOperator::Neq
             | FlatOperator::Gt
@@ -415,7 +428,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
         }
     }
 
-    Ok(FlatNode { ops: new_ops })
+    Ok(FlatNode { ops: new_ops, num_local_vars: 0, last_local_var_op_idx: 0 })
 }
 fn fold_nary_op<F: EvalexprFloat>(
     new_ops: &mut Vec<FlatOperator<F>>,

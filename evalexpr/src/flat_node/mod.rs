@@ -1,14 +1,14 @@
 use crate::{
     error::EvalexprResultValue, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult,
-    HashMapContext, IStr, TupleType, Value, EMPTY_VALUE,
+    ExpressionFunction, HashMapContext, IStr, TupleType, Value, EMPTY_VALUE,
 };
 mod compile;
 pub(crate) mod eval;
-mod inlining;
+mod variable_inlining;
 mod subexpression_elemination;
 
 use eval::{eval_flat_node, eval_flat_node_mut};
-use inlining::inline_variables_and_fold;
+use variable_inlining::inline_variables_and_fold;
 
 pub use compile::compile_to_flat;
 pub use eval::Stack;
@@ -18,6 +18,9 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
     node: &FlatNode<F>,
     context: &mut HashMapContext<F>,
 ) -> EvalexprResult<FlatNode<F>, F> {
+    if node.num_local_vars > 0 || node.last_local_var_op_idx > 0 {
+        return Err(EvalexprError::CustomMessage("This FlatNode was already optimized.".to_string()));
+    }
     let mut inlined = inline_variables_and_fold(node, context)?;
     // println!("Inlined node: {:#?}", inlined);
     subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
@@ -225,6 +228,7 @@ pub enum FlatOperator<F: EvalexprFloat> {
         variable: IStr,
         expr: Box<FlatNode<F>>,
     },
+    Integral(Box<IntegralNode<F>>),
 
     ReadLocalVar {
         idx: u32,
@@ -235,12 +239,27 @@ pub enum FlatOperator<F: EvalexprFloat> {
         inverse_index: u32,
     },
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum IntegralNode<F: EvalexprFloat> {
+    UnpreparedExpr {
+        expr: FlatNode<F>,
+        variable: IStr,
+    },
+    PreparedFunc {
+        func: ExpressionFunction<F>,
+        /// inverse_indices from outer scope
+        additional_args: Vec<u32>,
+    },
+}
 
 /// Flat compiled node - linear sequence of operations
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatNode<F: EvalexprFloat> {
     ops: Vec<FlatOperator<F>>,
+    num_local_vars: u32,
+    last_local_var_op_idx:u32
 }
+
 
 impl<F: EvalexprFloat> FlatNode<F> {
     /// Returns the constant value of this node it it only contains a single PushConst operator.

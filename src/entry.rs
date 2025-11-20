@@ -1404,7 +1404,7 @@ pub fn prepare_entry<T: EvalexprFloat>(
 				func.args.clear();
 
 				let name_ast = evalexpr::build_ast::<T>(&entry.name).map_err(|e| (entry.id, e.to_string()))?;
-				println!("name ast {:#?}", name_ast);
+				// println!("name ast {:#?}", name_ast);
 
 				let first_ast_node =
 					if name_ast.children().is_empty() { &name_ast } else { &name_ast.children()[0] };
@@ -1959,6 +1959,9 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 			// });
 			let mut add_line = |line: Vec<PlotPoint>| {
+				if line.is_empty() {
+					return;
+				}
 				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.lines.push(DrawLine::new(
 					sorting_idx,
@@ -1987,21 +1990,40 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 				} else if func.args.len() == 1 {
 					// starndard X or Y function
 					if *parametric {
-						draw_parametric_function(
-							tl_context,
-							ctx,
-							plot_params,
-							entry.id,
-							expr_func,
-							range_start.node.as_ref(),
-							range_end.node.as_ref(),
-							&mut add_line,
-						)?;
+						if func.args[0].to_str() == "y" {
+							draw_parametric_function::<T, { SimpleFunctionType::Y }>(
+								tl_context,
+								ctx,
+								plot_params,
+								entry.id,
+								expr_func,
+								range_start.node.as_ref(),
+								range_end.node.as_ref(),
+								&mut add_line,
+							)?;
+						} else {
+							draw_parametric_function::<T, { SimpleFunctionType::X }>(
+								tl_context,
+								ctx,
+								plot_params,
+								entry.id,
+								expr_func,
+								range_start.node.as_ref(),
+								range_end.node.as_ref(),
+								&mut add_line,
+							)?;
+						}
 					} else {
-						if func.args[0].to_str() == "x" {
-							draw_x_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line)?;
-						} else if func.args[0].to_str() == "y" {
-							draw_y_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line)?;
+						if func.args[0].to_str() == "y" {
+							draw_simple_function::<T, { SimpleFunctionType::Y }>(
+								tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
+							)?;
+						} else {
+							draw_simple_function::<T, { SimpleFunctionType::X }>(
+								tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
+							)?;
+							// draw_y_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut
+							// add_line)?;
 						}
 					}
 				} else if func.args.len() == 2 {
@@ -2236,76 +2258,124 @@ fn eval_float_with_context_and_x<T: EvalexprFloat>(
 // 	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x), (reserved_vars.y, y)])
 // }
 
-fn draw_x_function<T: EvalexprFloat>(
+use std::marker::ConstParamTy;
+#[derive(PartialEq, Eq, ConstParamTy)]
+enum SimpleFunctionType {
+	X,
+	Y,
+}
+fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
 ) -> Result<(), Vec<(u64, String)>> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
 	let mut prev_sampling_point: Option<(f64, f64)> = None;
-	let mut sampling_x = plot_params.first_x;
+
+	let mut sampling_arg = match TY {
+		SimpleFunctionType::X => plot_params.first_x,
+		SimpleFunctionType::Y => plot_params.first_y,
+	};
+	let last_sampling_arg = match TY {
+		SimpleFunctionType::X => plot_params.last_x,
+		SimpleFunctionType::Y => plot_params.last_y,
+	};
+	let step_size = match TY {
+		SimpleFunctionType::X => plot_params.step_size,
+		SimpleFunctionType::Y => plot_params.step_size_y,
+	};
+
 	if let Some(constant) = func.as_constant() {
 		let value = constant.as_float().map_err(|e| vec![(id, e.to_string())])?;
 		pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
 		pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
 	} else {
 		// let mut prev_y = None;
-		let mut discontinuity_detector = DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
+		let mut discontinuity_detector = DiscontinuityDetector::new(step_size, plot_params.eps);
 
-		while sampling_x < plot_params.last_x {
-			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_x)]) {
-				Ok(Value::Float(y)) => {
-					let y = y.to_f64();
+		while sampling_arg <= last_sampling_arg {
+			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_arg)]) {
+				Ok(Value::Float(val)) => {
+					let val = val.to_f64();
 
-					let zoomed_in_on_nan_boundary = prev_sampling_point.and_then(|(prev_x, prev_y)| {
-						zoom_in_x_on_nan_boundary((prev_x, prev_y), (sampling_x, y), plot_params.eps, |x| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-								.and_then(|y| y.as_float())
-								.map(|y| y.to_f64())
-								.ok()
-						})
+					let zoomed_in_on_nan_boundary = prev_sampling_point.and_then(|(prev_arg, prev_val)| {
+						zoom_in_x_on_nan_boundary(
+							(prev_arg, prev_val),
+							(sampling_arg, val),
+							plot_params.eps,
+							|arg| {
+								func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
+									.and_then(|v| v.as_float())
+									.map(|v| v.to_f64())
+									.ok()
+							},
+						)
 					});
 
 					let mut on_nan_boundary = false;
-					let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) = zoomed_in_on_nan_boundary {
+
+					let (cur_arg, cur_val) = if let Some(zoomed_in_on_nan_boundary) = zoomed_in_on_nan_boundary
+					{
 						on_nan_boundary = true;
 						zoomed_in_on_nan_boundary
 					} else {
-						(sampling_x, y)
+						(sampling_arg, val)
 					};
 
 					if !on_nan_boundary
-						&& let Some((left, right)) = discontinuity_detector.detect(cur_x, cur_y, |x| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-								.and_then(|y| y.as_float())
-								.map(|y| y.to_f64())
+						&& let Some((left, right)) = discontinuity_detector.detect(cur_arg, cur_val, |arg| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
+								.and_then(|v| v.as_float())
+								.map(|v| v.to_f64())
 								.ok()
 						}) {
-						pp_buffer.push(PlotPoint::new(left.0, left.1));
-						// start a new line
-						add_line(mem::take(&mut pp_buffer));
-						pp_buffer.push(PlotPoint::new(right.0, right.1));
+						match TY {
+							SimpleFunctionType::X => {
+								pp_buffer.push(PlotPoint::new(left.0, left.1));
+								add_line(mem::take(&mut pp_buffer));
+								pp_buffer.push(PlotPoint::new(right.0, right.1));
+							},
+							SimpleFunctionType::Y => {
+								pp_buffer.push(PlotPoint::new(left.1, left.0));
+								add_line(mem::take(&mut pp_buffer));
+								pp_buffer.push(PlotPoint::new(right.1, right.0));
+							},
+						}
 					} else {
-						if !cur_y.is_nan() {
-							pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+						if !cur_val.is_nan() {
+							match TY {
+								SimpleFunctionType::X => {
+									pp_buffer.push(PlotPoint::new(cur_arg, cur_val));
+								},
+								SimpleFunctionType::Y => {
+									pp_buffer.push(PlotPoint::new(cur_val, cur_arg));
+								},
+							};
 						}
 					}
 
-					prev_sampling_point = Some((sampling_x, y));
+					prev_sampling_point = Some((sampling_arg, val));
 				},
-				Ok(Value::Empty) => {},
-				Ok(_) => {
-					return Err(vec![(id, "Function must return float or empty".to_string())]);
+				Ok(Value::Empty) => {
+					add_line(mem::take(&mut pp_buffer));
 				},
-
+				Ok(Value::Tuple(_) | Value::Float2(_, _)) => {
+					return Err(vec![(
+						id,
+						"Non-parametric function must return a single number.".to_string(),
+					)]);
+				},
+				Ok(Value::Boolean(_)) => {
+					return Err(vec![(id, "Non-parametric function must return a number.".to_string())]);
+				},
 				Err(e) => {
 					return Err(vec![(id, e.to_string())]);
 				},
 			}
 
-			let prev_x = sampling_x;
-			sampling_x += plot_params.step_size;
-			if sampling_x == prev_x {
+			let prev_sampling_arg = sampling_arg;
+			sampling_arg += step_size;
+			if sampling_arg == prev_sampling_arg {
 				break;
 			}
 		}
@@ -2313,85 +2383,10 @@ fn draw_x_function<T: EvalexprFloat>(
 
 	add_line(pp_buffer);
 
-	Ok(())
-}
-fn draw_y_function<T: EvalexprFloat>(
-	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
-	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
-) -> Result<(), Vec<(u64, String)>> {
-	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-	let mut sampling_y = plot_params.first_y;
-	let mut pp_buffer = vec![];
-	let mut prev_sampling_point: Option<(f64, f64)> = None;
-
-	if let Some(constant) = func.as_constant() {
-		let value = constant.as_float().map_err(|e| vec![(id, e.to_string())])?;
-		pp_buffer.push(PlotPoint::new(plot_params.first_y, value.to_f64()));
-		pp_buffer.push(PlotPoint::new(plot_params.last_y, value.to_f64()));
-	} else {
-		let mut discontinuity_detector = DiscontinuityDetector::new(plot_params.step_size_y, plot_params.eps);
-		while sampling_y < plot_params.last_y {
-			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_y)]) {
-				Ok(Value::Float(x)) => {
-					let x = x.to_f64();
-
-					let zoomed_in_on_nan_boundary = prev_sampling_point.and_then(|(prev_x, prev_y)| {
-						zoom_in_y_on_nan_boundary((prev_x, prev_y), (x, sampling_y), plot_params.eps, |y| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(y)])
-								.and_then(|y| y.as_float())
-								.map(|x| x.to_f64())
-								.ok()
-						})
-					});
-					let mut on_nan_boundary = false;
-					let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) = zoomed_in_on_nan_boundary {
-						on_nan_boundary = true;
-						zoomed_in_on_nan_boundary
-					} else {
-						(x, sampling_y)
-					};
-					prev_sampling_point = Some((x, sampling_y));
-
-					if !on_nan_boundary
-						&& let Some((left, right)) = discontinuity_detector.detect(cur_y, cur_x, |y| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(y)])
-								.and_then(|y| y.as_float())
-								.map(|x| x.to_f64())
-								.ok()
-						}) {
-						pp_buffer.push(PlotPoint::new(left.1, left.0));
-						// start a new line
-						add_line(mem::take(&mut pp_buffer));
-						pp_buffer.push(PlotPoint::new(right.1, right.0));
-					} else {
-						if !cur_x.is_nan() {
-							pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-						}
-					}
-				},
-				Ok(Value::Empty) => {},
-				Ok(_) => {
-					return Err(vec![(id, "Function must return float or empty".to_string())]);
-				},
-
-				Err(e) => {
-					return Err(vec![(id, e.to_string())]);
-				},
-			}
-
-			let prev_y = sampling_y;
-			sampling_y += plot_params.step_size_y;
-			if sampling_y == prev_y {
-				break;
-			}
-		}
-	}
-
-	add_line(pp_buffer);
 	Ok(())
 }
 #[allow(clippy::too_many_arguments)]
-fn draw_parametric_function<T: EvalexprFloat>(
+fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, range_start: Option<&FlatNode<T>>, range_end: Option<&FlatNode<T>>,
 	mut add_line: impl FnMut(Vec<PlotPoint>),
@@ -2410,28 +2405,47 @@ fn draw_parametric_function<T: EvalexprFloat>(
 			}
 			let mut discontinuity_detector = DiscontinuityDetector::new(step, plot_params.eps);
 			for i in 0..(plot_params.resolution + 1) {
-				let x = start + step * i as f64;
-				match func.call(&mut stack, ctx, &[f64_to_value::<T>(x)]) {
-					Ok(Value::Float(y)) => {
-						if let Some((left, right)) = discontinuity_detector.detect(x, y.to_f64(), |x| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-								.and_then(|y| y.as_float())
-								.map(|y| y.to_f64())
+				let arg = start + step * i as f64;
+				match func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)]) {
+					Ok(Value::Float(value)) => {
+						if let Some((left, right)) = discontinuity_detector.detect(arg, value.to_f64(), |arg| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
+								.and_then(|v| v.as_float())
+								.map(|v| v.to_f64())
 								.ok()
 						}) {
-							pp_buffer.push(PlotPoint::new(left.0, left.0));
-							add_line(mem::take(&mut pp_buffer));
-							pp_buffer.push(PlotPoint::new(right.0, right.0));
+							// pp_buffer.push(PlotPoint::new(left.0, left.0));
+							// add_line(mem::take(&mut pp_buffer));
+							// pp_buffer.push(PlotPoint::new(right.0, right.0));
+
+							match TY {
+								SimpleFunctionType::X => {
+									pp_buffer.push(PlotPoint::new(left.0, left.1));
+									add_line(mem::take(&mut pp_buffer));
+									pp_buffer.push(PlotPoint::new(right.0, right.1));
+								},
+								SimpleFunctionType::Y => {
+									pp_buffer.push(PlotPoint::new(left.1, left.0));
+									add_line(mem::take(&mut pp_buffer));
+									pp_buffer.push(PlotPoint::new(right.1, right.0));
+								},
+							}
 						} else {
-							if !y.is_nan() {
-								pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+							if !value.is_nan() {
+								match TY {
+									SimpleFunctionType::X => {
+										pp_buffer.push(PlotPoint::new(arg, value.to_f64()));
+									},
+									SimpleFunctionType::Y => {
+										pp_buffer.push(PlotPoint::new(value.to_f64(), arg));
+									},
+								};
 							}
 						}
 					},
 					Ok(Value::Empty) => {},
 					Ok(Value::Float2(x, y)) => {
 						// TODO: detect discontinuity for ranged thar teturn Float2
-
 						if y.is_nan() {
 							if !pp_buffer.is_empty() {
 								add_line(mem::take(&mut pp_buffer));
@@ -2441,11 +2455,11 @@ fn draw_parametric_function<T: EvalexprFloat>(
 						}
 					},
 					Ok(_) => {
-						println!("ranged function must return 1 or 2 float values");
+						// println!("ranged function must return 1 or 2 float values");
 						return Err(vec![(id, "Ranged function must return 1 or 2 float values".to_string())]);
 					},
 					Err(e) => {
-						println!("error {e}");
+						// println!("error {e}");
 						return Err(vec![(id, e.to_string())]);
 					},
 				}
@@ -2468,11 +2482,27 @@ fn draw_xy_function<T: EvalexprFloat>(
 	let maxs = (plot_params.last_x, plot_params.last_y);
 
 	for (_, lines) in marching_squares::marching_squares(
-		|cc: &mut RefMut<Stack<T>>, x, y| {
-			func.call(&mut *cc, ctx, &[f64_to_value::<T>(x), f64_to_value::<T>(y)])
-				.and_then(|y| y.as_float())
-				.map(|y| y.to_f64())
-				.map_err(|e| e.to_string())
+		|cc: &mut RefMut<Stack<T>>, x, y| match func.call(
+			&mut *cc,
+			ctx,
+			&[f64_to_value::<T>(x), f64_to_value::<T>(y)],
+		) {
+			Ok(v) => match v {
+				Value::Float(v) => Ok(v.to_f64()),
+				Value::Empty => Ok(f64::NAN),
+				Value::Tuple(_) | Value::Float2(_, _) => {
+					Err("Implicit function must return a single value.".to_string())
+				},
+				Value::Boolean(_) => Err("Implicit function must return a number.".to_string()),
+			},
+			Err(EvalexprError::ExpectedFloat { actual }) => {
+				if actual == Value::Empty {
+					Ok(f64::NAN)
+				} else {
+					Err(EvalexprError::ExpectedFloat { actual }.to_string())
+				}
+			},
+			Err(e) => Err(e.to_string()),
 		},
 		mins,
 		maxs,

@@ -5,9 +5,11 @@ use thin_vec::ThinVec;
 
 use crate::{
     error::EvalexprResultValue,
-    flat_node::{cold, FlatOperator},
+    flat_node::{cold, FlatOperator, IntegralNode},
     function::rust_function::builtin_function,
-    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value,
+    math::integrate::{self, Precision},
+    EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext,
+    IStr, Value,
 };
 
 #[inline(always)]
@@ -116,6 +118,9 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
     }
     fn pop(&mut self) -> Option<Value<T>> {
         self.stack.pop()
+    }
+    fn last_mut(&mut self) -> Option<&mut Value<T>> {
+        self.stack.last_mut()
     }
     pub(crate) fn function_called(&mut self) -> EvalexprResult<(), T> {
         if self.function_nesting > MAX_FUNCTION_NESTING {
@@ -267,7 +272,6 @@ fn eval_priv_inner<F: EvalexprFloat>(
     context: &HashMapContext<F>,
     override_vars: &[(IStr, F)],
 ) -> EvalexprResultValue<F> {
-
     let base_index = stack.len();
     for op in &node.ops {
         match op {
@@ -775,6 +779,50 @@ fn eval_priv_inner<F: EvalexprFloat>(
                     result = result * current;
                 }
                 stack.push(Value::Float(result));
+            },
+            FlatOperator::Integral(int) => {
+                let upper = stack.pop_unchecked().as_float()?;
+                let lower = stack.pop_unchecked().as_float()?;
+                let result = match int.as_ref() {
+                    IntegralNode::UnpreparedExpr { .. } => {
+                        return Err(EvalexprError::CustomMessage(
+                            "Integrals outside functions are not supported.".to_string(),
+                        ));
+                    },
+                    IntegralNode::PreparedFunc {
+                        func,
+                        additional_args,
+                    } => {
+                        use smallvec::smallvec;
+                        let mut arguments: SmallVec<[Value<F>; 4]> = smallvec![];
+
+                        for inverse_index in additional_args {
+                            let value = stack.get_unchecked(base_index - *inverse_index as usize);
+                            stack.push(value.clone());
+                        }
+                        stack.push(Value::Empty);
+                        let num_args = additional_args.len() + 1;
+
+                        arguments.push(Value::Empty);
+                        stack.num_args = num_args;
+                        let result = integrate::integrate(
+                            lower,
+                            upper,
+                            |x| {
+                                *stack.last_mut().unwrap() = Value::Float(x);
+                                func.unchecked_call(stack, context)?.as_float()
+                            },
+                            &F::INTEGRATION_PRECISION,
+                        )?;
+                        for _ in 0..num_args {
+                            stack.pop();
+                        }
+
+                        result
+                    },
+                };
+
+                stack.push(Value::Float(result.value));
             },
             FlatOperator::ReadLocalVar { idx } => {
                 let value = stack.get_unchecked(base_index + *idx as usize);

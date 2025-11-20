@@ -1,7 +1,10 @@
-use crate::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack, Value, error::{EvalexprResultValue, expect_function_argument_amount}, flat_node::FlatOperator};
+use crate::{
+    error::{expect_function_argument_amount, EvalexprResultValue},
+    flat_node::{FlatOperator, IntegralNode},
+    EvalexprFloat, FlatNode, HashMapContext, IStr, Stack, Value,
+};
 
-
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 /// Struct that represents expression function
 pub struct ExpressionFunction<F: EvalexprFloat> {
     expr: FlatNode<F>,
@@ -10,16 +13,26 @@ pub struct ExpressionFunction<F: EvalexprFloat> {
 impl<F: EvalexprFloat> ExpressionFunction<F> {
     /// Creates new ExpressionFunction from FlatNode and arguments
     pub fn new(mut expr: FlatNode<F>, args: Vec<IStr>) -> Self {
-        expr.iter_mut(&mut |op| {
-            if let FlatOperator::ReadVar { identifier } | FlatOperator::ReadVarNeg { identifier } =
-                op
-            {
+        expr.iter_mut(&mut |op| match op {
+            FlatOperator::ReadVar { identifier } | FlatOperator::ReadVarNeg { identifier } => {
                 if let Some(idx) = args.iter().position(|e| e == identifier) {
                     *op = FlatOperator::ReadParam {
                         inverse_index: (args.len() - idx) as u32,
                     };
                 }
-            }
+            },
+            FlatOperator::Integral(int) => match int.as_ref() {
+                IntegralNode::UnpreparedExpr { expr, variable } => {
+                    let mut int_args = args.clone();
+                    int_args.push(*variable);
+                    *op = FlatOperator::Integral(Box::new(IntegralNode::PreparedFunc {
+                        func: ExpressionFunction::new(expr.clone(), int_args),
+                        additional_args: (0..args.len()).map(|i| (args.len() - i) as u32).collect(),
+                    }));
+                },
+                IntegralNode::PreparedFunc { .. } => {},
+            },
+            _ => {},
         });
 
         Self {
