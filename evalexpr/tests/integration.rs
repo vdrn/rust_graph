@@ -1,6 +1,6 @@
 #![cfg(not(tarpaulin_include))]
 
-use evalexpr::{error::*, istr,  *};
+use evalexpr::{error::*, istr, *};
 use std::convert::TryFrom;
 use thin_vec::thin_vec;
 
@@ -2206,7 +2206,7 @@ fn test_clear() {
     //     eval_with_context("abc(5)", &context).unwrap(),
     //     Value::String("5".into())
     // );
-    context.clear_functions();
+    context.clear_rust_functions();
     assert!(eval_with_context("abc(5)", &context).is_err());
 
     context

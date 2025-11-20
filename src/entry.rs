@@ -1486,13 +1486,16 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 	match &mut entry.ty {
 		EntryType::Function { func, ty, identifier, .. } => {
 			let Some(node) = &func.node else { return Ok(()) };
+			// println!("INLINING FUNC {} {}",entry.name, func.text);
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
 			// println!("inlined_node: {:#?}", func.inlined_node);
 
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
-			let expr_function = ExpressionFunction::new(inlined_node, func.args.clone());
+			let expr_function = ExpressionFunction::new(inlined_node, &func.args);
+      println!("expr function {:?}", expr_function);
+
 			if identifier.to_str() != "" {
 				ctx.set_expression_function(*identifier, expr_function.clone());
 			}
@@ -2408,12 +2411,13 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 				let arg = start + step * i as f64;
 				match func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)]) {
 					Ok(Value::Float(value)) => {
-						if let Some((left, right)) = discontinuity_detector.detect(arg, value.to_f64(), |arg| {
-							func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
-								.and_then(|v| v.as_float())
-								.map(|v| v.to_f64())
-								.ok()
-						}) {
+						if let Some((left, right)) =
+							discontinuity_detector.detect(arg, value.to_f64(), |arg| {
+								func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
+									.and_then(|v| v.as_float())
+									.map(|v| v.to_f64())
+									.ok()
+							}) {
 							// pp_buffer.push(PlotPoint::new(left.0, left.0));
 							// add_line(mem::take(&mut pp_buffer));
 							// pp_buffer.push(PlotPoint::new(right.0, right.0));

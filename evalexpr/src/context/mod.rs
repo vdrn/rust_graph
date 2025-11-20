@@ -56,8 +56,14 @@ impl<F: EvalexprFloat> HashMapContext<F> {
 
     /// Removes all functions from the context.
     /// This allows to reuse the context without allocating a new HashMap.
-    pub fn clear_functions(&mut self) {
+    pub fn clear_rust_functions(&mut self) {
         self.functions.clear()
+    }
+
+    /// Removes all expression functions from the context.
+    /// This allows to reuse the context without allocating a new HashMap.
+    pub fn clear_expression_functions(&mut self) {
+        self.expr_functions.clear()
     }
 
     /// Removes all variables and functions from the context.
@@ -76,7 +82,8 @@ impl<F: EvalexprFloat> HashMapContext<F> {
     /// ```
     pub fn clear(&mut self) {
         self.clear_variables();
-        self.clear_functions();
+        self.clear_rust_functions();
+        self.clear_expression_functions();
     }
 
     /// Returns the value that is linked to the given identifier.

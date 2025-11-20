@@ -26,7 +26,7 @@ impl<NumericTypes: EvalexprFloat> From<&Value<NumericTypes>> for ValueType {
         match value {
             // Value::String(_) => ValueType::String,
             Value::Float(_) => ValueType::Float,
-            Value::Float2(_,_) => ValueType::Float2,
+            Value::Float2(_, _) => ValueType::Float2,
             // Value::Int(_) => ValueType::Int,
             Value::Boolean(_) => ValueType::Boolean,
             Value::Tuple(_) => ValueType::Tuple,

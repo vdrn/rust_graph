@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::{EvalexprError, EvalexprResult, math::integrate::Precision};
+use crate::{math::integrate::Precision, EvalexprError, EvalexprResult};
 
 use super::EvalexprFloat;
 
@@ -24,7 +24,8 @@ impl EvalexprFloat for f64 {
         precision: 1e-10,
     };
     fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self> {
-        static PRECOMPUTED: OnceLock<crate::math::integrate::AbscissasWeights<f64>> = OnceLock::new();
+        static PRECOMPUTED: OnceLock<crate::math::integrate::AbscissasWeights<f64>> =
+            OnceLock::new();
         PRECOMPUTED.get_or_init(crate::math::integrate::get_tanh_sinh_abscissas_and_weights)
     }
 

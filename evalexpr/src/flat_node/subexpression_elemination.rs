@@ -8,9 +8,9 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
 ) {
     let mut local_vars: Vec<FlatOperator<F>> = Vec::new();
     // let mut local_vars_indices: Vec<u32> = Vec::new();
-    let mut local_var_idx = 0;
+    let mut local_var_idx = node.num_local_vars;
 
-    let mut cur_idx = 0;
+    let mut cur_idx = node.num_local_var_ops as usize;
     while cur_idx < node.ops.len() {
         let op = &node.ops[cur_idx];
         let num_args = num_args(op);
@@ -60,6 +60,13 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
                 let cur_local_var_idx = local_var_idx;
                 local_var_idx += 1;
 
+                println!(
+                    "exracting {:?} from {:?} to local vars and replacing with index \
+                     {cur_local_var_idx}",
+                    &node.ops[start_idx..=cur_idx],
+                    &node.ops
+                );
+
                 let extracted = node.ops.splice(
                     start_idx..=cur_idx,
                     [FlatOperator::ReadLocalVar {
@@ -86,14 +93,12 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
     }
 
     if !local_vars.is_empty() {
-        let num_local_vars = cur_idx as u32;
-        let last_local_var_op_idx = (local_vars.len() - 1) as u32;
-        local_vars.append(&mut node.ops);
-        *node = FlatNode {
-            ops: local_vars,
-            num_local_vars,
-            last_local_var_op_idx,
-        };
+        let prev_num_local_var_ops = node.num_local_var_ops;
+        node.num_local_vars = local_var_idx;
+        node.num_local_var_ops = prev_num_local_var_ops + local_vars.len() as u32;
+
+        let insert_place = prev_num_local_var_ops as usize;
+        node.ops.splice(insert_place..insert_place, local_vars);
     }
 }
 
@@ -104,6 +109,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
         | FlatOperator::ReadVarNeg { .. }
         | FlatOperator::ReadLocalVar { .. }
         | FlatOperator::ReadParam { .. }
+        | FlatOperator::ReadParamNeg { .. }
         | FlatOperator::WriteVar { .. } => 0,
 
         FlatOperator::Neg
@@ -236,12 +242,22 @@ pub fn get_arg_ranges<F: EvalexprFloat>(
     ops: &[FlatOperator<F>],
     op_index: usize,
 ) -> SmallVec<[(usize, usize); 3]> {
-    use smallvec::smallvec;
     let num_args = num_args(&ops[op_index]);
+    if num_args == 0 {
+        return SmallVec::new();
+    }
+    get_n_previous_exprs(ops, op_index - 1, num_args)
+}
+pub fn get_n_previous_exprs<F: EvalexprFloat>(
+    ops: &[FlatOperator<F>],
+    start_idx: usize,
+    n: usize,
+) -> SmallVec<[(usize, usize); 3]> {
+    use smallvec::smallvec;
     let mut result = smallvec![];
 
-    let mut cur_arg_idx = op_index - 1;
-    for _ in 0..num_args {
+    let mut cur_arg_idx = start_idx;
+    for _ in 0..n {
         let start = get_operator_range(ops, cur_arg_idx, 0).unwrap();
         result.push((start, cur_arg_idx));
         cur_arg_idx = start - 1;

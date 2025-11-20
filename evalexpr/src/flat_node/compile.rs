@@ -17,7 +17,7 @@ pub fn compile_to_flat<F: EvalexprFloat>(node: Node<F>) -> EvalexprResult<FlatNo
     Ok(FlatNode {
         ops,
         num_local_vars: 0,
-        last_local_var_op_idx: 0,
+        num_local_var_ops: 0,
     })
 }
 

@@ -1,7 +1,10 @@
 use crate::{
-    EMPTY_VALUE, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, error::EvalexprResultValue, flat_node::{Stack, compile_to_flat}, token, tree, value::{
-        TupleType, numeric_types::default_numeric_types::DefaultNumericTypes
-    }
+    error::EvalexprResultValue,
+    flat_node::{compile_to_flat, Stack},
+    token, tree,
+    value::{numeric_types::default_numeric_types::DefaultNumericTypes, TupleType},
+    EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value,
+    EMPTY_VALUE,
 };
 
 /// Evaluate the given expression string.
@@ -105,7 +108,7 @@ pub fn build_operator_tree<NumericTypes: EvalexprFloat>(
 pub fn build_ast<NumericTypes: EvalexprFloat>(
     string: &str,
 ) -> EvalexprResult<Node<NumericTypes>, NumericTypes> {
-     tree::tokens_to_operator_tree(token::tokenize(string)?)
+    tree::tokens_to_operator_tree(token::tokenize(string)?)
 }
 
 // /// Evaluate the given expression string into a string.
@@ -127,9 +130,7 @@ pub fn build_ast<NumericTypes: EvalexprFloat>(
 /// Evaluate the given expression string into a float.
 ///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-pub fn eval_float(
-    string: &str,
-) -> EvalexprResult<DefaultNumericTypes> {
+pub fn eval_float(string: &str) -> EvalexprResult<DefaultNumericTypes> {
     eval_float_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
 
@@ -198,7 +199,7 @@ pub fn eval_empty(string: &str) -> EvalexprResult<EmptyType> {
 pub fn eval_float_with_context<F: EvalexprFloat>(
     string: &str,
     context: &HashMapContext<F>,
-) -> EvalexprResult<F,F> {
+) -> EvalexprResult<F, F> {
     match eval_with_context(string, context) {
         Ok(Value::Float(float)) => Ok(float),
         Ok(value) => Err(EvalexprError::expected_float(value)),
@@ -244,7 +245,7 @@ pub fn eval_boolean_with_context<F: EvalexprFloat>(
 pub fn eval_tuple_with_context<F: EvalexprFloat>(
     string: &str,
     context: &HashMapContext<F>,
-) -> EvalexprResult<TupleType<F>,F>{
+) -> EvalexprResult<TupleType<F>, F> {
     match eval_with_context(string, context) {
         Ok(Value::Tuple(tuple)) => Ok(tuple),
         Ok(value) => Err(EvalexprError::expected_tuple(value)),
@@ -300,7 +301,7 @@ pub fn eval_empty_with_context<F: EvalexprFloat>(
 pub fn eval_float_with_context_mut<F: EvalexprFloat>(
     string: &str,
     context: &mut HashMapContext<F>,
-) -> EvalexprResult<F,F> {
+) -> EvalexprResult<F, F> {
     match eval_with_context_mut(string, context) {
         Ok(Value::Float(float)) => Ok(float),
         Ok(value) => Err(EvalexprError::expected_float(value)),

@@ -67,9 +67,9 @@ pub struct Precision<F: EvalexprFloat> {
 pub fn tanh_sinh<F: EvalexprFloat>(
     x1: F,
     x2: F,
-    mut f: impl FnMut(F) -> EvalexprResult<F,F>,
+    mut f: impl FnMut(F) -> EvalexprResult<F, F>,
     precision: &Precision<F>,
-) -> EvalexprResult<IntegrationResult<F>,F> {
+) -> EvalexprResult<IntegrationResult<F>, F> {
     let data = F::abscissas_and_weights();
 
     let zero = F::f64_to_float(0.0);
@@ -157,11 +157,13 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 pub fn integrate<F: EvalexprFloat>(
     mut lower: F,
     mut upper: F,
-    mut f: impl FnMut(F) -> EvalexprResult<F,F>,
+    mut f: impl FnMut(F) -> EvalexprResult<F, F>,
     precision: &Precision<F>,
 ) -> EvalexprResult<IntegrationResult<F>, F> {
     if lower.is_nan() || upper.is_nan() {
-        return Err(EvalexprError::CustomMessage("Integral bounds are undefined.".to_string()));
+        return Err(EvalexprError::CustomMessage(
+            "Integral bounds are undefined.".to_string(),
+        ));
     }
     if lower > upper {
         core::mem::swap(&mut lower, &mut upper);
@@ -265,7 +267,7 @@ mod tests {
         let result = integrate(
             f64::NEG_INFINITY,
             f64::INFINITY,
-            |x|Ok( (-x * x).exp()),
+            |x| Ok((-x * x).exp()),
             &PRECISION,
         )
         .unwrap();

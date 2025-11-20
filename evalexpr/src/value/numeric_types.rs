@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::{EvalexprResult, math::integrate::Precision};
+use crate::{math::integrate::Precision, EvalexprResult};
 
 pub mod default_numeric_types;
 pub mod f32_numeric_types;

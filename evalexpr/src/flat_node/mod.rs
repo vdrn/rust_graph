@@ -4,8 +4,9 @@ use crate::{
 };
 mod compile;
 pub(crate) mod eval;
-mod variable_inlining;
+mod function_inlining;
 mod subexpression_elemination;
+mod variable_inlining;
 
 use eval::{eval_flat_node, eval_flat_node_mut};
 use variable_inlining::inline_variables_and_fold;
@@ -18,12 +19,17 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
     node: &FlatNode<F>,
     context: &mut HashMapContext<F>,
 ) -> EvalexprResult<FlatNode<F>, F> {
-    if node.num_local_vars > 0 || node.last_local_var_op_idx > 0 {
-        return Err(EvalexprError::CustomMessage("This FlatNode was already optimized.".to_string()));
+    if node.num_local_vars > 0 || node.num_local_var_ops > 0 {
+        return Err(EvalexprError::CustomMessage(
+            "This FlatNode was already optimized.".to_string(),
+        ));
     }
     let mut inlined = inline_variables_and_fold(node, context)?;
-    // println!("Inlined node: {:#?}", inlined);
+    if function_inlining::inline_functions(&mut inlined, context)? > 0 {
+        inlined = inline_variables_and_fold(&inlined, context)?;
+    };
     subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
+    // println!("optimized {:?}", inlined);
     Ok(inlined)
 }
 
@@ -238,6 +244,11 @@ pub enum FlatOperator<F: EvalexprFloat> {
         /// inverse indices will be (3,2,1)
         inverse_index: u32,
     },
+    ReadParamNeg {
+        /// for arguments           (a,b,c)
+        /// inverse indices will be (3,2,1)
+        inverse_index: u32,
+    },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntegralNode<F: EvalexprFloat> {
@@ -257,9 +268,8 @@ pub enum IntegralNode<F: EvalexprFloat> {
 pub struct FlatNode<F: EvalexprFloat> {
     ops: Vec<FlatOperator<F>>,
     num_local_vars: u32,
-    last_local_var_op_idx:u32
+    num_local_var_ops: u32,
 }
-
 
 impl<F: EvalexprFloat> FlatNode<F> {
     /// Returns the constant value of this node it it only contains a single PushConst operator.

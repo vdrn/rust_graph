@@ -2,9 +2,12 @@ use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::{
-    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value, flat_node::{
-        FlatOperator, IntegralNode, eval::{eval_range, eval_range_with_step}, subexpression_elemination::get_arg_ranges
-    }
+    flat_node::{
+        eval::{eval_range, eval_range_with_step},
+        subexpression_elemination::get_arg_ranges,
+        FlatOperator, IntegralNode,
+    },
+    EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value,
 };
 
 /// Inlines variables and folds the expression tree
@@ -14,8 +17,14 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 ) -> EvalexprResult<FlatNode<F>, F> {
     // return Ok(node.clone());
     let mut new_ops = Vec::with_capacity(node.ops.len());
+    new_ops.extend(
+        node.ops
+            .iter()
+            .take(node.num_local_var_ops as usize)
+            .cloned(),
+    );
 
-    for source_op in node.ops.iter() {
+    for source_op in node.ops.iter().skip(node.num_local_var_ops as usize) {
         match source_op {
             FlatOperator::ReadVar { identifier } => {
                 if let Some(value) = context.get_value(*identifier) {
@@ -101,6 +110,8 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
                         }
                         if let Some(prev_variable_value) = prev_variable_value {
                             context.set_value(*variable, prev_variable_value)?;
+                        } else {
+                            context.remove_value(*variable)?;
                         }
                         continue;
                     }
@@ -401,6 +412,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
             },
             FlatOperator::ReadLocalVar { .. }
             | FlatOperator::ReadParam { .. }
+            | FlatOperator::ReadParamNeg { .. }
             | FlatOperator::Eq
             | FlatOperator::Neq
             | FlatOperator::Gt
@@ -428,7 +440,11 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
         }
     }
 
-    Ok(FlatNode { ops: new_ops, num_local_vars: 0, last_local_var_op_idx: 0 })
+    Ok(FlatNode {
+        ops: new_ops,
+        num_local_vars: node.num_local_vars,
+        num_local_var_ops: node.num_local_var_ops,
+    })
 }
 fn fold_nary_op<F: EvalexprFloat>(
     new_ops: &mut Vec<FlatOperator<F>>,

@@ -239,7 +239,6 @@ pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
     //     /// The `usize` that was attempted to be converted.
     //     usize_int: usize,
     // },
-
     /// An `float` was attempted to be converted to a `usize`, but it was out of range.
     FloatIntoUsize {
         /// The `int` that was attempted to be converted.

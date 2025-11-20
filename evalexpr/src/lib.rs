@@ -604,9 +604,9 @@ mod feature_serde;
 mod flat_node;
 mod function;
 mod interface;
+mod math;
 mod token;
 mod tree;
 mod value;
-mod math;
 
 // Exports

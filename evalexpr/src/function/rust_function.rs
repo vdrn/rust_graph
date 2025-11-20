@@ -3,8 +3,10 @@ use core::fmt;
 #[cfg(feature = "regex")]
 use regex::Regex;
 
-use crate::{DefaultNumericTypes, EvalexprError, EvalexprFloat, HashMapContext, Stack, Value, ValueType, error::{EvalexprResultValue, expect_function_argument_amount}};
-
+use crate::{
+    error::{expect_function_argument_amount, EvalexprResultValue},
+    DefaultNumericTypes, EvalexprError, EvalexprFloat, HashMapContext, Stack, Value, ValueType,
+};
 
 /// A helper trait to enable cloning through `Fn` trait objects.
 trait ClonableFn<F: EvalexprFloat = DefaultNumericTypes>
@@ -111,11 +113,7 @@ trait IsSendAndSync: Send + Sync {}
 
 impl<F: EvalexprFloat> IsSendAndSync for RustFunction<F> {}
 
-
-
-fn float_is<F: EvalexprFloat>(
-    func: fn(&F) -> bool,
-) -> Option<RustFunction<F>> {
+fn float_is<F: EvalexprFloat>(func: fn(&F) -> bool) -> Option<RustFunction<F>> {
     Some(RustFunction::new(move |s, _c| {
         Ok(func(
             &s.get_arg(0)
@@ -126,9 +124,7 @@ fn float_is<F: EvalexprFloat>(
     }))
 }
 
-pub fn builtin_function<F: EvalexprFloat>(
-    identifier: &str,
-) -> Option<RustFunction<F>> {
+pub fn builtin_function<F: EvalexprFloat>(identifier: &str) -> Option<RustFunction<F>> {
     match identifier {
         "is_nan" => float_is(F::is_nan),
         "is_finite" => float_is(F::is_finite),

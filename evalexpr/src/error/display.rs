@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{EvalexprFloat, EvalexprError};
+use crate::{EvalexprError, EvalexprFloat};
 
 impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
@@ -143,11 +143,9 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
             },
             IllegalEscapeSequence(string) => write!(f, "Illegal escape sequence: {}", string),
             OutOfBoundsAccess => write!(f, "Tried to access a tuple or string at an invalid index"),
-            FloatIntoUsize { float } => write!(
-                f,
-                "The float {} cannot be converted to a usize",
-                float
-            ),
+            FloatIntoUsize { float } => {
+                write!(f, "The float {} cannot be converted to a usize", float)
+            },
             RandNotEnabled => write!(f, "The feature 'rand' must be enabled to use randomness"),
             CustomMessage(message) => write!(f, "Error: {}", message),
         }

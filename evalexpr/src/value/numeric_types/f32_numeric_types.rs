@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::{EvalexprError, EvalexprResult, math::integrate::Precision};
+use crate::{math::integrate::Precision, EvalexprError, EvalexprResult};
 
 use super::EvalexprFloat;
 
