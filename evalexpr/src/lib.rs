@@ -18,7 +18,10 @@
 //! // while `eval_[type]` returns the respective type directly.
 //! // Both can be used interchangeably.
 //! assert_eq!(eval_float("1 + 2 + 3"), Ok(6.0));
-//! assert_eq!(eval("1 /* inline comments are supported */ - 2 * 3 // as are end-of-line comments"), Ok(Value::from_float(-5.0)));
+//! assert_eq!(
+//! 	eval("1 /* inline comments are supported */ - 2 * 3 // as are end-of-line comments"),
+//! 	Ok(Value::from_float(-5.0))
+//! );
 //! assert_eq!(eval("1.0 + 2 * 3"), Ok(Value::from_float(7.0)));
 //! assert_eq!(eval("true && 4 > 2"), Ok(Value::from(true)));
 //! ```
@@ -45,21 +48,22 @@
 //! use evalexpr::*;
 //!
 //! let context: HashMapContext<DefaultNumericTypes> = context_map! {
-//!     "five" => float 5,
-//!     "twelve" => float 12,
-//!     "f" => Function::new(|argument| {
-//!         if let Ok(float) = argument.as_float() {
-//!             Ok(Value::Float(float / 2.0))
-//!         } else {
-//!             Err(EvalexprError::expected_float(argument.clone()))
-//!         }
-//!     }),
-//!     "avg" => Function::new(|argument| {
-//!         let arguments = argument.as_tuple()?;
+//! 	"five" => float 5,
+//! 	"twelve" => float 12,
+//! 	"f" => Function::new(|argument| {
+//! 		if let Ok(float) = argument.as_float() {
+//! 			Ok(Value::Float(float / 2.0))
+//! 		} else {
+//! 			Err(EvalexprError::expected_float(argument.clone()))
+//! 		}
+//! 	}),
+//! 	"avg" => Function::new(|argument| {
+//! 		let arguments = argument.as_tuple()?;
 //!
-//!         Ok(Value::Float((arguments[0].as_float()? + arguments[1].as_float()?) / 2.0))
-//!     })
-//! }.unwrap(); // Do proper error handling here
+//! 		Ok(Value::Float((arguments[0].as_float()? + arguments[1].as_float()?) / 2.0))
+//! 	})
+//! }
+//! .unwrap(); // Do proper error handling here
 //!
 //! assert_eq!(eval_with_context("five + 8 > f(twelve)", &context), Ok(Value::from(true)));
 //! // `eval_with_context` returns a variant of the `Value` enum,
@@ -106,9 +110,9 @@
 //! ### Operators
 //!
 //! This crate offers a set of binary and unary operators for building expressions.
-//! Operators have a precedence to determine their order of evaluation, where operators of higher precedence are evaluated first.
-//! The precedence should resemble that of most common programming languages, especially Rust.
-//! Variables and values have a precedence of 200, and function literals have 190.
+//! Operators have a precedence to determine their order of evaluation, where operators of higher precedence
+//! are evaluated first. The precedence should resemble that of most common programming languages, especially
+//! Rust. Variables and values have a precedence of 200, and function literals have 190.
 //!
 //! Supported binary operators:
 //!
@@ -148,8 +152,8 @@
 //! | ! | 110 | Logical not |
 //!
 //! Operators that take numbers as arguments can either take integers or floating point numbers.
-//! If one of the arguments is a floating point number, all others are converted to floating point numbers as well, and the resulting value is a floating point number as well.
-//! Otherwise, the result is an integer.
+//! If one of the arguments is a floating point number, all others are converted to floating point numbers as
+//! well, and the resulting value is a floating point number as well. Otherwise, the result is an integer.
 //! An exception to this is the exponentiation operator that always returns a floating point number.
 //! Example:
 //!
@@ -171,8 +175,10 @@
 //! ```rust
 //! use evalexpr::*;
 //!
-//! assert_eq!(eval("1, \"b\", 3"),
-//!            Ok(Value::from(vec![Value::from_float(1.0), Value::from("b"), Value::from_float(3.0)])));
+//! assert_eq!(
+//! 	eval("1, \"b\", 3"),
+//! 	Ok(Value::from(vec![Value::from_float(1.0), Value::from("b"), Value::from_float(3.0)]))
+//! );
 //! ```
 //!
 //! To create nested tuples, use parentheses:
@@ -180,23 +186,25 @@
 //! ```rust
 //! use evalexpr::*;
 //!
-//! assert_eq!(eval("1, 2, (true, \"b\")"), Ok(Value::from(vec![
-//!     Value::from_float(1.0),
-//!     Value::from_float(2.0),
-//!     Value::from(vec![
-//!         Value::from(true),
-//!         Value::from("b")
-//!     ])
-//! ])));
+//! assert_eq!(
+//! 	eval("1, 2, (true, \"b\")"),
+//! 	Ok(Value::from(vec![
+//! 		Value::from_float(1.0),
+//! 		Value::from_float(2.0),
+//! 		Value::from(vec![Value::from(true), Value::from("b")])
+//! 	]))
+//! );
 //! ```
 //!
 //! #### The Assignment Operator
 //!
-//! This crate features the assignment operator, that allows expressions to store their result in a variable in the expression context.
-//! If an expression uses the assignment operator, it must be evaluated with a mutable context.
+//! This crate features the assignment operator, that allows expressions to store their result in a variable
+//! in the expression context. If an expression uses the assignment operator, it must be evaluated with a
+//! mutable context.
 //!
 //! Note that assignments are type safe when using the `HashMapContext`.
-//! That means that if an identifier is assigned a value of a type once, it cannot be assigned a value of another type.
+//! That means that if an identifier is assigned a value of a type once, it cannot be assigned a value of
+//! another type.
 //!
 //! ```rust
 //! use evalexpr::*;
@@ -222,10 +230,11 @@
 //!
 //! #### The Expression Chaining Operator
 //!
-//! The expression chaining operator works as one would expect from programming languages that use the semicolon to end statements, like `Rust`, `C` or `Java`.
-//! It has the special feature that it returns the value of the last expression in the expression chain.
-//! If the last expression is terminated by a semicolon as well, then `Value::Empty` is returned.
-//! Expression chaining is useful together with assignment to create small scripts.
+//! The expression chaining operator works as one would expect from programming languages that use the
+//! semicolon to end statements, like `Rust`, `C` or `Java`. It has the special feature that it returns the
+//! value of the last expression in the expression chain. If the last expression is terminated by a semicolon
+//! as well, then `Value::Empty` is returned. Expression chaining is useful together with assignment to create
+//! small scripts.
 //!
 //! ```rust
 //! use evalexpr::*;
@@ -246,12 +255,14 @@
 //!
 //! ### Contexts
 //!
-//! An expression evaluator that just evaluates expressions would be useful already, but this crate can do more.
-//! It allows using [*variables*](#variables), [*assignments*](#the-assignment-operator), [*statement chaining*](#the-expression-chaining-operator) and [*user-defined functions*](#user-defined-functions) within an expression.
-//! When assigning to variables, the assignment is stored in a context.
+//! An expression evaluator that just evaluates expressions would be useful already, but this crate can do
+//! more. It allows using [*variables*](#variables), [*assignments*](#the-assignment-operator), [*statement
+//! chaining*](#the-expression-chaining-operator) and [*user-defined functions*](#user-defined-functions)
+//! within an expression. When assigning to variables, the assignment is stored in a context.
 //! When the variable is read later on, it is read from the context.
 //! Contexts can be preserved between multiple calls to eval by creating them yourself.
-//! Here is a simple example to show the difference between preserving and not preserving context between evaluations:
+//! Here is a simple example to show the difference between preserving and not preserving context between
+//! evaluations:
 //!
 //! ```rust
 //! use evalexpr::*;
@@ -266,7 +277,6 @@
 //! assert_eq!(eval_with_context("a = 6", &context), Err(EvalexprError::ContextNotMutable));
 //! // Reading a variable does not require a mutable context
 //! assert_eq!(eval_with_context("a", &context), Ok(Value::from_float(5.0)));
-//!
 //! ```
 //!
 //! Note that the assignment is forgotten between the two calls to eval in the first example.
@@ -302,18 +312,21 @@
 //! ```
 //!
 //! Contexts are also required for user-defined functions.
-//! Those can be passed one by one with the `set_function` method, but it might be more convenient to use the `context_map!` macro instead:
+//! Those can be passed one by one with the `set_function` method, but it might be more convenient to use the
+//! `context_map!` macro instead:
 //!
 //! ```rust
 //! use evalexpr::*;
 //!
-//! let context: HashMapContext<DefaultNumericTypes> = context_map!{
-//!     "f" => Function::new(|args| Ok(Value::from_float(args.as_float()? + 5.0))),
-//! }.unwrap_or_else(|error| panic!("Error creating context: {}", error));
+//! let context: HashMapContext<DefaultNumericTypes> = context_map! {
+//! 	"f" => Function::new(|args| Ok(Value::from_float(args.as_float()? + 5.0))),
+//! }
+//! .unwrap_or_else(|error| panic!("Error creating context: {}", error));
 //! assert_eq!(eval_float_with_context("f 5", &context), Ok(10.0));
 //! ```
 //!
-//! For more information about user-defined functions, refer to the respective [section](#user-defined-functions).
+//! For more information about user-defined functions, refer to the respective
+//! [section](#user-defined-functions).
 //!
 //! ### Builtin Functions
 //!
@@ -323,14 +336,18 @@
 //! ```rust
 //! use evalexpr::*;
 //! let mut context = HashMapContext::<DefaultNumericTypes>::new();
-//! assert_eq!(eval_with_context("max(1,3)",&context),Ok(Value::from_float(3.0)));
+//! assert_eq!(eval_with_context("max(1,3)", &context), Ok(Value::from_float(3.0)));
 //! context.set_builtin_functions_disabled(true).unwrap(); // Do proper error handling here
-//! assert_eq!(eval_with_context("max(1,3)",&context),Err(EvalexprError::FunctionIdentifierNotFound(String::from("max"))));
+//! assert_eq!(
+//! 	eval_with_context("max(1,3)", &context),
+//! 	Err(EvalexprError::FunctionIdentifierNotFound(String::from("max")))
+//! );
 //! ```
 //!
 //! Not all contexts support enabling or disabling builtin functions.
 //! Specifically the `EmptyContext` has builtin functions disabled by default, and they cannot be enabled.
-//! Symmetrically, the `EmptyContextWithBuiltinFunctions` has builtin functions enabled by default, and they cannot be disabled.
+//! Symmetrically, the `EmptyContextWithBuiltinFunctions` has builtin functions enabled by default, and they
+//! cannot be disabled.
 //!
 //! | Identifier           | Argument Amount | Argument Types                | Description |
 //! |----------------------|-----------------|-------------------------------|-------------|
@@ -408,17 +425,18 @@
 //! | `Value::Tuple` | `(3, 55.0, false, ())`, `(1, 2)` |
 //! | `Value::Empty` | `()` |
 //!
-//! By default, integers are internally represented as `i64`, and floating point numbers are represented as `f64`.
-//! The numeric types are defined by the `Context` trait and can for example be customised by implementing a custom context.
-//! Alternatively, for example the standard `HashMapContext` type takes the numeric types as type parameters, so it works with arbitrary numeric types.
-//! Tuples are represented as `Vec<Value>` and empty values are not stored, but represented by Rust's unit type `()` where necessary.
+//! By default, integers are internally represented as `i64`, and floating point numbers are represented as
+//! `f64`. The numeric types are defined by the `Context` trait and can for example be customised by
+//! implementing a custom context. Alternatively, for example the standard `HashMapContext` type takes the
+//! numeric types as type parameters, so it works with arbitrary numeric types. Tuples are represented as
+//! `Vec<Value>` and empty values are not stored, but represented by Rust's unit type `()` where necessary.
 //!
 //! There exist type aliases for some of the types.
 //! They include `IntType`, `FloatType`, `TupleType` and `EmptyType`.
 //!
 //! Values can be constructed either directly or using `from` functions.
-//! For integers and floats, the `from` functions are `from_int` and `from_float`, and all others use the `From` trait.
-//! See the examples below for further details.
+//! For integers and floats, the `from` functions are `from_int` and `from_float`, and all others use the
+//! `From` trait. See the examples below for further details.
 //! Values can also be decomposed using the `Value::as_[type]` methods.
 //! The type of a value can be checked using the `Value::is_[type]` methods.
 //!
@@ -450,7 +468,8 @@
 //!
 //! Variables do not have fixed types in the expression itself, but are typed by the context.
 //! Once a variable is assigned a value of a specific type, it cannot be assigned a value of another type.
-//! This might change in the future and can be changed by using a type-unsafe context (not provided by this crate as of now).
+//! This might change in the future and can be changed by using a type-unsafe context (not provided by this
+//! crate as of now).
 //!
 //! Here are some examples and counter-examples on expressions that are interpreted as variables:
 //!
@@ -475,12 +494,14 @@
 //!
 //! The function gets passed what ever value is directly behind it, be it a tuple or a single values.
 //! If there is no value behind a function, it is interpreted as a variable instead.
-//! More specifically, a function needs to be followed by either an opening brace `(`, another literal, or a value.
-//! While not including special support for multi-valued functions, they can be realized by requiring a single tuple argument.
+//! More specifically, a function needs to be followed by either an opening brace `(`, another literal, or a
+//! value. While not including special support for multi-valued functions, they can be realized by requiring a
+//! single tuple argument.
 //!
 //! Be aware that functions need to verify the types of values that are passed to them.
-//! The `error` module contains some shortcuts for verification, and error types for passing a wrong value type.
-//! Also, most numeric functions need to distinguish between being called with integers or floating point numbers, and act accordingly.
+//! The `error` module contains some shortcuts for verification, and error types for passing a wrong value
+//! type. Also, most numeric functions need to distinguish between being called with integers or floating
+//! point numbers, and act accordingly.
 //!
 //! Here are some examples and counter-examples on expressions that are interpreted as function calls:
 //!
@@ -507,14 +528,14 @@
 //! use evalexpr::*;
 //!
 //! assert_eq!(
-//!     eval(
-//!         "
+//! 	eval(
+//! 		"
 //!         // input
 //!         a = 1;  // assignment
 //!         // output
 //!         2 * a /* first double a */ + 2 // then add 2"
-//!     ),
-//!     Ok(Value::Float(4.0))
+//! 	),
+//! 	Ok(Value::Float(4.0))
 //! );
 //! ```
 //!
@@ -528,8 +549,8 @@
 //! evalexpr = {version = "<desired version>", features = ["serde_support"]}
 //! ```
 //!
-//! This crate implements `serde::de::Deserialize` for its type `Node` that represents a parsed expression tree.
-//! The implementation expects a [serde `string`](https://serde.rs/data-model.html) as input.
+//! This crate implements `serde::de::Deserialize` for its type `Node` that represents a parsed expression
+//! tree. The implementation expects a [serde `string`](https://serde.rs/data-model.html) as input.
 //! Example parsing with [ron format](https://docs.rs/ron):
 //!
 //! ```rust
@@ -537,17 +558,18 @@
 //! extern crate ron;
 //! use evalexpr::*;
 //!
-//! let mut context = context_map!{
-//!     "five" => 5
-//! }.unwrap(); // Do proper error handling here
+//! let mut context = context_map! {
+//! 	"five" => 5
+//! }
+//! .unwrap(); // Do proper error handling here
 //!
 //! // In ron format, strings are surrounded by "
 //! let serialized_free = "\"five * five\"";
 //! match ron::de::from_str::<Node>(serialized_free) {
-//!     Ok(free) => assert_eq!(free.eval_with_context(&context), Ok(Value::from_float(25.0))),
-//!     Err(error) => {
-//!         () // Handle error
-//!     }
+//! 	Ok(free) => assert_eq!(free.eval_with_context(&context), Ok(Value::from_float(25.0))),
+//! 	Err(error) => {
+//! 		() // Handle error
+//! 	},
 //! }
 //! # }
 //! ```
@@ -564,37 +586,30 @@
 //! If you require a different licensing option for your project, contact me at `isibboi at gmail.com`.
 //!
 //! Contributions to this crate are assumed to be licensed under the [MIT License](https://opensource.org/license/mit).
-//!
 
 #![deny(missing_docs)]
 // #![forbid(unsafe_code)]
 #![allow(clippy::get_first)]
 #![feature(vec_into_raw_parts)]
 
-pub use crate::{
-    context::HashMapContext,
-    error::{EvalexprError, EvalexprResult},
-    flat_node::{optimize_flat_node, FlatNode, Stack},
-    function::{expression_function::ExpressionFunction, rust_function::RustFunction},
-    interface::*,
-    token::PartialToken,
-    tree::{Node, Operator},
-    value::{
-        numeric_types::{
-            default_numeric_types::DefaultNumericTypes, f32_numeric_types::F32NumericTypes,
-            EvalexprFloat,
-        },
-        value_type::ValueType,
-        EmptyType, TupleType, Value, EMPTY_VALUE,
-    },
-};
+pub use crate::context::HashMapContext;
+pub use crate::error::{EvalexprError, EvalexprResult};
+pub use crate::flat_node::{optimize_flat_node, FlatNode, Stack};
+pub use crate::function::expression_function::ExpressionFunction;
+pub use crate::function::rust_function::RustFunction;
+pub use crate::interface::*;
+pub use crate::token::PartialToken;
+pub use crate::tree::{Node, Operator};
+pub use crate::value::numeric_types::default_numeric_types::DefaultNumericTypes;
+pub use crate::value::numeric_types::f32_numeric_types::F32NumericTypes;
+pub use crate::value::numeric_types::EvalexprFloat;
+pub use crate::value::value_type::ValueType;
+pub use crate::value::{EmptyType, TupleType, Value, EMPTY_VALUE};
 /// Interned string for identifiers
 pub type IStr = istr::IStr;
 pub(crate) type IStrMap<T> = istr::IStrMap<T>;
 /// Interned string constructor
-pub fn istr(string: &str) -> IStr {
-    istr::IStr::new(string)
-}
+pub fn istr(string: &str) -> IStr { istr::IStr::new(string) }
 
 // mod compiled_node;
 mod context;
