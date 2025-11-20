@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
-	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, RustFunction, Stack, Value, istr
+	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, RustFunction, Stack, Value, eval_float_with_context, istr
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -205,12 +205,28 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 	}
 }
 impl<T: EvalexprFloat> Expr<T> {
-	fn inline_pass(&mut self, ctx: &mut evalexpr::HashMapContext<T>) -> Result<(), String> {
-		if let Some(node) = &self.node {
-			self.inlined_node = Some(evalexpr::optimize_flat_node(node, ctx).map_err(|e| e.to_string())?);
+	fn from_text(text: &str) -> Self {
+		Self {
+			node:          evalexpr::build_operator_tree::<T>(text).ok(),
+			inlined_node:  None,
+			expr_function: None,
+			text:          text.to_string(),
+			textbox_type:  TextboxType::default(),
+			args:          Vec::new(),
 		}
-		Ok(())
 	}
+
+	fn args_to_string(&self) -> String {
+		let mut args_string = String::new();
+		for (i, arg) in self.args.iter().enumerate() {
+			if i > 0 {
+				args_string.push_str(", ");
+			}
+			args_string.push_str(arg.to_str());
+		}
+		args_string
+	}
+
 	fn edit_ui(
 		&mut self, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
 		preprocess: bool,
@@ -303,26 +319,29 @@ impl<T: EvalexprFloat> Expr<T> {
 		.inner
 	}
 }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FunctionType {
-	X,
-	Y,
-	Ranged,
-	Implicit { complex: bool },
+	// ExpressionX,
+	// ExpressionY,
+	Expression,
+	WithCustomParams,
 }
 #[derive(Clone, Debug)]
 pub enum EntryType<T: EvalexprFloat> {
 	Function {
 		can_be_drawn: bool,
+		identifier:   IStr,
 		func:         Expr<T>,
 		style:        GLineStyle,
 		ty:           FunctionType,
 
-		/// used for `RangedFunction`
+		parametric:          bool,
+		/// used when parametric is `true`
 		range_start:         Expr<T>,
-		/// used for `RangedFunction`
+		/// used when parametric is `true`
 		range_end:           Expr<T>,
-		/// used for `ImplicitFunction`
+		/// used for functions with x,y params
 		implicit_resolution: usize,
 	},
 	Constant {
@@ -566,7 +585,9 @@ impl<T: EvalexprFloat> Entry<T> {
 			visible: true,
 			name: String::new(),
 			ty: EntryType::Function {
-				can_be_drawn:        true,
+				identifier:   istr(""),
+				can_be_drawn: true,
+
 				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
 					inlined_node: None,
@@ -575,9 +596,10 @@ impl<T: EvalexprFloat> Entry<T> {
 					textbox_type: TextboxType::default(),
 					args: Vec::new(),
 				},
-				range_start:         Expr::default(),
-				range_end:           Expr::default(),
-				ty:                  FunctionType::X,
+				parametric:          false,
+				range_start:         Expr::from_text("-2"),
+				range_end:           Expr::from_text("2"),
+				ty:                  FunctionType::Expression,
 				style:               GLineStyle::default(),
 				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},
@@ -871,6 +893,7 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 			let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
 			if ui.add(TextEdit::singleline(&mut entry.name).desired_width(30.0).hint_text("name")).changed() {
 				result.needs_recompilation = true;
+				result.parsed = true;
 			}
 			if RESERVED_NAMES.contains(&entry.name.trim()) {
 				result.error = Some(format!("{} is reserved name.", entry.name));
@@ -883,7 +906,15 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 				EntryType::Folder { .. } => {
 					// handled in outer scope
 				},
-				EntryType::Function { func, range_start, range_end, ty, implicit_resolution, .. } => {
+				EntryType::Function {
+					func,
+					parametric,
+					range_start,
+					range_end,
+					ty,
+					implicit_resolution,
+					..
+				} => {
 					ui.vertical(|ui| {
 						match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
 							Ok(changed) => {
@@ -895,58 +926,49 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 							},
 						}
 
-						ui.horizontal(|ui| {
-							match ty {
-								FunctionType::X | FunctionType::Ranged => {
-									let mut is_ranged = *ty == FunctionType::Ranged;
-									ui.checkbox(&mut is_ranged, "Parametric");
-									*ty = if is_ranged { FunctionType::Ranged } else { FunctionType::X };
-								},
-
-								_ => {},
-							}
-							match ty {
-								FunctionType::Ranged => {
-									ui.label("Start:");
-									match range_start.edit_ui(ui, "", Some(30.0), clear_cache, false) {
-										Ok(changed) => {
-											result.needs_recompilation |= changed;
-											result.parsed |= changed;
-										},
-										Err(e) => {
-											result.error = Some(format!("Parsing error: {e}"));
-										},
-									}
-									ui.label("End:");
-									match range_end.edit_ui(ui, "", Some(30.0), clear_cache, false) {
-										Ok(changed) => {
-											result.needs_recompilation |= changed;
-											result.parsed |= changed;
-										},
-										Err(e) => {
-											result.error = Some(format!("Parsing error: {e}"));
-										},
-									}
-								},
-								FunctionType::Implicit { complex } => {
-									ui.horizontal(|ui| {
-										Slider::new(
-											implicit_resolution,
-											MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
-										)
-										.text("Implicit Resolution")
-										.ui(ui);
-										if *complex {
-											ui.label("Complex");
+						ui.vertical(|ui| {
+							if func.args.len() == 1 {
+								ui.horizontal(|ui| {
+									ui.checkbox(parametric, "Parametric");
+									if *parametric && func.args.len() == 1 {
+										ui.label("Start:");
+										match range_start.edit_ui(ui, "", Some(30.0), clear_cache, false) {
+											Ok(changed) => {
+												result.needs_recompilation |= changed;
+												result.parsed |= changed;
+											},
+											Err(e) => {
+												result.error = Some(format!("Parsing error: {e}"));
+											},
 										}
-									});
-								},
-								_ => {},
+										ui.label("End:");
+										match range_end.edit_ui(ui, "", Some(30.0), clear_cache, false) {
+											Ok(changed) => {
+												result.needs_recompilation |= changed;
+												result.parsed |= changed;
+											},
+											Err(e) => {
+												result.error = Some(format!("Parsing error: {e}"));
+											},
+										}
+									}
+								});
+								ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
+							}
+							if func.args.len() == 2
+								&& func.args[0].to_str() == "x"
+								&& func.args[1].to_str() == "y"
+							{
+								ui.horizontal(|ui| {
+									Slider::new(
+										implicit_resolution,
+										MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
+									)
+									.text("Implicit Resolution")
+									.ui(ui);
+								});
 							}
 						});
-						if let FunctionType::Ranged = ty {
-							ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(x)->(x,y)");
-						}
 					});
 				},
 				EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
@@ -1377,47 +1399,80 @@ pub fn prepare_entry<T: EvalexprFloat>(
 				ctx.set_value(*istr_name, evalexpr::Value::<T>::Float(*value)).unwrap();
 			}
 		},
-		EntryType::Function { func, ty, can_be_drawn, .. } => {
+		EntryType::Function { func, identifier, ty, can_be_drawn, .. } => {
 			if let Some(func_node) = func.node.clone() {
-				*can_be_drawn = true;
 				func.args.clear();
 
-				let mut has_x = false;
-				let mut has_y = false;
-				let mut has_complex = false;
-				for ident in func_node.iter_identifiers() {
-					if ident == "x" {
-						has_x = true;
-					} else if ident == "y" {
-						has_y = true;
-					} else if ident == "zx" || ident == "zy" {
-						has_complex = true;
-					}
-				}
-				// TODO: this is temprary while we're adapting to new API
-				if has_x {
-					func.args.push(istr("x"));
-				}
-				if has_y {
-					func.args.push(istr("y"));
-				}
-				if has_complex {
-					func.args.push(istr("zx"));
-					func.args.push(istr("zy"));
+				let name_ast = evalexpr::build_ast::<T>(&entry.name).map_err(|e| (entry.id, e.to_string()))?;
+				println!("name ast {:#?}", name_ast);
+
+				let first_ast_node =
+					if name_ast.children().is_empty() { &name_ast } else { &name_ast.children()[0] };
+
+				match first_ast_node.operator() {
+					evalexpr::Operator::VariableIdentifierRead { .. } | evalexpr::Operator::RootNode => {
+						*ty = FunctionType::Expression;
+						let mut has_x = false;
+						let mut has_y = false;
+						// let mut has_complex = false;
+						for ident in func_node.iter_identifiers() {
+							if ident == "x" {
+								has_x = true;
+							} else if ident == "y" {
+								has_y = true;
+							}
+						}
+						if has_x {
+							func.args.push(istr("x"));
+						}
+						if has_y {
+							func.args.push(istr("y"));
+						}
+						if let evalexpr::Operator::VariableIdentifierRead { identifier: function_ident } =
+							first_ast_node.operator()
+						{
+							*identifier = *function_ident;
+						} else {
+							*identifier = istr("");
+						}
+					},
+					evalexpr::Operator::FunctionIdentifier { identifier: function_ident } => {
+						*ty = FunctionType::WithCustomParams;
+						for child in first_ast_node.children() {
+							if let evalexpr::Operator::VariableIdentifierRead { identifier: arg_ident } =
+								child.operator()
+							{
+								func.args.push(*arg_ident);
+							} else {
+								return Err((entry.id, "Invalid function parameter name".to_string()));
+							}
+						}
+						*identifier = *function_ident;
+					},
+					_ => {
+						*identifier = istr("");
+						return Err((entry.id, "Invalid function name".to_string()));
+					},
 				}
 
-				if (has_x && has_y) || has_complex {
-					if !func.text.contains('=') {
-						*can_be_drawn = false;
-						// func.node = None;
-						// return Err((entry.id, "Implicit function must contain = sign".to_string()));
-					}
-					*ty = FunctionType::Implicit { complex: has_complex };
-				} else if has_y {
-					*ty = FunctionType::Y;
-				} else if matches!(ty, FunctionType::Implicit { .. } | FunctionType::Y) {
-					*ty = FunctionType::X;
-				}
+				// TODO: this is temprary while we're adapting to new API
+				// if has_complex {
+				// 	func.args.push(istr("zx"));
+				// 	func.args.push(istr("zy"));
+				// }
+
+				// if (has_x && has_y) || has_complex {
+				// 	if !func.text.contains('=') {
+				// 		*can_be_drawn = false;
+				// 		// func.node = None;
+				// 		// return Err((entry.id, "Implicit function must contain = sign".to_string()));
+				// 	}
+				// 	*ty = FunctionType::Implicit { complex: has_complex };
+				// } else if has_y {
+				// 	*ty = FunctionType::Y;
+				// } else if matches!(ty, FunctionType::Implicit { .. } | FunctionType::Y) {
+				// 	*ty = FunctionType::X;
+				// }
 			}
 		},
 	}
@@ -1429,128 +1484,25 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, reserved_vars: &ReservedVars,
 ) -> Result<(), (u64, String)> {
 	match &mut entry.ty {
-		EntryType::Function { func, ty, .. } => {
-			if let Err(errs) = func.inline_pass(ctx) {
-				return Err((entry.id, errs));
-			}
+		EntryType::Function { func, ty, identifier, .. } => {
+			let Some(node) = &func.node else { return Ok(()) };
+			let inlined_node =
+				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
 			// println!("inlined_node: {:#?}", func.inlined_node);
-			if let Some(inlined_node) = func.inlined_node.clone() {
-				let thread_local_context = thread_local_context.clone();
-				let ty = *ty;
-				let reserved_vars = reserved_vars.clone();
-				match ty {
-					FunctionType::X => {
-						let mut args = vec![];
-						if let Some(x_arg) = func.args.iter().find(|arg| arg.to_str() == "x") {
-							args.push(*x_arg);
-						}
-						let expr_function = ExpressionFunction::new(inlined_node, args);
-						// println!("expr_function: {:#?}", expr_function);
 
-						if !entry.name.trim().is_empty() {
-							ctx.set_expression_function(istr(entry.name.trim()), expr_function.clone());
-						}
-						func.expr_function = Some(expr_function);
-
-						return Ok(());
-					},
-					FunctionType::Ranged | FunctionType::Y => {},
-					_ => {},
-				}
-				if !entry.name.trim().is_empty() {
-					let fun = RustFunction::new(move |stack: &mut Stack<T>, context: &HashMapContext<T>| {
-						let res = match ty {
-							FunctionType::X => {
-								unreachable!()
-							},
-							FunctionType::Ranged | FunctionType::Y => {
-								let v = match stack.get_arg(0) {
-									Some(Value::Float(x)) => *x,
-									Some(Value::Float2(x, _)) => *x,
-									_ => T::ZERO,
-								};
-
-								if ty == FunctionType::Y {
-									eval_with_context_and_y(&inlined_node, stack, context, &reserved_vars, v)
-								} else {
-									eval_with_context_and_x(&inlined_node, stack, context, &reserved_vars, v)
-								}
-							},
-							FunctionType::Implicit { complex } => {
-								if complex {
-									let tl_context = thread_local_get(thread_local_context.as_ref());
-									let cc_x = tl_context.cc_x.get();
-									let cc_y = tl_context.cc_y.get();
-									if stack.num_args() == 1 {
-										let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
-											return Err(EvalexprError::wrong_function_argument_amount(
-												stack.num_args(),
-												2,
-											));
-										};
-										eval_with_context_and_xy_and_z(
-											&inlined_node, stack, context, &reserved_vars, cc_x, cc_y, v.0,
-											v.1,
-										)
-									} else if stack.num_args() == 2 {
-										eval_with_context_and_xy_and_z(
-											&inlined_node,
-											stack,
-											context,
-											&reserved_vars,
-											cc_x,
-											cc_y,
-											stack.get_arg(0).unwrap().as_float()?,
-											stack.get_arg(1).unwrap().as_float()?,
-										)
-									} else {
-										return Err(EvalexprError::wrong_function_argument_amount(
-											stack.num_args(),
-											2,
-										));
-									}
-								} else {
-									if stack.num_args() == 1 {
-										let Ok(v) = stack.get_arg(0).unwrap().as_float2() else {
-											return Err(EvalexprError::wrong_function_argument_amount(
-												stack.num_args(),
-												2,
-											));
-										};
-										eval_with_context_and_xy(
-											&inlined_node, stack, context, &reserved_vars, v.0, v.1,
-										)
-									} else if stack.num_args() == 2 {
-										eval_with_context_and_xy(
-											&inlined_node,
-											stack,
-											context,
-											&reserved_vars,
-											stack.get_arg(0).unwrap().as_float()?,
-											stack.get_arg(1).unwrap().as_float()?,
-										)
-									} else {
-										return Err(EvalexprError::wrong_function_argument_amount(
-											stack.num_args(),
-											2,
-										));
-									}
-								}
-							},
-						};
-
-						// tl_context.stack_overflow_guard.set(stack_depth);
-						res
-					});
-
-					ctx.set_function(istr(entry.name.trim()), fun);
-				}
+			// let thread_local_context = thread_local_context.clone();
+			// let ty = *ty;
+			let expr_function = ExpressionFunction::new(inlined_node, func.args.clone());
+			if identifier.to_str() != "" {
+				ctx.set_expression_function(*identifier, expr_function.clone());
 			}
+			func.expr_function = Some(expr_function);
 		},
 		EntryType::Integral { func, .. } => {
-			if let Err(errs) = func.inline_pass(ctx) {
-				return Err((entry.id, errs));
-			}
+			let Some(node) = &func.node else { return Ok(()) };
+			let inlined_node =
+				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
+			func.inlined_node = Some(inlined_node);
 		},
 		_ => {},
 	}
@@ -1643,6 +1595,7 @@ pub struct PlotParams {
 	pub resolution:  usize,
 }
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::panic_in_result_fn)]
 pub fn create_entry_plot_elements<T: EvalexprFloat>(
 	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
@@ -1742,25 +1695,7 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 					reserved_vars,
 					f64_to_float::<T>(sampling_x),
 				) {
-					Ok(y) => {
-						y.to_f64()
-						// if let Some((prev_x, prev_y)) = prev_sampling_point {
-						// 	(cur_x, cur_y) = zoom_in_on_nan_boundary(
-						// 		(prev_x, prev_y),
-						// 		(sampling_x, y.to_f64()),
-						// 		plot_params.eps,
-						// 		|x| {
-						// 			func.eval_float_with_context_and_x(ctx, &f64_to_value(x))
-						// 				.map(|y| y.to_f64())
-						// 				.ok()
-						// 		},
-						// 	)
-						// } else {
-						// 	cur_x = sampling_x;
-						// 	cur_y = y.to_f64();
-						// }
-						// prev_sampling_point = Some((sampling_x, y.to_f64()));
-					},
+					Ok(y) => y.to_f64(),
 					Err(e) => {
 						return Err(vec![(entry.id, e.to_string())]);
 					},
@@ -1829,7 +1764,7 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 
-			match eval_point(&mut stack, ctx, reserved_vars, x.node.as_ref(), y.node.as_ref()) {
+			match eval_point(&mut stack, ctx, x.node.as_ref(), y.node.as_ref()) {
 				Ok(Some((x, y))) => {
 					let size = if let Some(size) = &size.node {
 						match eval_float_with_context_and_x(
@@ -1882,7 +1817,7 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			) * 0.002;
 			let points_len = points.len();
 			for (i, p) in points.iter_mut().enumerate() {
-				match eval_point(&mut stack, ctx, reserved_vars, p.x.node.as_ref(), p.y.node.as_ref()) {
+				match eval_point(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some((x, y))) => {
 						p.val = Some((f64_to_float::<T>(x), f64_to_float::<T>(y)));
 						let point_id = id.with(i);
@@ -1995,6 +1930,8 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 		EntryType::Function {
 			func,
 			can_be_drawn,
+			identifier,
+			parametric,
 			range_start,
 			range_end,
 			style,
@@ -2005,35 +1942,13 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				return Ok(());
 			}
-			let name = if entry.name.is_empty() {
-				match ty {
-					FunctionType::Y => format!("f(y): {}", func.text.trim()),
-					FunctionType::Ranged | FunctionType::X => {
-						format!("f(x):  {}", func.text.trim())
-					},
-					FunctionType::Implicit { complex } => {
-						if *complex {
-							format!("F(zx,zy): {}", func.text.trim())
-						} else {
-							func.text.clone()
-						}
-					},
-				}
+
+			let display_name = if identifier.is_empty() {
+				format!("f({}): {}", func.args_to_string(), func.text.trim())
 			} else {
-				match ty {
-					FunctionType::Y => format!("{}(y):  {}", entry.name.trim(), func.text.trim()),
-					FunctionType::Ranged | FunctionType::X => {
-						format!("{}(x): {}", entry.name.trim(), func.text.trim())
-					},
-					FunctionType::Implicit { complex } => {
-						if *complex {
-							format!("{}(zx,zy): {}", entry.name.trim(), func.text.trim())
-						} else {
-							format!("{}: {}", entry.name.trim(), func.text.trim())
-						}
-					},
-				}
+				format!("{}({}): {}", identifier, func.args_to_string(), func.text.trim())
 			};
+
 			let selected = selected_id == Some(id);
 			let width = if selected { style.line_width + 2.5 } else { style.line_width };
 
@@ -2043,13 +1958,13 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			// 		.entry(text.clone())
 			// 		.or_insert_with(|| AHashMap::with_capacity(ui_state.conf.resolution))
 			// });
-			let add_line = |line: Vec<PlotPoint>| {
+			let mut add_line = |line: Vec<PlotPoint>| {
 				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.lines.push(DrawLine::new(
 					sorting_idx,
 					id,
 					width,
-					Line::new(&name, PlotPoints::Owned(line))
+					Line::new(&display_name, PlotPoints::Owned(line))
 						.id(id)
 						.width(width)
 						.style(style.egui_line_style())
@@ -2058,371 +1973,44 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 			};
 
 			if let Some(expr_func) = &func.expr_function {
-				match ty {
-					FunctionType::X => {
-						let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-						let mut pp_buffer = vec![];
-						let mut prev_sampling_point: Option<(f64, f64)> = None;
-						let mut sampling_x = plot_params.first_x;
-						if let Some(constant) = expr_func.as_constant() {
-							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
-							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
-							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
-						} else if func.args.is_empty() {
-							let value = expr_func
-								.call(&mut stack, ctx, &[])
-								.and_then(|v| v.as_float())
-								.map_err(|e| vec![(entry.id, e.to_string())])?;
-							pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
-							pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
-						} else {
-							// let mut prev_y = None;
-							let mut discontinuity_detector =
-								DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
-
-							while sampling_x < plot_params.last_x {
-								match expr_func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_x)]) {
-									Ok(Value::Float(y)) => {
-										let y = y.to_f64();
-
-										let zoomed_in_on_nan_boundary =
-											prev_sampling_point.and_then(|(prev_x, prev_y)| {
-												zoom_in_x_on_nan_boundary(
-													(prev_x, prev_y),
-													(sampling_x, y),
-													plot_params.eps,
-													|x| {
-														expr_func
-															.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-															.and_then(|y| y.as_float())
-															.map(|y| y.to_f64())
-															.ok()
-													},
-												)
-											});
-
-										let mut on_nan_boundary = false;
-										let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) =
-											zoomed_in_on_nan_boundary
-										{
-											on_nan_boundary = true;
-											zoomed_in_on_nan_boundary
-										} else {
-											(sampling_x, y)
-										};
-
-										if !on_nan_boundary
-											&& let Some((left, right)) =
-												discontinuity_detector.detect(cur_x, cur_y, |x| {
-													expr_func
-														.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
-														.and_then(|y| y.as_float())
-														.map(|y| y.to_f64())
-														.ok()
-												}) {
-											pp_buffer.push(PlotPoint::new(left.0, left.1));
-											// start a new line
-											add_line(mem::take(&mut pp_buffer));
-											pp_buffer.push(PlotPoint::new(right.0, right.1));
-										} else {
-											if !cur_y.is_nan() {
-												pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-											}
-										}
-
-										prev_sampling_point = Some((sampling_x, y));
-									},
-									Ok(Value::Empty) => {},
-									Ok(_) => {
-										return Err(vec![(
-											entry.id,
-											"Function must return float or empty".to_string(),
-										)]);
-									},
-
-									Err(e) => {
-										return Err(vec![(entry.id, e.to_string())]);
-									},
-								}
-
-								let prev_x = sampling_x;
-								sampling_x += plot_params.step_size;
-								if sampling_x == prev_x {
-									break;
-								}
-							}
-						}
-
-						add_line(pp_buffer);
-					},
-					FunctionType::Y => {
-						todo!()
-					},
-					_ => {
-						todo!()
-					},
-				}
-			} else if let Some(func_node) = &func.inlined_node {
-				match ty {
-					FunctionType::X => {},
-
-					FunctionType::Y => {
-						let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-						let mut sampling_y = plot_params.first_y;
-						let mut pp_buffer = vec![];
-						let mut prev_sampling_point: Option<(f64, f64)> = None;
-						if let Some(constant) = func_node.as_constant() {
-							let value = constant.as_float().map_err(|e| vec![(entry.id, e.to_string())])?;
-							pp_buffer.push(PlotPoint::new(plot_params.first_y, value.to_f64()));
-							pp_buffer.push(PlotPoint::new(plot_params.last_y, value.to_f64()));
-						} else {
-							let mut discontinuity_detector =
-								DiscontinuityDetector::new(plot_params.step_size_y, plot_params.eps);
-							while sampling_y < plot_params.last_y {
-								match eval_with_context_and_y(
-									func_node,
-									&mut stack,
-									ctx,
-									reserved_vars,
-									f64_to_float::<T>(sampling_y),
-								) {
-									Ok(Value::Float(x)) => {
-										let x = x.to_f64();
-
-										let zoomed_in_on_nan_boundary =
-											prev_sampling_point.and_then(|(prev_x, prev_y)| {
-												zoom_in_y_on_nan_boundary(
-													(prev_x, prev_y),
-													(x, sampling_y),
-													plot_params.eps,
-													|y| {
-														eval_float_with_context_and_y(
-															func_node,
-															&mut stack,
-															ctx,
-															reserved_vars,
-															f64_to_float::<T>(y),
-														)
-														.map(|x| x.to_f64())
-														.ok()
-													},
-												)
-											});
-										let mut on_nan_boundary = false;
-										let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) =
-											zoomed_in_on_nan_boundary
-										{
-											on_nan_boundary = true;
-											zoomed_in_on_nan_boundary
-										} else {
-											(x, sampling_y)
-										};
-										prev_sampling_point = Some((x, sampling_y));
-
-										if !on_nan_boundary
-											&& let Some((left, right)) =
-												discontinuity_detector.detect(cur_y, cur_x, |y| {
-													eval_float_with_context_and_y(
-														func_node,
-														&mut stack,
-														ctx,
-														reserved_vars,
-														f64_to_float::<T>(y),
-													)
-													.map(|x| x.to_f64())
-													.ok()
-												}) {
-											pp_buffer.push(PlotPoint::new(left.1, left.0));
-											// start a new line
-											add_line(mem::take(&mut pp_buffer));
-											pp_buffer.push(PlotPoint::new(right.1, right.0));
-										} else {
-											if !cur_x.is_nan() {
-												pp_buffer.push(PlotPoint::new(cur_x, cur_y));
-											}
-										}
-									},
-									Ok(Value::Empty) => {},
-									Ok(_) => {
-										return Err(vec![(
-											entry.id,
-											"Function must return float or empty".to_string(),
-										)]);
-									},
-
-									Err(e) => {
-										return Err(vec![(entry.id, e.to_string())]);
-									},
-								}
-
-								let prev_y = sampling_y;
-								sampling_y += plot_params.step_size_y;
-								if sampling_y == prev_y {
-									break;
-								}
-							}
-						}
-
-						add_line(pp_buffer);
-					},
-					FunctionType::Ranged => {
-						let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-						let mut pp_buffer = vec![];
-						match eval_point(
-							&mut stack,
+				if func.args.is_empty() {
+					let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+					// horizontal line
+					let value = expr_func
+						.call(&mut stack, ctx, &[])
+						.and_then(|v| v.as_float())
+						.map_err(|e| vec![(entry.id, e.to_string())])?;
+					add_line(vec![
+						PlotPoint::new(plot_params.first_x, value.to_f64()),
+						PlotPoint::new(plot_params.last_x, value.to_f64()),
+					]);
+				} else if func.args.len() == 1 {
+					// starndard X or Y function
+					if *parametric {
+						draw_parametric_function(
+							tl_context,
 							ctx,
-							reserved_vars,
+							plot_params,
+							entry.id,
+							expr_func,
 							range_start.node.as_ref(),
 							range_end.node.as_ref(),
-						) {
-							Ok(Some((start, end))) => {
-								if start > end {
-									return Err(vec![(
-										entry.id,
-										"Range start must be less than range end".to_string(),
-									)]);
-								}
-								let range = end - start;
-								let step = range / plot_params.resolution as f64;
-								if start + step == end {
-									return Ok(());
-								}
-								let mut discontinuity_detector =
-									DiscontinuityDetector::new(step, plot_params.eps);
-								for i in 0..(plot_params.resolution + 1) {
-									let x = start + step * i as f64;
-									match eval_with_context_and_x(
-										func_node,
-										&mut stack,
-										ctx,
-										reserved_vars,
-										f64_to_float::<T>(x),
-									) {
-										Ok(Value::Float(y)) => {
-											if let Some((left, right)) =
-												discontinuity_detector.detect(x, y.to_f64(), |x| {
-													eval_float_with_context_and_x(
-														func_node,
-														&mut stack,
-														ctx,
-														reserved_vars,
-														f64_to_float::<T>(x),
-													)
-													.map(|y| y.to_f64())
-													.ok()
-												}) {
-												pp_buffer.push(PlotPoint::new(left.0, left.0));
-												add_line(mem::take(&mut pp_buffer));
-												pp_buffer.push(PlotPoint::new(right.0, right.0));
-											} else {
-												if !y.is_nan() {
-													pp_buffer.push(PlotPoint::new(x, y.to_f64()));
-												}
-											}
-										},
-										Ok(Value::Empty) => {},
-										Ok(Value::Float2(x, y)) => {
-											// TODO: detect discontinuity for ranged thar teturn Float2
-
-											// if let Some((left, right)) =
-											// 	discontinuity_detector.detect(x.to_f64(), y.to_f64(), |x| {
-											// 		eval_with_context_and_x(
-											// 			func_node,
-											// 			&mut stack,
-											// 			ctx,
-											// 			reserved_vars,
-											// 			f64_to_float::<T>(x),
-											// 		)
-											// 		.and_then(|y| y.as_float2())
-											// 		.map(|y| y.1.to_f64())
-											// 		.ok()
-											// 	}) {
-											// 	pp_buffer.push(PlotPoint::new(left.0, left.0));
-											// 	add_line(mem::take(&mut pp_buffer));
-											// 	pp_buffer.push(PlotPoint::new(right.0, right.0));
-											// } else {
-											// 	if !y.is_nan() {
-											// 		pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
-											// 	}
-											// }
-											if y.is_nan() {
-												if !pp_buffer.is_empty() {
-													add_line(mem::take(&mut pp_buffer));
-												}
-											} else {
-												pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
-											}
-										},
-										Ok(_) => {
-											return Err(vec![(
-												entry.id,
-												"Ranged function must return 1 or 2 float values".to_string(),
-											)]);
-										},
-										Err(e) => {
-											return Err(vec![(entry.id, e.to_string())]);
-										},
-									}
-								}
-								add_line(pp_buffer);
-							},
-							Err(e) => {
-								return Err(vec![(entry.id, e)]);
-							},
-							_ => {},
+							&mut add_line,
+						)?;
+					} else {
+						if func.args[0].to_str() == "x" {
+							draw_x_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line)?;
+						} else if func.args[0].to_str() == "y" {
+							draw_y_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line)?;
 						}
-					},
-					FunctionType::Implicit { .. } => {
-						let mins = (plot_params.first_x, plot_params.first_y);
-						let maxs = (plot_params.last_x, plot_params.last_y);
-
-						struct ImplicitContext<'a, T: EvalexprFloat> {
-							stack: RefMut<'a, Stack<T>>,
-							x:     &'a Cell<T>,
-							y:     &'a Cell<T>,
-						}
-						for (_, lines) in marching_squares::marching_squares(
-							|cc: &mut ImplicitContext<T>, x, y| {
-								let xf = f64_to_float::<T>(x);
-								let yf = f64_to_float::<T>(y);
-
-								cc.x.set(xf);
-								cc.y.set(yf);
-								eval_float_with_context_and_xy_and_z(
-									func_node,
-									&mut cc.stack,
-									ctx,
-									reserved_vars,
-									f64_to_float::<T>(x),
-									f64_to_float::<T>(y),
-									f64_to_float::<T>(x),
-									f64_to_float::<T>(y),
-								)
-								.map(|y| y.to_f64())
-								.map_err(|e| e.to_string())
-							},
-							mins,
-							maxs,
-							*implicit_resolution,
-							|| {
-								let tl_context = thread_local_get(tl_context);
-								// tl_context.stack_overflow_guard.set(0);
-
-								ImplicitContext {
-									stack: tl_context.stack.borrow_mut(),
-									x:     &tl_context.cc_x,
-									y:     &tl_context.cc_y,
-								}
-							},
-							&thread_local_get(tl_context).marching_squares_cache,
-						)
-						.map_err(|e| vec![(entry.id, e)])?
-						{
-							for line in lines {
-								add_line(line);
-							}
-						}
-					},
+					}
+				} else if func.args.len() == 2 {
+					if func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
+						draw_xy_function(
+							tl_context, ctx, plot_params, entry.id, expr_func, *implicit_resolution,
+							&mut add_line,
+						)?;
+					}
 				}
 			}
 		},
@@ -2431,14 +2019,14 @@ pub fn create_entry_plot_elements<T: EvalexprFloat>(
 }
 
 pub fn eval_point<T: EvalexprFloat>(
-	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, reserved_vars: &ReservedVars,
-	px: Option<&FlatNode<T>>, py: Option<&FlatNode<T>>,
+	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, px: Option<&FlatNode<T>>,
+	py: Option<&FlatNode<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
 	let (Some(x), Some(y)) = (px, py) else {
 		return Ok(None);
 	};
-	let x = eval_float_with_context_and_x(x, stack, ctx, reserved_vars, T::ZERO).map_err(|e| e.to_string())?;
-	let y = eval_float_with_context_and_x(y, stack, ctx, reserved_vars, T::ZERO).map_err(|e| e.to_string())?;
+	let x = x.eval_float_with_context(stack, ctx).map_err(|e| e.to_string())?;
+	let y = y.eval_float_with_context(stack, ctx).map_err(|e| e.to_string())?;
 	Ok(Some((x.to_f64(), y.to_f64())))
 }
 fn zoom_in_x_on_nan_boundary(
@@ -2595,54 +2183,313 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	Ok(Some(new))
 }
 
-fn eval_with_context_and_x<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: T,
-) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x)])
-}
-fn eval_with_context_and_y<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, y: T,
-) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
-}
+// fn eval_with_context_and_x<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, x: T,
+// ) -> EvalexprResultValue<T> {
+// 	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x)])
+// }
+// fn eval_with_context_and_y<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, y: T,
+// ) -> EvalexprResultValue<T> {
+// 	node.eval_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
+// }
 fn eval_float_with_context_and_x<T: EvalexprFloat>(
 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
 	reserved_vars: &ReservedVars, x: T,
 ) -> EvalexprResult<T, T> {
 	node.eval_float_with_context_and_override(stack, context, &[(reserved_vars.x, x)])
 }
-fn eval_float_with_context_and_y<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, y: T,
-) -> EvalexprResult<T, T> {
-	node.eval_float_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
-}
+// fn eval_float_with_context_and_y<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, y: T,
+// ) -> EvalexprResult<T, T> {
+// 	node.eval_float_with_context_and_override(stack, context, &[(reserved_vars.y, y)])
+// }
 
-fn eval_with_context_and_xy_and_z<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
-) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(
-		stack,
-		context,
-		&[(reserved_vars.x, x), (reserved_vars.y, y), (reserved_vars.zx, zx), (reserved_vars.zy, zy)],
-	)
-}
-fn eval_float_with_context_and_xy_and_z<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
-) -> EvalexprResult<T, T> {
-	match eval_with_context_and_xy_and_z(node, stack, context, reserved_vars, x, y, zx, zy) {
-		Ok(Value::Float(float)) => Ok(float),
-		Ok(value) => Err(EvalexprError::expected_float(value)),
-		Err(error) => Err(error),
+// #[allow(clippy::too_many_arguments)]
+// fn eval_with_context_and_xy_and_z<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
+// ) -> EvalexprResultValue<T> {
+// 	node.eval_with_context_and_override(
+// 		stack,
+// 		context,
+// 		&[(reserved_vars.x, x), (reserved_vars.y, y), (reserved_vars.zx, zx), (reserved_vars.zy, zy)],
+// 	)
+// }
+// fn eval_float_with_context_and_xy_and_z<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, x: T, y: T, zx: T, zy: T,
+// ) -> EvalexprResult<T, T> {
+// 	match eval_with_context_and_xy_and_z(node, stack, context, reserved_vars, x, y, zx, zy) {
+// 		Ok(Value::Float(float)) => Ok(float),
+// 		Ok(value) => Err(EvalexprError::expected_float(value)),
+// 		Err(error) => Err(error),
+// 	}
+// }
+// fn eval_with_context_and_xy<T: EvalexprFloat>(
+// 	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
+// 	reserved_vars: &ReservedVars, x: T, y: T,
+// ) -> EvalexprResultValue<T> {
+// 	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x), (reserved_vars.y, y)])
+// }
+
+fn draw_x_function<T: EvalexprFloat>(
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
+	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
+) -> Result<(), Vec<(u64, String)>> {
+	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+	let mut pp_buffer = vec![];
+	let mut prev_sampling_point: Option<(f64, f64)> = None;
+	let mut sampling_x = plot_params.first_x;
+	if let Some(constant) = func.as_constant() {
+		let value = constant.as_float().map_err(|e| vec![(id, e.to_string())])?;
+		pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
+		pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
+	} else {
+		// let mut prev_y = None;
+		let mut discontinuity_detector = DiscontinuityDetector::new(plot_params.step_size, plot_params.eps);
+
+		while sampling_x < plot_params.last_x {
+			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_x)]) {
+				Ok(Value::Float(y)) => {
+					let y = y.to_f64();
+
+					let zoomed_in_on_nan_boundary = prev_sampling_point.and_then(|(prev_x, prev_y)| {
+						zoom_in_x_on_nan_boundary((prev_x, prev_y), (sampling_x, y), plot_params.eps, |x| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
+								.and_then(|y| y.as_float())
+								.map(|y| y.to_f64())
+								.ok()
+						})
+					});
+
+					let mut on_nan_boundary = false;
+					let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) = zoomed_in_on_nan_boundary {
+						on_nan_boundary = true;
+						zoomed_in_on_nan_boundary
+					} else {
+						(sampling_x, y)
+					};
+
+					if !on_nan_boundary
+						&& let Some((left, right)) = discontinuity_detector.detect(cur_x, cur_y, |x| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
+								.and_then(|y| y.as_float())
+								.map(|y| y.to_f64())
+								.ok()
+						}) {
+						pp_buffer.push(PlotPoint::new(left.0, left.1));
+						// start a new line
+						add_line(mem::take(&mut pp_buffer));
+						pp_buffer.push(PlotPoint::new(right.0, right.1));
+					} else {
+						if !cur_y.is_nan() {
+							pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+						}
+					}
+
+					prev_sampling_point = Some((sampling_x, y));
+				},
+				Ok(Value::Empty) => {},
+				Ok(_) => {
+					return Err(vec![(id, "Function must return float or empty".to_string())]);
+				},
+
+				Err(e) => {
+					return Err(vec![(id, e.to_string())]);
+				},
+			}
+
+			let prev_x = sampling_x;
+			sampling_x += plot_params.step_size;
+			if sampling_x == prev_x {
+				break;
+			}
+		}
 	}
+
+	add_line(pp_buffer);
+
+	Ok(())
 }
-fn eval_with_context_and_xy<T: EvalexprFloat>(
-	node: &FlatNode<T>, stack: &mut Stack<T>, context: &evalexpr::HashMapContext<T>,
-	reserved_vars: &ReservedVars, x: T, y: T,
-) -> EvalexprResultValue<T> {
-	node.eval_with_context_and_override(stack, context, &[(reserved_vars.x, x), (reserved_vars.y, y)])
+fn draw_y_function<T: EvalexprFloat>(
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
+	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
+) -> Result<(), Vec<(u64, String)>> {
+	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+	let mut sampling_y = plot_params.first_y;
+	let mut pp_buffer = vec![];
+	let mut prev_sampling_point: Option<(f64, f64)> = None;
+
+	if let Some(constant) = func.as_constant() {
+		let value = constant.as_float().map_err(|e| vec![(id, e.to_string())])?;
+		pp_buffer.push(PlotPoint::new(plot_params.first_y, value.to_f64()));
+		pp_buffer.push(PlotPoint::new(plot_params.last_y, value.to_f64()));
+	} else {
+		let mut discontinuity_detector = DiscontinuityDetector::new(plot_params.step_size_y, plot_params.eps);
+		while sampling_y < plot_params.last_y {
+			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_y)]) {
+				Ok(Value::Float(x)) => {
+					let x = x.to_f64();
+
+					let zoomed_in_on_nan_boundary = prev_sampling_point.and_then(|(prev_x, prev_y)| {
+						zoom_in_y_on_nan_boundary((prev_x, prev_y), (x, sampling_y), plot_params.eps, |y| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(y)])
+								.and_then(|y| y.as_float())
+								.map(|x| x.to_f64())
+								.ok()
+						})
+					});
+					let mut on_nan_boundary = false;
+					let (cur_x, cur_y) = if let Some(zoomed_in_on_nan_boundary) = zoomed_in_on_nan_boundary {
+						on_nan_boundary = true;
+						zoomed_in_on_nan_boundary
+					} else {
+						(x, sampling_y)
+					};
+					prev_sampling_point = Some((x, sampling_y));
+
+					if !on_nan_boundary
+						&& let Some((left, right)) = discontinuity_detector.detect(cur_y, cur_x, |y| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(y)])
+								.and_then(|y| y.as_float())
+								.map(|x| x.to_f64())
+								.ok()
+						}) {
+						pp_buffer.push(PlotPoint::new(left.1, left.0));
+						// start a new line
+						add_line(mem::take(&mut pp_buffer));
+						pp_buffer.push(PlotPoint::new(right.1, right.0));
+					} else {
+						if !cur_x.is_nan() {
+							pp_buffer.push(PlotPoint::new(cur_x, cur_y));
+						}
+					}
+				},
+				Ok(Value::Empty) => {},
+				Ok(_) => {
+					return Err(vec![(id, "Function must return float or empty".to_string())]);
+				},
+
+				Err(e) => {
+					return Err(vec![(id, e.to_string())]);
+				},
+			}
+
+			let prev_y = sampling_y;
+			sampling_y += plot_params.step_size_y;
+			if sampling_y == prev_y {
+				break;
+			}
+		}
+	}
+
+	add_line(pp_buffer);
+	Ok(())
+}
+#[allow(clippy::too_many_arguments)]
+fn draw_parametric_function<T: EvalexprFloat>(
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
+	id: u64, func: &ExpressionFunction<T>, range_start: Option<&FlatNode<T>>, range_end: Option<&FlatNode<T>>,
+	mut add_line: impl FnMut(Vec<PlotPoint>),
+) -> Result<(), Vec<(u64, String)>> {
+	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+	let mut pp_buffer = vec![];
+	match eval_point(&mut stack, ctx, range_start, range_end) {
+		Ok(Some((start, end))) => {
+			if start > end {
+				return Err(vec![(id, "Range start must be less than range end".to_string())]);
+			}
+			let range = end - start;
+			let step = range / plot_params.resolution as f64;
+			if start + step == end {
+				return Ok(());
+			}
+			let mut discontinuity_detector = DiscontinuityDetector::new(step, plot_params.eps);
+			for i in 0..(plot_params.resolution + 1) {
+				let x = start + step * i as f64;
+				match func.call(&mut stack, ctx, &[f64_to_value::<T>(x)]) {
+					Ok(Value::Float(y)) => {
+						if let Some((left, right)) = discontinuity_detector.detect(x, y.to_f64(), |x| {
+							func.call(&mut stack, ctx, &[f64_to_value::<T>(x)])
+								.and_then(|y| y.as_float())
+								.map(|y| y.to_f64())
+								.ok()
+						}) {
+							pp_buffer.push(PlotPoint::new(left.0, left.0));
+							add_line(mem::take(&mut pp_buffer));
+							pp_buffer.push(PlotPoint::new(right.0, right.0));
+						} else {
+							if !y.is_nan() {
+								pp_buffer.push(PlotPoint::new(x, y.to_f64()));
+							}
+						}
+					},
+					Ok(Value::Empty) => {},
+					Ok(Value::Float2(x, y)) => {
+						// TODO: detect discontinuity for ranged thar teturn Float2
+
+						if y.is_nan() {
+							if !pp_buffer.is_empty() {
+								add_line(mem::take(&mut pp_buffer));
+							}
+						} else {
+							pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
+						}
+					},
+					Ok(_) => {
+						println!("ranged function must return 1 or 2 float values");
+						return Err(vec![(id, "Ranged function must return 1 or 2 float values".to_string())]);
+					},
+					Err(e) => {
+						println!("error {e}");
+						return Err(vec![(id, e.to_string())]);
+					},
+				}
+			}
+			add_line(pp_buffer);
+		},
+		Err(e) => {
+			return Err(vec![(id, e)]);
+		},
+		_ => {},
+	}
+
+	Ok(())
+}
+fn draw_xy_function<T: EvalexprFloat>(
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
+	id: u64, func: &ExpressionFunction<T>, resolution: usize, mut add_line: impl FnMut(Vec<PlotPoint>),
+) -> Result<(), Vec<(u64, String)>> {
+	let mins = (plot_params.first_x, plot_params.first_y);
+	let maxs = (plot_params.last_x, plot_params.last_y);
+
+	for (_, lines) in marching_squares::marching_squares(
+		|cc: &mut RefMut<Stack<T>>, x, y| {
+			func.call(&mut *cc, ctx, &[f64_to_value::<T>(x), f64_to_value::<T>(y)])
+				.and_then(|y| y.as_float())
+				.map(|y| y.to_f64())
+				.map_err(|e| e.to_string())
+		},
+		mins,
+		maxs,
+		resolution,
+		|| {
+			let tl_context = thread_local_get(tl_context);
+			// tl_context.stack_overflow_guard.set(0);
+			tl_context.stack.borrow_mut()
+		},
+		&thread_local_get(tl_context).marching_squares_cache,
+	)
+	.map_err(|e| vec![(id, e)])?
+	{
+		for line in lines {
+			add_line(line);
+		}
+	}
+
+	Ok(())
 }

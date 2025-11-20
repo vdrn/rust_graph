@@ -135,10 +135,16 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 			color:   entry.color,
 			ty:      match &entry.ty {
 				EntryType::Function {
-					func, range_start, range_end, style, implicit_resolution, ty, ..
+					func,
+					range_start,
+					range_end,
+					style,
+					parametric,
+					implicit_resolution,
+					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
-					ranged:              ty == &FunctionType::Ranged,
+					ranged:              *parametric,
 					range_start:         ExprSer::from_expr(range_start),
 					range_end:           ExprSer::from_expr(range_end),
 					style:               style.clone(),
@@ -254,10 +260,13 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					style,
 					implicit_resolution,
 				} => EntryType::Function {
-					can_be_drawn: true,
+					parametric: ranged,
+					identifier: istr(""),
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
-					ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
+					ty: FunctionType::Expression,
+					can_be_drawn: true,
+					// ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
 					range_start: range_start.into_expr(false),
 					range_end: range_end.into_expr(false),
 					implicit_resolution: implicit_resolution

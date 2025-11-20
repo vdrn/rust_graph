@@ -1,14 +1,7 @@
 use crate::{
-    error::EvalexprResultValue,
-    flat_node::{compile_to_flat, Stack},
-    token, tree,
-    EvalexprFloat,
-    value::{
-        numeric_types::{default_numeric_types::DefaultNumericTypes },
-        TupleType,
-    },
-    EmptyType, EvalexprError, EvalexprResult, FlatNode,
-    HashMapContext, Value, EMPTY_VALUE,
+    EMPTY_VALUE, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, error::EvalexprResultValue, flat_node::{Stack, compile_to_flat}, token, tree, value::{
+        TupleType, numeric_types::default_numeric_types::DefaultNumericTypes
+    }
 };
 
 /// Evaluate the given expression string.
@@ -106,6 +99,13 @@ pub fn build_operator_tree<NumericTypes: EvalexprFloat>(
 ) -> EvalexprResult<FlatNode<NumericTypes>, NumericTypes> {
     let node = tree::tokens_to_operator_tree(token::tokenize(string)?)?;
     compile_to_flat(node)
+}
+
+/// Build the operator tree for the given expression string.
+pub fn build_ast<NumericTypes: EvalexprFloat>(
+    string: &str,
+) -> EvalexprResult<Node<NumericTypes>, NumericTypes> {
+     tree::tokens_to_operator_tree(token::tokenize(string)?)
 }
 
 // /// Evaluate the given expression string into a string.
