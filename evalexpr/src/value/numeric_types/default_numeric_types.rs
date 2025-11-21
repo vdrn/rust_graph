@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::math::integrate::Precision;
+use crate::math::{float_to_rational, gcd};
 use crate::{EvalexprError, EvalexprResult};
 
 use super::EvalexprFloat;
@@ -11,6 +12,7 @@ use super::EvalexprFloat;
 pub type DefaultNumericTypes = f64;
 
 impl EvalexprFloat for f64 {
+	const HUMAN_DISPLAY_SIG_DIGITS: u32 = 14;
 	const MIN: Self = Self::NEG_INFINITY;
 	const MAX: Self = Self::INFINITY;
 
@@ -26,6 +28,7 @@ impl EvalexprFloat for f64 {
 		PRECOMPUTED.get_or_init(crate::math::integrate::get_tanh_sinh_abscissas_and_weights)
 	}
 
+	fn from_u64(int: u64) -> Self { int as Self }
 	fn from_usize(int: usize) -> Self { int as Self }
 
 	fn into_usize(&self) -> EvalexprResult<usize, Self> {
@@ -36,6 +39,8 @@ impl EvalexprFloat for f64 {
 		}
 	}
 	fn from_i32(int: i32) -> Self { int as Self }
+
+	fn into_i64(&self) -> i64 { *self as i64 }
 
 	fn from_hex_str(literal: &str) -> Result<Self, ()> {
 		i64::from_str_radix(literal, 16).map(|i| i as Self).map_err(|_| ())

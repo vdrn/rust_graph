@@ -256,6 +256,9 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 			FlatOperator::Factorial => {
 				fold_unary_op(&mut new_ops, source_op, |a| a.factorial())?;
 			},
+			FlatOperator::Gcd => {
+				fold_binary_op(&mut new_ops, source_op, |a,b| a.gcd(&b))?;
+			},
 			FlatOperator::MulAdd => {
 				// a*b - c
 				fold_ternary_op(&mut new_ops, source_op, |a, b, c| a * b + c)?;

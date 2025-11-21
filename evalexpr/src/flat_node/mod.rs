@@ -41,6 +41,7 @@ const _: () = assert!(std::mem::size_of::<FlatOperator<f64>>() == 48);
 #[derive(Debug, Clone, PartialEq)]
 // NOTE: while repr(C) costs us 8 bytes, it generates much nicer match in `eval_priv`
 #[repr(C)]
+#[allow(missing_docs)]
 pub enum FlatOperator<F: EvalexprFloat> {
 	// Arithmetic operators
 	Add,
@@ -216,6 +217,7 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	Clamp, // 3 params
 
 	Factorial,
+  Gcd,
 
 	Range,
 	RangeWithStep,

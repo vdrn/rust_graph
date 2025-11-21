@@ -678,7 +678,6 @@ fn side_panel<T: EvalexprFloat>(
 								entry.visible = !entry.visible;
 							}
 
-							ui.add(TextEdit::singleline(&mut entry.name).hint_text("name")).changed();
 							ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
 								if entries.is_empty() {
 									if ui.button("X").clicked() {
@@ -688,6 +687,13 @@ fn side_panel<T: EvalexprFloat>(
 								if add_new_entry_btn(ui, &mut ui_state.next_id, entries, false) {
 									needs_recompilation = true;
 								}
+								ui.add(
+									TextEdit::multiline(&mut entry.name)
+										.hint_text("name")
+										.desired_rows(1)
+										.desired_width(ui.available_width()),
+								)
+								.changed();
 							});
 						});
 						if entry.visible {
@@ -699,7 +705,7 @@ fn side_panel<T: EvalexprFloat>(
 										ui.label("    |");
 									});
 									ui.horizontal(|ui| {
-										let fe_result = entry::edit_entry_ui(ui, entry, state.clear_cache);
+										let fe_result = entry::entry_ui(ui, entry, state.clear_cache);
 										if fe_result.remove {
 											remove_from_folder = Some(entry.id);
 										}
@@ -731,7 +737,7 @@ fn side_panel<T: EvalexprFloat>(
 							ui.label("||");
 						});
 						ui.horizontal(|ui| {
-							let result = entry::edit_entry_ui(ui, entry, state.clear_cache);
+							let result = entry::entry_ui(ui, entry, state.clear_cache);
 							if result.remove {
 								remove = Some(entry.id);
 							}
@@ -1017,9 +1023,9 @@ fn side_panel<T: EvalexprFloat>(
 							};
 							if let Err((id, e)) = entry::inline_and_fold_entry(entry, &mut state.ctx) {
 								ui_state.parsing_errors.insert(id, e);
-							}else{
-                ui_state.parsing_errors.remove(&entry.id);
-              }
+							} else {
+								ui_state.parsing_errors.remove(&entry.id);
+							}
 							let ge = functions.swap_remove(i);
 
 							for graph_entry in functions.iter_mut() {
@@ -1529,7 +1535,7 @@ fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiState, c
 										let new_value = solve_minimize(
 											value.to_f64(),
 											(pos.x, pos.y),
-											plot_params.eps,
+											f32::EPSILON as f64,
 											|x| {
 												state.ctx.set_value(x_const, f64_to_value::<T>(x)).unwrap();
 												(
@@ -1885,6 +1891,7 @@ fn solve_minimize(
 
 		if error < eps {
 			// success
+			// println!("succes at t: {t}");
 			return t;
 		}
 
@@ -1932,6 +1939,7 @@ fn solve_minimize(
 		t = best_t;
 	}
 
+	// println!("reached max iterations {t}");
 	t
 }
 

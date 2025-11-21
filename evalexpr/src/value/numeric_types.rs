@@ -3,6 +3,7 @@ use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use std::str::FromStr;
 
 use crate::math::integrate::Precision;
+use crate::math::{float_to_rational, gcd};
 use crate::EvalexprResult;
 
 pub mod default_numeric_types;
@@ -28,6 +29,9 @@ pub trait EvalexprFloat:
 	+ 'static {
 	/// Precomputed abscissas and weights for the Tanh-Sinh quadrature
 	fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self>;
+
+	/// The number of significant digits to display for the human-readable representation of a float.
+	const HUMAN_DISPLAY_SIG_DIGITS: u32;
 
 	/// Precision bounds for integration
 	const INTEGRATION_PRECISION: Precision<Self>;
@@ -56,8 +60,14 @@ pub trait EvalexprFloat:
 	/// i32 -> Self
 	fn from_i32(int: i32) -> Self;
 
+	/// self -> i64
+	fn into_i64(&self) -> i64;
+
 	/// Self -> usize
 	fn into_usize(&self) -> EvalexprResult<usize, Self>;
+
+	/// u64 -> Self
+	fn from_u64(int: u64) -> Self;
 
 	/// 0x -> usize
 	fn from_hex_str(literal: &str) -> Result<Self, ()>;
@@ -183,4 +193,36 @@ pub trait EvalexprFloat:
 	/// If the feature `rand` is not enabled, then this method always returns
 	/// [`EvalexprError::RandNotEnabled`](crate::EvalexprError::RandNotEnabled).
 	fn random() -> EvalexprResult<Self, Self>;
+
+	/// Greatest common denominator.
+	/// Values are rounded to nearest integer
+	fn gcd(&self, other: &Self) -> Self {
+		let a = self.into_i64();
+		let b = other.into_i64();
+		let a = a.unsigned_abs();
+		let b = b.unsigned_abs();
+		Self::from_u64(gcd::gcd(a, b))
+	}
+
+	/// Returns a tuple of the rational representation of `self` and the denominator.
+	/// This will not be the exact float representation, but the slightly rounded value.
+	/// For f64, we round to 14 significant digits, and for f32, we round to 6.
+	fn rational_display(&self) -> (i64, u64) {
+		float_to_rational::f64_to_rational_display(self.to_f64(), Self::HUMAN_DISPLAY_SIG_DIGITS)
+	}
+
+	/// Returns a string representation of `self` for human display.
+	fn human_display(&self, rational: bool) -> String {
+		if rational {
+			let (numerator, denominator) = self.rational_display();
+			format!("{}/{}", numerator, denominator)
+		} else {
+			let decimal_places =
+				float_to_rational::decimal_places(self.to_f64(), Self::HUMAN_DISPLAY_SIG_DIGITS);
+			format!("{:.prec$}", self.to_f64(), prec = decimal_places as usize)
+				.trim_end_matches('0')
+				.trim_end_matches('.')
+				.to_string()
+		}
+	}
 }

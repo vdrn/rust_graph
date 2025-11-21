@@ -705,6 +705,10 @@ fn compile_operator_function<NumericTypes: EvalexprFloat>(
 			expect_function_argument_amount(arg_num, 1)?;
 			Some(FlatOperator::Factorial)
 		},
+		"gcd"  => {
+			expect_function_argument_amount(arg_num, 2)?;
+			Some(FlatOperator::Gcd)
+		},
 		"range" => {
 			if arg_num == 2 {
 				Some(FlatOperator::Range)

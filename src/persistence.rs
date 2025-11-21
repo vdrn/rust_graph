@@ -37,10 +37,12 @@ pub struct ExprSer {
 	text:         String,
 	#[serde(default)]
 	textbox_type: TextboxType,
+  #[serde(default)]
+  display_rational: bool
 }
 impl ExprSer {
 	pub fn from_expr<T: EvalexprFloat>(expr: &Expr<T>) -> Self {
-		Self { text: expr.text.clone(), textbox_type: expr.textbox_type }
+		Self { text: expr.text.clone(), textbox_type: expr.textbox_type, display_rational: expr.display_rational }
 	}
 	pub fn into_expr<T: EvalexprFloat>(self, preprocess: bool) -> Expr<T> {
 		let temp;
@@ -51,11 +53,13 @@ impl ExprSer {
 		};
 		Expr {
 			node:          evalexpr::build_operator_tree::<T>(txt).ok(),
+
 			inlined_node:  None,
 			args:          Vec::new(),
 			expr_function: None,
 			text:          self.text,
 			textbox_type:  self.textbox_type,
+      display_rational: self.display_rational
 		}
 	}
 }

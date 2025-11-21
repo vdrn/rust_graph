@@ -136,10 +136,10 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		Some(unsafe { self.stack.get_unchecked(arg_i) })
 	}
 	fn get_unchecked(&self, index: usize) -> &Value<T> {
-    assert!(index < self.stack.len());
+		assert!(index < self.stack.len());
 
-    unsafe { self.stack.get_unchecked(index) } 
-  }
+		unsafe { self.stack.get_unchecked(index) }
+	}
 	// fn get(&self, index: usize) -> Option<&Value<T>> {
 	//     self.stack.get(index)
 	// }
@@ -691,6 +691,11 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::Factorial => {
 				let x = stack.pop_unchecked().as_float()?;
 				stack.push(Value::Float(x.factorial()));
+			},
+			FlatOperator::Gcd => {
+				let a = stack.pop_unchecked().as_float()?;
+				let b = stack.pop_unchecked().as_float()?;
+				stack.push(Value::Float(a.gcd(&b)));
 			},
 
 			FlatOperator::Range => {

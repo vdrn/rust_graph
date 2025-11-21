@@ -184,13 +184,14 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		| FlatOperator::Max
 		| FlatOperator::Log
 		| FlatOperator::Atan2
-		| FlatOperator::Hypot => 2,
+		| FlatOperator::Hypot
+		| FlatOperator::Gcd => 2,
 
 		FlatOperator::Range => 2,
 		FlatOperator::RangeWithStep => 3,
 
 		FlatOperator::Sum { .. } | FlatOperator::Product { .. } => 1,
-		FlatOperator::Integral (int) => 2,
+		FlatOperator::Integral(int) => 2,
 
 		FlatOperator::Clamp => 3,
 	}

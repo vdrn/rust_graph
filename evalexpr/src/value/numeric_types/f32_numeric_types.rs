@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use crate::math::float_to_rational;
 use crate::math::integrate::Precision;
 use crate::{EvalexprError, EvalexprResult};
 
@@ -11,6 +12,8 @@ pub type F32NumericTypes = f32;
 impl EvalexprFloat for f32 {
 	const MIN: Self = Self::NEG_INFINITY;
 	const MAX: Self = Self::INFINITY;
+
+	const HUMAN_DISPLAY_SIG_DIGITS: u32 = 6;
 
 	const ZERO: Self = 0.0;
 	const HALF: Self = 0.5;
@@ -32,6 +35,9 @@ impl EvalexprFloat for f32 {
 		}
 	}
 	fn from_i32(int: i32) -> Self { int as Self }
+
+	fn into_i64(&self) -> i64 { *self as i64 }
+	fn from_u64(int: u64) -> Self { int as Self }
 
 	fn from_hex_str(literal: &str) -> Result<Self, ()> {
 		i64::from_str_radix(literal, 16).map(|i| i as Self).map_err(|_| ())

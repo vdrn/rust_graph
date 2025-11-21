@@ -594,7 +594,7 @@
 
 pub use crate::context::HashMapContext;
 pub use crate::error::{EvalexprError, EvalexprResult};
-pub use crate::flat_node::{optimize_flat_node, FlatNode, Stack};
+pub use crate::flat_node::{optimize_flat_node, FlatNode,FlatOperator, Stack};
 pub use crate::function::expression_function::ExpressionFunction;
 pub use crate::function::rust_function::RustFunction;
 pub use crate::interface::*;

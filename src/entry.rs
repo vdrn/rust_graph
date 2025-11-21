@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
 use eframe::egui::{
-	self, Align, Button, Color32, DragValue, Id, PopupCloseBehavior, RichText, Slider, Stroke, TextEdit, Widget, vec2
+	self, Align, Button, Color32, DragValue, Id, Label, PopupCloseBehavior, RichText, Sense, Slider, Stroke, TextEdit, Widget, vec2
 };
 use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{
@@ -184,35 +184,52 @@ impl TextboxType {
 }
 #[derive(Clone, Debug)]
 pub struct Expr<T: EvalexprFloat> {
-	pub text:          String,
-	pub node:          Option<FlatNode<T>>,
-	pub inlined_node:  Option<FlatNode<T>>,
-	pub expr_function: Option<ExpressionFunction<T>>,
-	pub args:          Vec<IStr>,
-	pub textbox_type:  TextboxType,
+	pub text:             String,
+	pub display_rational: bool,
+	pub node:             Option<FlatNode<T>>,
+	pub inlined_node:     Option<FlatNode<T>>,
+	pub expr_function:    Option<ExpressionFunction<T>>,
+	pub args:             Vec<IStr>,
+	pub textbox_type:     TextboxType,
 }
 
 impl<T: EvalexprFloat> Default for Expr<T> {
 	fn default() -> Self {
 		Self {
-			text:          Default::default(),
-			node:          Default::default(),
-			inlined_node:  Default::default(),
-			args:          Default::default(),
-			expr_function: Default::default(),
-			textbox_type:  Default::default(),
+			text:             Default::default(),
+			display_rational: false,
+			node:             Default::default(),
+			inlined_node:     Default::default(),
+			args:             Default::default(),
+			expr_function:    Default::default(),
+			textbox_type:     Default::default(),
 		}
 	}
 }
 impl<T: EvalexprFloat> Expr<T> {
+	fn computed_const(&self) -> Option<Value<T>> {
+		let Some(node) = &self.node else { return None };
+		if node.as_constant().is_some() {
+			// if unoptimized node is constant, no need to display it
+			return None;
+		}
+		if let Some(func) = &self.expr_function {
+			func.as_constant()
+		} else if let Some(inlined_node) = &self.inlined_node {
+			inlined_node.as_constant()
+		} else {
+			None
+		}
+	}
 	fn from_text(text: &str) -> Self {
 		Self {
-			node:          evalexpr::build_operator_tree::<T>(text).ok(),
-			inlined_node:  None,
-			expr_function: None,
-			text:          text.to_string(),
-			textbox_type:  TextboxType::default(),
-			args:          Vec::new(),
+			node:             evalexpr::build_operator_tree::<T>(text).ok(),
+			display_rational: false,
+			inlined_node:     None,
+			expr_function:    None,
+			text:             text.to_string(),
+			textbox_type:     TextboxType::default(),
+			args:             Vec::new(),
 		}
 	}
 
@@ -235,11 +252,9 @@ impl<T: EvalexprFloat> Expr<T> {
 			let mut changed = false;
 			let original_spacing = ui.style().spacing.item_spacing;
 			ui.style_mut().spacing.item_spacing = vec2(0.0, 0.0);
-			let mut text_edit = match self.textbox_type {
-				TextboxType::SingleLineExpanded => TextEdit::singleline(&mut self.text).clip_text(false),
-				TextboxType::SingleLineClipped => TextEdit::singleline(&mut self.text).clip_text(true),
-				TextboxType::MultiLine => TextEdit::multiline(&mut self.text).desired_rows(2),
-			};
+			let mut text_edit = TextEdit::multiline(&mut self.text)
+				.desired_rows(1)
+				.desired_width(desired_width.unwrap_or_else(|| ui.available_width()));
 
 			// let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
 			// 	let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
@@ -255,9 +270,10 @@ impl<T: EvalexprFloat> Expr<T> {
 			// text_edit = text_edit.layouter(&mut layouter);
 
 			text_edit = text_edit.hint_text(hint_text); //.font(egui::TextStyle::Monospace);
-			if let Some(width) = desired_width {
-				text_edit = text_edit.desired_width(width);
-			}
+
+			// if let Some(width) = desired_width {
+			// 	text_edit = text_edit.desired_width(width);
+			// }
 			if ui.add(text_edit).changed() || force_update {
 				if self.text.is_empty() {
 					self.node = None;
@@ -296,23 +312,23 @@ impl<T: EvalexprFloat> Expr<T> {
 			// if let Some(postfix) = postfix {
 			// 	ui.label(RichText::new(postfix).monospace());
 			// }
-			ui.menu_button(RichText::new(self.textbox_type.symbol()), |ui| {
-				ui.selectable_value(
-					&mut self.textbox_type,
-					TextboxType::SingleLineClipped,
-					TextboxType::SingleLineClipped.name(),
-				);
-				ui.selectable_value(
-					&mut self.textbox_type,
-					TextboxType::SingleLineExpanded,
-					TextboxType::SingleLineExpanded.name(),
-				);
-				ui.selectable_value(
-					&mut self.textbox_type,
-					TextboxType::MultiLine,
-					TextboxType::MultiLine.name(),
-				);
-			});
+			// ui.menu_button(RichText::new(self.textbox_type.symbol()), |ui| {
+			// 	ui.selectable_value(
+			// 		&mut self.textbox_type,
+			// 		TextboxType::SingleLineClipped,
+			// 		TextboxType::SingleLineClipped.name(),
+			// 	);
+			// 	ui.selectable_value(
+			// 		&mut self.textbox_type,
+			// 		TextboxType::SingleLineExpanded,
+			// 		TextboxType::SingleLineExpanded.name(),
+			// 	);
+			// 	ui.selectable_value(
+			// 		&mut self.textbox_type,
+			// 		TextboxType::MultiLine,
+			// 		TextboxType::MultiLine.name(),
+			// 	);
+			// });
 			ui.style_mut().spacing.item_spacing = original_spacing;
 			Ok(changed)
 		})
@@ -590,6 +606,7 @@ impl<T: EvalexprFloat> Entry<T> {
 
 				func:                Expr {
 					node: evalexpr::build_operator_tree::<T>(&text).ok(),
+					display_rational: false,
 					inlined_node: None,
 					expr_function: None,
 					text,
@@ -757,6 +774,479 @@ impl ConstantType {
 	}
 }
 
+fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
+	let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
+		.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
+	style_button.button = style_button.button.fill(entry.color());
+	style_button.ui(ui, |ui| {
+		let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
+		color_button.button = color_button.button.fill(entry.color());
+
+		color_button.ui(ui, |ui| {
+			for i in 0..COLORS.len() {
+				if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
+					entry.color = i;
+				}
+			}
+		});
+		match &mut entry.ty {
+			EntryType::Function { style, .. } => {
+				ui.separator();
+
+				style.ui(ui);
+				ui.separator();
+				egui::Sides::new().show(
+					ui,
+					|_ui| {},
+					|ui| {
+						if ui.button("Close").clicked() {
+							ui.close();
+						}
+						if ui.button("Reset").clicked() {
+							*style = Default::default();
+							ui.close();
+						}
+					},
+				);
+			},
+			EntryType::Points { style, .. } => {
+				ui.separator();
+				let mut show_label = style.label_config.is_some();
+				if ui.checkbox(&mut show_label, "Show label").changed() {
+					if show_label {
+						style.label_config = Some(LabelConfig::default());
+					} else {
+						style.label_config = None;
+					}
+				}
+				if let Some(label_config) = &mut style.label_config {
+					label_config.ui(ui);
+				}
+				ui.separator();
+				ui.checkbox(&mut style.show_lines, "Show Lines");
+				if style.show_lines {
+					ui.label("Line Style:");
+					ui.checkbox(&mut style.show_arrows, "Show Arrows");
+					style.line_style.ui(ui);
+				} else {
+					style.show_arrows = false;
+				}
+				ui.separator();
+				ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
+
+				egui::Sides::new().show(
+					ui,
+					|_ui| {},
+					|ui| {
+						if ui.button("Close").clicked() {
+							ui.close();
+						}
+						if ui.button("Reset").clicked() {
+							*style = Default::default();
+							ui.close();
+						}
+					},
+				);
+			},
+			EntryType::Integral { style, .. } => {
+				ui.checkbox(&mut style.show_function, "Show Function being integrated");
+				if style.show_function {
+					ui.checkbox(&mut style.show_area, "Show Area");
+				}
+				ui.separator();
+				ui.checkbox(&mut style.show_integral_fn, "Show Integral Function");
+			},
+			EntryType::Constant { .. } => {},
+			EntryType::Label { .. } => {},
+			EntryType::Folder { .. } => {},
+		}
+	});
+}
+pub fn entry_type_ui<T: EvalexprFloat>(
+	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool, prev_visible: bool,
+	result: &mut EditEntryResult,
+) {
+	let color = entry.color();
+	match &mut entry.ty {
+		EntryType::Folder { .. } => {
+			// handled in outer scope
+		},
+		EntryType::Function { func, parametric, range_start, range_end, implicit_resolution, .. } => {
+			ui.vertical(|ui| {
+				match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
+					Ok(changed) => {
+						result.parsed |= changed;
+						result.needs_recompilation |= changed;
+					},
+					Err(e) => {
+						result.error = Some(format!("Parsing error: {e}"));
+					},
+				}
+
+				ui.vertical(|ui| {
+					if let Some(computed_const) = func.computed_const() {
+						ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
+							Label::new(computed_const.human_display(func.display_rational))
+								.selectable(true)
+								.ui(ui);
+
+							ui.label("=");
+							if Button::new(if func.display_rational { "Q" } else { "F" }).ui(ui).clicked() {
+								func.display_rational = !func.display_rational;
+							}
+						});
+					}
+					if func.args.len() == 1 {
+						ui.horizontal(|ui| {
+							ui.checkbox(parametric, "Parametric");
+							if *parametric && func.args.len() == 1 {
+								ui.label("Start:");
+								match range_start.edit_ui(ui, "", Some(30.0), clear_cache, false) {
+									Ok(changed) => {
+										result.needs_recompilation |= changed;
+										result.parsed |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+								ui.label("End:");
+								match range_end.edit_ui(ui, "", Some(30.0), clear_cache, false) {
+									Ok(changed) => {
+										result.needs_recompilation |= changed;
+										result.parsed |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+							}
+						});
+						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
+					}
+					if func.args.len() == 2 && func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
+						ui.horizontal(|ui| {
+							Slider::new(
+								implicit_resolution,
+								MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
+							)
+							.text("Implicit Resolution")
+							.ui(ui);
+						});
+					}
+				});
+			});
+		},
+		EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
+			ui.vertical(|ui| {
+				ui.horizontal(|ui| {
+					ui.label("Lower:");
+					match lower.edit_ui(ui, "lower", Some(50.0), clear_cache, false) {
+						Ok(changed) => {
+							result.parsed |= changed;
+							// needs_recompilation |= changed;
+						},
+						Err(e) => {
+							result.error = Some(format!("Parsing error: {e}"));
+						},
+					}
+					ui.label("Upper:");
+					match upper.edit_ui(ui, "upper", Some(50.0), clear_cache, false) {
+						Ok(changed) => {
+							result.parsed |= changed;
+							// needs_recompilation |= changed;
+						},
+						Err(e) => {
+							result.error = Some(format!("Parsing error: {e}"));
+						},
+					}
+				});
+				ui.horizontal(|ui| {
+					match func.edit_ui(ui, "func", None, clear_cache, false) {
+						Ok(changed) => {
+							result.parsed |= changed;
+							result.needs_recompilation |= changed;
+						},
+						Err(e) => {
+							result.error = Some(format!("Parsing error: {e}"));
+						},
+					};
+					ui.label("dx");
+				});
+				if let Some(calculated) = calculated {
+					ui.label(RichText::new(format!("Value: {}", calculated)).color(color));
+				}
+
+				ui.add(Slider::new(resolution, 10..=1000).text("Resolution"));
+			});
+		},
+		EntryType::Label { x, y, size, underline } => {
+			ui.horizontal(|ui| {
+				match x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
+					Ok(changed) => {
+						result.parsed |= changed;
+						// result.needs_recompilation |= changed;
+					},
+					Err(e) => {
+						result.error = Some(format!("Parsing error: {e}"));
+					},
+				}
+				match y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
+					Ok(changed) => {
+						result.parsed |= changed;
+						// result.needs_recompilation |= changed;
+					},
+					Err(e) => {
+						result.error = Some(format!("Parsing error: {e}"));
+					},
+				}
+				match size.edit_ui(ui, "size", Some(80.0), clear_cache, false) {
+					Ok(changed) => {
+						result.parsed |= changed;
+						// result.needs_recompilation |= changed;
+					},
+					Err(e) => {
+						result.error = Some(format!("Parsing error: {e}"));
+					},
+				}
+				ui.checkbox(underline, "Underline");
+			});
+		},
+		EntryType::Points { points, .. } => {
+			let mut remove_point = None;
+			ui.vertical(|ui| {
+				for (pi, point) in points.iter_mut().enumerate() {
+					ui.horizontal(|ui| {
+						match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
+							Ok(changed) => {
+								result.parsed |= changed;
+								result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+						match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
+							Ok(changed) => {
+								result.parsed |= changed;
+								result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						}
+						let mut drag_type_changed = false;
+						if !point.both_drag_dirs_available && point.drag_type == PointDragType::Both {
+							point.both_drag_dirs_available = false;
+							drag_type_changed = true;
+						}
+
+						let drag_menu_text = match &point.drag_point {
+							Some(d) => match d {
+								DragPoint::BothCoordLiterals => {
+									format!("{}(x,y)", point.drag_type.symbol())
+								},
+								DragPoint::XLiteral => format!("{}(x,_)", point.drag_type.symbol()),
+								DragPoint::YLiteral => format!("{}(_,y)", point.drag_type.symbol()),
+								DragPoint::XConstant(x) => {
+									format!("{}({},_)", point.drag_type.symbol(), x)
+								},
+								DragPoint::YConstant(y) => {
+									format!("{}(_, {})", point.drag_type.symbol(), y)
+								},
+								DragPoint::XLiteralYConstant(y) => {
+									format!("{}(x, {})", point.drag_type.symbol(), y)
+								},
+								DragPoint::YLiteralXConstant(x) => {
+									format!("{}({}, y)", point.drag_type.symbol(), x)
+								},
+								DragPoint::BothCoordConstants(x, y) => {
+									format!("{}({}, {})", point.drag_type.symbol(), x, y,)
+								},
+								DragPoint::SameConstantBothCoords(x) => {
+									format!("{}({})", point.drag_type.symbol(), x)
+								},
+							},
+							None => point.drag_type.symbol().to_string(),
+						};
+						ui.menu_button(drag_menu_text, |ui| {
+							drag_type_changed |= ui
+								.selectable_value(
+									&mut point.drag_type,
+									PointDragType::NoDrag,
+									PointDragType::NoDrag.name(),
+								)
+								.changed();
+							if point.both_drag_dirs_available {
+								drag_type_changed |= ui
+									.selectable_value(
+										&mut point.drag_type,
+										PointDragType::Both,
+										PointDragType::Both.name(),
+									)
+									.changed();
+							}
+							drag_type_changed |= ui
+								.selectable_value(
+									&mut point.drag_type,
+									PointDragType::X,
+									PointDragType::X.name(),
+								)
+								.changed();
+							drag_type_changed |= ui
+								.selectable_value(
+									&mut point.drag_type,
+									PointDragType::Y,
+									PointDragType::Y.name(),
+								)
+								.changed();
+						});
+						if drag_type_changed {
+							result.parsed = true;
+							result.needs_recompilation = true;
+						}
+
+						if ui.button("❌").clicked() {
+							remove_point = Some(pi);
+						}
+					});
+				}
+				if let Some(pi) = remove_point {
+					points.remove(pi);
+				}
+				ui.horizontal(|ui| {
+					if ui.button("Add Point").clicked() {
+						points.push(PointEntry::default());
+					}
+				});
+			});
+		},
+
+		EntryType::Constant { value, step, ty, .. } => {
+			let original_value = *value;
+			let step_f = f64_to_float::<T>(*step);
+			let range = ty.range();
+			let start = *range.start();
+			let end = *range.end();
+
+			ui.vertical(|ui| {
+				ui.horizontal(|ui| {
+					ui.menu_button(ty.symbol(), |ui| {
+						let new_end = if end.is_infinite() { start + 20.0 } else { end };
+						let lfab = ConstantType::LoopForwardAndBackward { start, end: new_end, forward: true };
+						if ui.button(lfab.name()).clicked() {
+							*ty = lfab;
+							result.animating = true;
+						}
+						let lf = ConstantType::LoopForward { start, end: new_end };
+						if ui.button(lf.name()).clicked() {
+							*ty = lf;
+							result.animating = true;
+						}
+						let po = ConstantType::PlayOnce { start, end: new_end };
+						if ui.button(po.name()).clicked() {
+							*ty = po;
+							result.animating = true;
+						}
+						let pi = ConstantType::PlayIndefinitely { start };
+						if ui.button(pi.name()).clicked() {
+							*ty = pi;
+							result.animating = true;
+						}
+					});
+
+					let mut v = value.to_f64();
+					if v > end {
+						v = start + (v - end);
+						// v -= end - start;
+						result.animating = true;
+					} else if v < start {
+						v = end - (start - v);
+						// v += end - start;
+						result.animating = true;
+					}
+					v = v.clamp(start, end);
+
+					if ui
+						.add(Slider::new(&mut v, range).step_by(*step).clamping(egui::SliderClamping::Never))
+						.dragged()
+					{
+						entry.visible = false;
+						// *value = f64_to_float::<T>(v);
+						// result.animating = true;
+					}
+					if original_value.to_f64() != v {
+						*value = f64_to_float::<T>(v);
+						result.animating = true;
+					}
+				});
+				// second row: start/end/step
+				ui.horizontal(|ui| {
+					match ty {
+						ConstantType::LoopForwardAndBackward { start, end, .. }
+						| ConstantType::LoopForward { start, end }
+						| ConstantType::PlayOnce { start, end } => {
+							DragValue::new(start).prefix("Start:").speed(*step).ui(ui);
+							DragValue::new(end).prefix("End:").speed(*step).ui(ui);
+							*start = start.min(*end);
+							*end = end.max(*start);
+						},
+						ConstantType::PlayIndefinitely { start } => {
+							DragValue::new(start).prefix("Start:").ui(ui);
+						},
+					}
+
+					DragValue::new(step).prefix("Step:").speed(0.00001).ui(ui);
+
+					if !prev_visible && entry.visible {
+						if value.to_f64() >= end {
+							*value = f64_to_float::<T>(start);
+							result.animating = true;
+						}
+					}
+
+					if entry.visible {
+						ui.ctx().request_repaint();
+						result.animating = true;
+
+						match ty {
+							ConstantType::LoopForwardAndBackward { forward, .. } => {
+								if *forward {
+									*value = *value + step_f;
+								} else {
+									*value = *value - step_f;
+								}
+								if value.to_f64() > end {
+									*forward = false;
+									*value = f64_to_float::<T>(end);
+								}
+								if value.to_f64() < start {
+									*forward = true;
+									*value = f64_to_float::<T>(start);
+								}
+							},
+							ConstantType::LoopForward { .. } => {
+								*value = *value + step_f;
+								if value.to_f64() >= end {
+									*value = f64_to_float::<T>(start);
+								}
+							},
+							ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
+								*value = *value + step_f;
+								if value.to_f64() >= end {
+									entry.visible = false;
+								}
+							},
+						}
+					}
+				});
+
+				// *value = f64_to_float::<T>(v);
+			});
+		},
+	}
+}
+
 pub const STEP_Y_NAME: &str = "___DERIV_STEP__X__";
 pub const STEP_X_NAME: &str = "___DERIV_STEP__Y__";
 static RESERVED_NAMES: [&str; 7] = ["x", "y", "zx", "zy", "d", STEP_X_NAME, STEP_Y_NAME];
@@ -767,7 +1257,7 @@ pub struct EditEntryResult {
 	pub error:               Option<String>,
 	pub parsed:              bool,
 }
-pub fn edit_entry_ui<T: EvalexprFloat>(
+pub fn entry_ui<T: EvalexprFloat>(
 	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool,
 ) -> EditEntryResult {
 	let mut result = EditEntryResult {
@@ -785,504 +1275,50 @@ pub fn edit_entry_ui<T: EvalexprFloat>(
 		(Color32::LIGHT_GRAY, egui::Color32::TRANSPARENT)
 	};
 
-	ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
-		if ui.button("X").clicked() {
-			result.remove = true;
-			result.needs_recompilation = true;
+	let prev_visible = entry.visible;
+	// name and visibility
+	ui.horizontal(|ui| {
+		if ui
+			.add(
+				Button::new(RichText::new(entry.symbol()).strong().monospace().color(text_col))
+					.fill(fill_col)
+					.corner_radius(10),
+			)
+			.clicked()
+		{
+			entry.visible = !entry.visible;
 		}
 
-		let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
-			.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
-		style_button.button = style_button.button.fill(entry.color());
-		style_button.ui(ui, |ui| {
-			let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
-			color_button.button = color_button.button.fill(entry.color());
+		let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
+		if ui
+			.add(TextEdit::singleline(&mut entry.name).desired_width(30.0).clip_text(false).hint_text("name"))
+			.changed()
+		{
+			result.needs_recompilation = true;
+			result.parsed = true;
+		}
+		if RESERVED_NAMES.contains(&entry.name.trim()) {
+			result.error = Some(format!("{} is reserved name.", entry.name));
+			// return;
+		} else if !name_was_ok {
+			result.parsed = true;
+		}
+	});
+	// entry_edit and controls
 
-			color_button.ui(ui, |ui| {
-				for i in 0..COLORS.len() {
-					if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
-						entry.color = i;
-					}
-				}
-			});
-			match &mut entry.ty {
-				EntryType::Function { style, .. } => {
-					ui.separator();
+	ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::RightToLeft), |ui| {
+		// controls
+		ui.horizontal(|ui| {
+			entry_style(ui, entry);
 
-					style.ui(ui);
-					ui.separator();
-					egui::Sides::new().show(
-						ui,
-						|_ui| {},
-						|ui| {
-							if ui.button("Close").clicked() {
-								ui.close();
-							}
-							if ui.button("Reset").clicked() {
-								*style = Default::default();
-								ui.close();
-							}
-						},
-					);
-				},
-				EntryType::Points { style, .. } => {
-					ui.separator();
-					let mut show_label = style.label_config.is_some();
-					if ui.checkbox(&mut show_label, "Show label").changed() {
-						if show_label {
-							style.label_config = Some(LabelConfig::default());
-						} else {
-							style.label_config = None;
-						}
-					}
-					if let Some(label_config) = &mut style.label_config {
-						label_config.ui(ui);
-					}
-					ui.separator();
-					ui.checkbox(&mut style.show_lines, "Show Lines");
-					if style.show_lines {
-						ui.label("Line Style:");
-						ui.checkbox(&mut style.show_arrows, "Show Arrows");
-						style.line_style.ui(ui);
-					} else {
-						style.show_arrows = false;
-					}
-					ui.separator();
-					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
-
-					egui::Sides::new().show(
-						ui,
-						|_ui| {},
-						|ui| {
-							if ui.button("Close").clicked() {
-								ui.close();
-							}
-							if ui.button("Reset").clicked() {
-								*style = Default::default();
-								ui.close();
-							}
-						},
-					);
-				},
-				EntryType::Integral { style, .. } => {
-					ui.checkbox(&mut style.show_function, "Show Function being integrated");
-					if style.show_function {
-						ui.checkbox(&mut style.show_area, "Show Area");
-					}
-					ui.separator();
-					ui.checkbox(&mut style.show_integral_fn, "Show Integral Function");
-				},
-				EntryType::Constant { .. } => {},
-				EntryType::Label { .. } => {},
-				EntryType::Folder { .. } => {},
+			if ui.button("X").clicked() {
+				result.remove = true;
+				result.needs_recompilation = true;
 			}
 		});
-		ui.with_layout(egui::Layout::left_to_right(Align::LEFT), |ui| {
-			let prev_visible = entry.visible;
-			if ui
-				.add(
-					Button::new(RichText::new(entry.symbol()).strong().monospace().color(text_col))
-						.fill(fill_col)
-						.corner_radius(10),
-				)
-				.clicked()
-			{
-				entry.visible = !entry.visible;
-			}
-
-			let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
-			if ui.add(TextEdit::singleline(&mut entry.name).desired_width(30.0).hint_text("name")).changed() {
-				result.needs_recompilation = true;
-				result.parsed = true;
-			}
-			if RESERVED_NAMES.contains(&entry.name.trim()) {
-				result.error = Some(format!("{} is reserved name.", entry.name));
-				// return;
-			} else if !name_was_ok {
-				result.parsed = true;
-			}
-			let color = entry.color();
-			match &mut entry.ty {
-				EntryType::Folder { .. } => {
-					// handled in outer scope
-				},
-				EntryType::Function {
-					func,
-					parametric,
-					range_start,
-					range_end,
-					ty,
-					implicit_resolution,
-					..
-				} => {
-					ui.vertical(|ui| {
-						match func.edit_ui(ui, "sin(x)", None, clear_cache, true) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-
-						ui.vertical(|ui| {
-							if func.args.len() == 1 {
-								ui.horizontal(|ui| {
-									ui.checkbox(parametric, "Parametric");
-									if *parametric && func.args.len() == 1 {
-										ui.label("Start:");
-										match range_start.edit_ui(ui, "", Some(30.0), clear_cache, false) {
-											Ok(changed) => {
-												result.needs_recompilation |= changed;
-												result.parsed |= changed;
-											},
-											Err(e) => {
-												result.error = Some(format!("Parsing error: {e}"));
-											},
-										}
-										ui.label("End:");
-										match range_end.edit_ui(ui, "", Some(30.0), clear_cache, false) {
-											Ok(changed) => {
-												result.needs_recompilation |= changed;
-												result.parsed |= changed;
-											},
-											Err(e) => {
-												result.error = Some(format!("Parsing error: {e}"));
-											},
-										}
-									}
-								});
-								ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
-							}
-							if func.args.len() == 2
-								&& func.args[0].to_str() == "x"
-								&& func.args[1].to_str() == "y"
-							{
-								ui.horizontal(|ui| {
-									Slider::new(
-										implicit_resolution,
-										MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
-									)
-									.text("Implicit Resolution")
-									.ui(ui);
-								});
-							}
-						});
-					});
-				},
-				EntryType::Integral { func, lower, upper, calculated, resolution, .. } => {
-					ui.vertical(|ui| {
-						ui.horizontal(|ui| {
-							ui.label("Lower:");
-							match lower.edit_ui(ui, "lower", Some(50.0), clear_cache, false) {
-								Ok(changed) => {
-									result.parsed |= changed;
-									// needs_recompilation |= changed;
-								},
-								Err(e) => {
-									result.error = Some(format!("Parsing error: {e}"));
-								},
-							}
-							ui.label("Upper:");
-							match upper.edit_ui(ui, "upper", Some(50.0), clear_cache, false) {
-								Ok(changed) => {
-									result.parsed |= changed;
-									// needs_recompilation |= changed;
-								},
-								Err(e) => {
-									result.error = Some(format!("Parsing error: {e}"));
-								},
-							}
-						});
-						ui.horizontal(|ui| {
-							match func.edit_ui(ui, "func", None, clear_cache, false) {
-								Ok(changed) => {
-									result.parsed |= changed;
-									result.needs_recompilation |= changed;
-								},
-								Err(e) => {
-									result.error = Some(format!("Parsing error: {e}"));
-								},
-							};
-							ui.label("dx");
-						});
-						if let Some(calculated) = calculated {
-							ui.label(RichText::new(format!("Value: {}", calculated)).color(color));
-						}
-
-						ui.add(Slider::new(resolution, 10..=1000).text("Resolution"));
-					});
-				},
-				EntryType::Label { x, y, size, underline } => {
-					ui.horizontal(|ui| {
-						match x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								// result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-						match y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								// result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-						match size.edit_ui(ui, "size", Some(80.0), clear_cache, false) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								// result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-						ui.checkbox(underline, "Underline");
-					});
-				},
-				EntryType::Points { points, .. } => {
-					let mut remove_point = None;
-					ui.vertical(|ui| {
-						for (pi, point) in points.iter_mut().enumerate() {
-							ui.horizontal(|ui| {
-								match point.x.edit_ui(ui, "point_x", Some(80.0), clear_cache, false) {
-									Ok(changed) => {
-										result.parsed |= changed;
-										result.needs_recompilation |= changed;
-									},
-									Err(e) => {
-										result.error = Some(format!("Parsing error: {e}"));
-									},
-								}
-								match point.y.edit_ui(ui, "point_y", Some(80.0), clear_cache, false) {
-									Ok(changed) => {
-										result.parsed |= changed;
-										result.needs_recompilation |= changed;
-									},
-									Err(e) => {
-										result.error = Some(format!("Parsing error: {e}"));
-									},
-								}
-								let mut drag_type_changed = false;
-								if !point.both_drag_dirs_available && point.drag_type == PointDragType::Both {
-									point.both_drag_dirs_available = false;
-									drag_type_changed = true;
-								}
-
-								let drag_menu_text = match &point.drag_point {
-									Some(d) => match d {
-										DragPoint::BothCoordLiterals => {
-											format!("{}(x,y)", point.drag_type.symbol())
-										},
-										DragPoint::XLiteral => format!("{}(x,_)", point.drag_type.symbol()),
-										DragPoint::YLiteral => format!("{}(_,y)", point.drag_type.symbol()),
-										DragPoint::XConstant(x) => {
-											format!("{}({},_)", point.drag_type.symbol(), x)
-										},
-										DragPoint::YConstant(y) => {
-											format!("{}(_, {})", point.drag_type.symbol(), y)
-										},
-										DragPoint::XLiteralYConstant(y) => {
-											format!("{}(x, {})", point.drag_type.symbol(), y)
-										},
-										DragPoint::YLiteralXConstant(x) => {
-											format!("{}({}, y)", point.drag_type.symbol(), x)
-										},
-										DragPoint::BothCoordConstants(x, y) => {
-											format!("{}({}, {})", point.drag_type.symbol(), x, y,)
-										},
-										DragPoint::SameConstantBothCoords(x) => {
-											format!("{}({})", point.drag_type.symbol(), x)
-										},
-									},
-									None => point.drag_type.symbol().to_string(),
-								};
-								ui.menu_button(drag_menu_text, |ui| {
-									drag_type_changed |= ui
-										.selectable_value(
-											&mut point.drag_type,
-											PointDragType::NoDrag,
-											PointDragType::NoDrag.name(),
-										)
-										.changed();
-									if point.both_drag_dirs_available {
-										drag_type_changed |= ui
-											.selectable_value(
-												&mut point.drag_type,
-												PointDragType::Both,
-												PointDragType::Both.name(),
-											)
-											.changed();
-									}
-									drag_type_changed |= ui
-										.selectable_value(
-											&mut point.drag_type,
-											PointDragType::X,
-											PointDragType::X.name(),
-										)
-										.changed();
-									drag_type_changed |= ui
-										.selectable_value(
-											&mut point.drag_type,
-											PointDragType::Y,
-											PointDragType::Y.name(),
-										)
-										.changed();
-								});
-								if drag_type_changed {
-									result.parsed = true;
-									result.needs_recompilation = true;
-								}
-
-								if ui.button("❌").clicked() {
-									remove_point = Some(pi);
-								}
-							});
-						}
-						if let Some(pi) = remove_point {
-							points.remove(pi);
-						}
-						ui.horizontal(|ui| {
-							if ui.button("Add Point").clicked() {
-								points.push(PointEntry::default());
-							}
-						});
-					});
-				},
-
-				EntryType::Constant { value, step, ty, .. } => {
-					let original_value = *value;
-					let step_f = f64_to_float::<T>(*step);
-					let range = ty.range();
-					let start = *range.start();
-					let end = *range.end();
-
-					ui.vertical(|ui| {
-						ui.horizontal(|ui| {
-							ui.menu_button(ty.symbol(), |ui| {
-								let new_end = if end.is_infinite() { start + 20.0 } else { end };
-								let lfab = ConstantType::LoopForwardAndBackward {
-									start,
-									end: new_end,
-									forward: true,
-								};
-								if ui.button(lfab.name()).clicked() {
-									*ty = lfab;
-									result.animating = true;
-								}
-								let lf = ConstantType::LoopForward { start, end: new_end };
-								if ui.button(lf.name()).clicked() {
-									*ty = lf;
-									result.animating = true;
-								}
-								let po = ConstantType::PlayOnce { start, end: new_end };
-								if ui.button(po.name()).clicked() {
-									*ty = po;
-									result.animating = true;
-								}
-								let pi = ConstantType::PlayIndefinitely { start };
-								if ui.button(pi.name()).clicked() {
-									*ty = pi;
-									result.animating = true;
-								}
-							});
-							match ty {
-								ConstantType::LoopForwardAndBackward { start, end, .. }
-								| ConstantType::LoopForward { start, end }
-								| ConstantType::PlayOnce { start, end } => {
-									DragValue::new(start).prefix("Start:").speed(*step).ui(ui);
-									DragValue::new(end).prefix("End:").speed(*step).ui(ui);
-									*start = start.min(*end);
-									*end = end.max(*start);
-								},
-								ConstantType::PlayIndefinitely { start } => {
-									DragValue::new(start).prefix("Start:").ui(ui);
-								},
-							}
-
-							DragValue::new(step).prefix("Step:").speed(0.00001).ui(ui);
-
-							if !prev_visible && entry.visible {
-								if value.to_f64() >= end {
-									*value = f64_to_float::<T>(start);
-									result.animating = true;
-								}
-							}
-
-							if entry.visible {
-								ui.ctx().request_repaint();
-								result.animating = true;
-
-								match ty {
-									ConstantType::LoopForwardAndBackward { forward, .. } => {
-										if *forward {
-											*value = *value + step_f;
-										} else {
-											*value = *value - step_f;
-										}
-										if value.to_f64() > end {
-											*forward = false;
-											*value = f64_to_float::<T>(end);
-										}
-										if value.to_f64() < start {
-											*forward = true;
-											*value = f64_to_float::<T>(start);
-										}
-									},
-									ConstantType::LoopForward { .. } => {
-										*value = *value + step_f;
-										if value.to_f64() >= end {
-											*value = f64_to_float::<T>(start);
-										}
-									},
-									ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
-										*value = *value + step_f;
-										if value.to_f64() >= end {
-											entry.visible = false;
-										}
-									},
-								}
-							}
-						});
-
-						let mut v = value.to_f64();
-						if v > end {
-							v = start + (v - end);
-							// v -= end - start;
-							result.animating = true;
-						} else if v < start {
-							v = end - (start - v);
-							// v += end - start;
-							result.animating = true;
-						}
-						v = v.clamp(start, end);
-
-						if ui
-							.add(
-								Slider::new(&mut v, range)
-									.step_by(*step)
-									.clamping(egui::SliderClamping::Never),
-							)
-							.dragged()
-						{
-							entry.visible = false;
-							// *value = f64_to_float::<T>(v);
-							// result.animating = true;
-						}
-						if original_value.to_f64() != v {
-							*value = f64_to_float::<T>(v);
-							result.animating = true;
-						}
-						// *value = f64_to_float::<T>(v);
-					});
-				},
-			}
+		// entry edit
+		ui.horizontal(|ui| {
+			entry_type_ui(ui, entry, clear_cache, prev_visible, &mut result);
 		});
 	});
 
@@ -1361,9 +1397,10 @@ pub fn prepare_entry<T: EvalexprFloat>(
 						},
 						PointDragType::X => {
 							if x_state.is_literal {
+								println!("DP LIETRAL");
 								point.drag_point = Some(DragPoint::XLiteral);
 							} else if let Some(x_const) = x_state.constants.first() {
-								if x_state.num_identifiers == 1 {
+								if x_state.num_identifiers_and_special_ops == 1 {
 									point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
 								} else if y_state.constants.iter().any(|c| c == x_const) {
 									point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(x_const)));
@@ -1376,7 +1413,7 @@ pub fn prepare_entry<T: EvalexprFloat>(
 							if y_state.is_literal {
 								point.drag_point = Some(DragPoint::YLiteral);
 							} else if let Some(y_const) = y_state.constants.first() {
-								if y_state.num_identifiers == 1 {
+								if y_state.num_identifiers_and_special_ops == 1 {
 									point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
 								} else if x_state.constants.iter().any(|c| c == y_const) {
 									point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(y_const)));
@@ -2134,10 +2171,11 @@ pub enum DragPoint {
 }
 
 pub struct NodeAnalysis<'a> {
-	pub is_literal:      bool,
-	pub num_identifiers: u32,
-	pub constants:       SmallVec<[&'a str; 6]>,
+	pub is_literal:                      bool,
+	pub num_identifiers_and_special_ops: u32,
+	pub constants:                       SmallVec<[&'a str; 6]>,
 }
+#[rustfmt::skip]
 pub fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 	let mut is_literal = true;
 	let mut constants = SmallVec::new();
@@ -2153,7 +2191,23 @@ pub fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 		num_identifiers += 1;
 	}
 
-	NodeAnalysis { is_literal, constants, num_identifiers }
+	for op in node.iter() {
+		use evalexpr::FlatOperator as O;
+		match op {
+			O::Mod | O::Exp | O::Square | O::Cube | O::Sqrt |
+      O::Cbrt | O::Abs | O::Floor | O::Round | O::Ceil | O::Ln | O::Log |
+      O::Log2 | O::Log10 | O::ExpE | O::Exp2 | O::Cos | O::Acos | O::CosH |
+      O::AcosH | O::Sin | O::Asin | O::SinH | O::AsinH | O::Tan | O::Atan |
+      O::TanH | O::AtanH | O::Atan2 | O::Hypot | O::Signum | O::Min | O::Max |
+      O::Clamp | O::Factorial | O::Gcd | O::Sum { .. } | O::Product { .. } | O::Integral(_) => {
+				is_literal = false;
+				num_identifiers += 1;
+			},
+			_ => {},
+		}
+	}
+
+	NodeAnalysis { is_literal, constants, num_identifiers_and_special_ops: num_identifiers }
 }
 pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	// regex to check if theres an y identifier (single y not surrounded by alphanumerics on either
