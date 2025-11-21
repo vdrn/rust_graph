@@ -740,7 +740,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 							"Integrals outside functions are not supported.".to_string(),
 						));
 					},
-					IntegralNode::PreparedFunc { func, additional_args } => {
+					IntegralNode::PreparedFunc { func, additional_args, .. } => {
 						use smallvec::smallvec;
 						let mut arguments: SmallVec<[Value<F>; 4]> = smallvec![];
 

@@ -1481,7 +1481,6 @@ pub fn prepare_entry<T: EvalexprFloat>(
 
 pub fn inline_and_fold_entry<T: EvalexprFloat>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
-	thread_local_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, reserved_vars: &ReservedVars,
 ) -> Result<(), (u64, String)> {
 	match &mut entry.ty {
 		EntryType::Function { func, ty, identifier, .. } => {
@@ -1494,7 +1493,7 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args);
-      println!("expr function {:?}", expr_function);
+			// println!("expr function {:?}", expr_function);
 
 			if identifier.to_str() != "" {
 				ctx.set_expression_function(*identifier, expr_function.clone());

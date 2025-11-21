@@ -28,6 +28,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 					int_args.push(*variable);
 					*op = FlatOperator::Integral(Box::new(IntegralNode::PreparedFunc {
 						func:            ExpressionFunction::new(expr.clone(), &int_args),
+            variable: *variable,
 						additional_args: (0..args.len()).map(|i| (args.len() - i) as u32).collect(),
 					}));
 				},

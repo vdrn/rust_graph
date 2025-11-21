@@ -255,6 +255,7 @@ pub enum IntegralNode<F: EvalexprFloat> {
 	},
 	PreparedFunc {
 		func:            ExpressionFunction<F>,
+		variable: IStr,
 		/// inverse_indices from outer scope
 		additional_args: Vec<u32>,
 	},
@@ -464,6 +465,22 @@ impl<F: EvalexprFloat> FlatNode<F> {
 			match op {
 				FlatOperator::Product { expr, .. } | FlatOperator::Sum { expr, .. } => {
 					ops.extend(expr.iter());
+				},
+				FlatOperator::Integral(int) => match int.as_ref() {
+					IntegralNode::UnpreparedExpr { expr, variable } => {
+						ops.extend(expr.iter().filter(|op| match op {
+							FlatOperator::ReadVar { identifier } => identifier != variable,
+							_ => true,
+						}));
+					},
+					IntegralNode::PreparedFunc { func, variable,.. } => {
+						ops.extend(func.expr.ops.iter().filter(|op|{
+              match op {
+                FlatOperator::ReadVar { identifier } => identifier != variable,
+                _ => true,
+              }
+            }));
+					},
 				},
 				op => {
 					ops.push(op);

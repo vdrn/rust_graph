@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
+use smallvec::SmallVec;
 use std::env;
 use std::sync::Mutex;
 
@@ -924,28 +925,148 @@ fn side_panel<T: EvalexprFloat>(
 			}
 			if needs_recompilation || state.clear_cache || animating {
 				scope!("inlining_pass");
-				for entry in state.entries.iter_mut() {
-					scope!("entry_process");
-					match &mut entry.ty {
-						EntryType::Folder { entries } => {
-							for entry in entries {
-								if let Err((id, e)) = entry::inline_and_fold_entry(
-									entry, &mut state.ctx, &state.thread_local_context,
-									&ui_state.reserved_vars,
-								) {
-									ui_state.parsing_errors.insert(id, e);
-								}
-							}
-						},
-						_ => {
-							if let Err((id, e)) = entry::inline_and_fold_entry(
-								entry, &mut state.ctx, &state.thread_local_context, &ui_state.reserved_vars,
-							) {
-								ui_state.parsing_errors.insert(id, e);
-							}
-						},
+				#[derive(Debug)]
+				struct GraphEntry {
+					identifier: IStr,
+					root_idx:   Option<usize>,
+					idx:        usize,
+					depends_on: Option<SmallVec<[IStr; 6]>>,
+				}
+
+				use smallvec::smallvec;
+				let mut functions: Vec<GraphEntry> = Vec::with_capacity(state.entries.len());
+				fn add_entries<T: EvalexprFloat>(
+					root_idx: Option<usize>, entries: &[Entry<T>], graph: &mut Vec<GraphEntry>,
+				) {
+					for (i, entry) in entries.iter().enumerate() {
+						match &entry.ty {
+							EntryType::Function { func, identifier, .. } => {
+								let depends_on = if func.node.is_some() { Some(smallvec![]) } else { None };
+								graph.push(GraphEntry {
+									identifier: *identifier,
+									root_idx,
+									idx: i,
+									depends_on,
+								});
+							},
+							EntryType::Integral { .. } => {
+								graph.push(GraphEntry {
+									identifier: istr(""),
+									root_idx,
+									idx: i,
+									depends_on: None,
+								});
+							},
+							EntryType::Folder { entries } => {
+								add_entries(Some(i), entries, graph);
+							},
+							_ => {},
+						}
 					}
 				}
+				// collect all functions that need optimization
+				add_entries(None, &state.entries, &mut functions);
+
+				fn get_function_node<T: EvalexprFloat>(
+					root_entries: &[Entry<T>], root_idx: Option<usize>, idx: usize,
+				) -> Option<&FlatNode<T>> {
+					let entry = if let Some(root_idx) = root_idx {
+						let EntryType::Folder { entries } = &root_entries[root_idx].ty else {
+							unreachable!();
+						};
+						&entries[idx]
+					} else {
+						&root_entries[idx]
+					};
+					match &entry.ty {
+						EntryType::Function { func, .. } => func.node.as_ref(),
+						// EntryType::Integral { func, .. } => func.node.as_ref(),
+						_ => None,
+					}
+				}
+				// determine inter-function dependencies
+				for i in 0..functions.len() {
+					if functions[i].depends_on.is_some() {
+						let mut depends_on = smallvec![];
+						if let Some(node) =
+							get_function_node(&state.entries, functions[i].root_idx, functions[i].idx)
+						{
+							for ident in node.iter_identifiers() {
+								if let Some(d) = functions.iter().find(|e| e.identifier.to_string() == ident) {
+									depends_on.push(d.identifier);
+								}
+							}
+						}
+						functions[i].depends_on = Some(depends_on);
+					}
+				}
+
+				while !functions.is_empty() {
+					let mut optimized = 0;
+
+					let mut i = 0;
+					while i < functions.len() {
+						if functions[i].depends_on.as_ref().is_none_or(|d| d.is_empty()) {
+							let entry = if let Some(root_idx) = functions[i].root_idx {
+								let EntryType::Folder { entries } = &mut state.entries[root_idx].ty else {
+									unreachable!();
+								};
+								&mut entries[functions[i].idx]
+							} else {
+								&mut state.entries[functions[i].idx]
+							};
+							if let Err((id, e)) = entry::inline_and_fold_entry(entry, &mut state.ctx) {
+								ui_state.parsing_errors.insert(id, e);
+							}
+							let ge = functions.swap_remove(i);
+
+							for graph_entry in functions.iter_mut() {
+								if let Some(depends_on) = graph_entry.depends_on.as_mut() {
+									depends_on.retain(|d| *d != ge.identifier);
+								}
+							}
+
+							optimized += 1;
+						} else {
+							i += 1;
+						}
+					}
+
+					if optimized == 0 && !functions.is_empty() {
+						// We have a cycle.
+						// Choose one function to optimize without all its dependencies optimized.
+						// In practice this only means its dependencies will not be inlined.
+						// We choose the one with least number of dependencies.
+						// NOTE: we might need to rethink this
+						functions
+							.sort_unstable_by_key(|e| e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0));
+						println!("Cycle detected. Force compiling first function: {functions:?}. ");
+						functions[0].depends_on = None;
+					}
+				}
+
+				// for entry in state.entries.iter_mut() {
+				// 	scope!("entry_process");
+				// 	match &mut entry.ty {
+				// 		EntryType::Folder { entries } => {
+				// 			for entry in entries {
+				// 				if let Err((id, e)) = entry::inline_and_fold_entry(
+				// 					entry, &mut state.ctx, &state.thread_local_context,
+				// 					&ui_state.reserved_vars,
+				// 				) {
+				// 					ui_state.parsing_errors.insert(id, e);
+				// 				}
+				// 			}
+				// 		},
+				// 		_ => {
+				// 			if let Err((id, e)) = entry::inline_and_fold_entry(
+				// 				entry, &mut state.ctx, &state.thread_local_context, &ui_state.reserved_vars,
+				// 			) {
+				// 				ui_state.parsing_errors.insert(id, e);
+				// 			}
+				// 		},
+				// 	}
+				// }
 			}
 			state.clear_cache = false;
 
