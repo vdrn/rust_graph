@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::flat_node::FlatOperator;
+use crate::flat_node::{FlatOperator, IntegralNode};
 use crate::{EvalexprFloat, FlatNode, HashMapContext};
 
 pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, context: &HashMapContext<F>) {
@@ -190,7 +190,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::RangeWithStep => 3,
 
 		FlatOperator::Sum { .. } | FlatOperator::Product { .. } => 1,
-		FlatOperator::Integral { .. } => 2,
+		FlatOperator::Integral (int) => 2,
 
 		FlatOperator::Clamp => 3,
 	}

@@ -81,9 +81,9 @@ pub fn eval_flat_node_mut<F: EvalexprFloat>(
 /// Stack type
 #[derive(Default)]
 pub struct Stack<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize = 512> {
-	stack:            Vec<Value<T>>,
-	function_nesting: usize,
-	num_args:         usize,
+	stack:               Vec<Value<T>>,
+	function_nesting:    usize,
+	pub(crate) num_args: usize,
 }
 impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_NESTING> {
 	/// Create new stack
@@ -93,11 +93,11 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		Self { stack: Vec::with_capacity(capacity), function_nesting: 0, num_args: 0 }
 	}
 	#[inline(always)]
-	fn push(&mut self, value: Value<T>) { self.stack.push(value); }
+	pub(crate) fn push(&mut self, value: Value<T>) { self.stack.push(value); }
 	/// Returns true if the stack is empty
 	pub fn is_empty(&self) -> bool { self.stack.is_empty() }
 	fn pop(&mut self) -> Option<Value<T>> { self.stack.pop() }
-	fn last_mut(&mut self) -> Option<&mut Value<T>> { self.stack.last_mut() }
+	pub(crate) fn last_mut(&mut self) -> Option<&mut Value<T>> { self.stack.last_mut() }
 	pub(crate) fn function_called(&mut self) -> EvalexprResult<(), T> {
 		if self.function_nesting > MAX_FUNCTION_NESTING {
 			return Err(EvalexprError::StackOverflow);
@@ -135,7 +135,11 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		debug_assert!(arg_i < self.stack.len());
 		Some(unsafe { self.stack.get_unchecked(arg_i) })
 	}
-	fn get_unchecked(&self, index: usize) -> &Value<T> { unsafe { self.stack.get_unchecked(index) } }
+	fn get_unchecked(&self, index: usize) -> &Value<T> {
+    assert!(index < self.stack.len());
+
+    unsafe { self.stack.get_unchecked(index) } 
+  }
 	// fn get(&self, index: usize) -> Option<&Value<T>> {
 	//     self.stack.get(index)
 	// }
@@ -145,7 +149,7 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		self.stack.drain(range)
 	}
 	fn pop_unchecked(&mut self) -> Value<T> {
-		debug_assert!(!self.is_empty());
+		assert!(!self.is_empty());
 		unsafe { self.stack.pop().unwrap_unchecked() }
 	}
 }
@@ -741,17 +745,14 @@ fn eval_priv_inner<F: EvalexprFloat>(
 						));
 					},
 					IntegralNode::PreparedFunc { func, additional_args, .. } => {
-						use smallvec::smallvec;
-						let mut arguments: SmallVec<[Value<F>; 4]> = smallvec![];
-
 						for inverse_index in additional_args {
 							let value = stack.get_unchecked(base_index - *inverse_index as usize);
 							stack.push(value.clone());
 						}
 						stack.push(Value::Empty);
+
 						let num_args = additional_args.len() + 1;
 
-						arguments.push(Value::Empty);
 						stack.num_args = num_args;
 						let result = integrate::integrate(
 							lower,

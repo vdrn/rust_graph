@@ -1,14 +1,16 @@
+use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
 use crate::error::expect_function_argument_amount;
 use crate::flat_node::subexpression_elemination::{get_arg_ranges, get_n_previous_exprs};
-use crate::flat_node::FlatOperator;
-use crate::{EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, Value};
+use crate::flat_node::{FlatOperator, IntegralNode};
+use crate::math::integrate;
+use crate::{EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value};
 
 pub fn inline_functions<F: EvalexprFloat>(
 	node: &mut FlatNode<F>, context: &mut HashMapContext<F>,
 ) -> EvalexprResult<usize, F> {
-	let mut cur_idx = 0;
+	let mut cur_idx = node.num_local_var_ops as usize;
 	let mut inlined_functions = 0;
 	while cur_idx < node.ops.len() {
 		let op = &node.ops[cur_idx];
@@ -28,6 +30,46 @@ pub fn inline_functions<F: EvalexprFloat>(
 					}
 				}
 			},
+			FlatOperator::Integral(int) => match int.as_ref() {
+				IntegralNode::PreparedFunc { func, variable, additional_args, .. } => {
+					if additional_args.is_empty() {
+						// println!("inlining integral closure");
+						let arg_ranges = get_arg_ranges(&node.ops, cur_idx);
+						assert_eq!(arg_ranges.len(), 2);
+						let mut bounds = ArrayVec::<_, 2>::new();
+						for (start, end) in arg_ranges {
+							if start == end {
+								if let FlatOperator::PushConst { value } = &node.ops[start] {
+									bounds.push(value.clone());
+								}
+							}
+						}
+						if bounds.len() == 2 {
+							let upper = bounds[0].as_float()?;
+							let lower = bounds[1].as_float()?;
+							let mut stack = Stack::<F>::with_capacity(1);
+							stack.num_args = 1;
+							stack.push(Value::Empty);
+							let result = integrate::integrate(
+								lower,
+								upper,
+								|x| {
+									*stack.last_mut().unwrap() = Value::Float(x);
+									func.unchecked_call(&mut stack, context)?.as_float()
+								},
+								&F::INTEGRATION_PRECISION,
+							)?;
+							// remove the bound args
+							node.ops.drain(cur_idx - 2..cur_idx);
+							cur_idx -= 2;
+
+							// replace the integral op with the result
+							node.ops[cur_idx] = FlatOperator::PushConst { value: Value::Float(result.value) };
+						}
+					}
+				},
+				_ => {},
+			},
 			_ => {},
 		}
 		cur_idx += 1;
@@ -35,6 +77,20 @@ pub fn inline_functions<F: EvalexprFloat>(
 
 	Ok(inlined_functions)
 }
+
+// fn inline_integral_closure_params<F: EvalexprFloat>(
+// 	node: &mut FlatNode<F>, cur_idx: &mut usize, fn_name: IStr, int:IntegralNode <F>, arg_num: u32,
+// )-> EvalexprResult<(), F> {
+//   let IntegralNode::PreparedFunc { func, variable,additional_args, .. } = int else {
+//     return Ok(());
+//   };
+//   if !additional_args.is_empty(){
+//     let parent_arg_ranges = get_arg_ranges(&node.ops, cur_idx);
+
+//   }
+
+// }
+
 fn inline_function<F: EvalexprFloat>(
 	node: &mut FlatNode<F>, cur_idx: &mut usize, fn_name: IStr, expr_func: ExpressionFunction<F>, arg_num: u32,
 ) -> EvalexprResult<(), F> {
@@ -65,8 +121,8 @@ fn inline_function<F: EvalexprFloat>(
 	for (i, arg) in const_args.iter().enumerate() {
 		if let Some((_, arg)) = arg {
 			let inverse_idx = (i + 1) as u32;
-			func_expr.iter_mut(&mut |op| {
-				if let FlatOperator::ReadParam { inverse_index } = op {
+			func_expr.iter_mut(&mut |op| match op {
+				FlatOperator::ReadParam { inverse_index } => {
 					if *inverse_index == inverse_idx {
 						*op = FlatOperator::PushConst { value: arg.clone() };
 					} else if *inverse_index > inverse_idx
@@ -74,7 +130,70 @@ fn inline_function<F: EvalexprFloat>(
 					{
 						*inverse_index -= 1;
 					}
-				}
+				},
+				FlatOperator::ReadParamNeg { inverse_index } => {
+					if *inverse_index == inverse_idx {
+						// TODO cannot use unwrap_or here
+						*op = FlatOperator::PushConst {
+							value: Value::Float(-arg.as_float().unwrap_or(F::ZERO)),
+						};
+					} else if *inverse_index > inverse_idx
+						&& const_args[(*inverse_index - 1) as usize].is_none()
+					{
+						*inverse_index -= 1;
+					}
+				},
+				FlatOperator::Integral(int) => match int.as_mut() {
+					IntegralNode::UnpreparedExpr { expr, variable } => expr.iter_mut(&mut |op| match op {
+						FlatOperator::ReadVar { identifier } => {
+							let idx = expr_func.args.len() - i - 1;
+							if *identifier == expr_func.args[idx] && *identifier != *variable {
+								*op = FlatOperator::PushConst { value: arg.clone() };
+							}
+						},
+						FlatOperator::ReadVarNeg { identifier } => {
+							let idx = expr_func.args.len() - i - 1;
+							if *identifier == expr_func.args[idx] && *identifier != *variable {
+								*op = FlatOperator::PushConst {
+									// TODO cannot use unwrap_or here
+									value: Value::Float(-arg.as_float().unwrap_or(F::ZERO)),
+								};
+							}
+						},
+						_ => {},
+					}),
+					IntegralNode::PreparedFunc { func, variable, additional_args, .. } => {
+						additional_args.retain(|&idx| idx != inverse_idx);
+						func.args.retain(|&arg| arg != expr_func.args[expr_func.args.len() - i - 1]);
+
+						func.expr.iter_mut(&mut |op| match op {
+							FlatOperator::ReadParam { inverse_index } => {
+								if *inverse_index - 1 == inverse_idx {
+									// TODO cannot use unwrap_or here
+									*op = FlatOperator::PushConst { value: arg.clone() };
+								} else if *inverse_index - 1 > inverse_idx
+									&& const_args[(*inverse_index - 1) as usize].is_none()
+								{
+									*inverse_index -= 1;
+								}
+							},
+							FlatOperator::ReadParamNeg { inverse_index } => {
+								if *inverse_index - 1 == inverse_idx {
+									// TODO cannot use unwrap_or here
+									*op = FlatOperator::PushConst {
+										value: Value::Float(-arg.as_float().unwrap_or(F::ZERO)),
+									};
+								} else if *inverse_index - 1 > inverse_idx
+									&& const_args[(*inverse_index - 1) as usize].is_none()
+								{
+									*inverse_index -= 1;
+								}
+							},
+							_ => {},
+						});
+					},
+				},
+				_ => {},
 			});
 		}
 	}

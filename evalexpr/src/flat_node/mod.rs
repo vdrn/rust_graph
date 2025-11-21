@@ -9,6 +9,7 @@ mod subexpression_elemination;
 mod variable_inlining;
 
 use eval::{eval_flat_node, eval_flat_node_mut};
+pub(crate) use function_inlining::inline_functions;
 use variable_inlining::inline_variables_and_fold;
 
 pub use compile::compile_to_flat;
@@ -18,9 +19,6 @@ pub use eval::Stack;
 pub fn optimize_flat_node<F: EvalexprFloat>(
 	node: &FlatNode<F>, context: &mut HashMapContext<F>,
 ) -> EvalexprResult<FlatNode<F>, F> {
-	if node.num_local_vars > 0 || node.num_local_var_ops > 0 {
-		return Err(EvalexprError::CustomMessage("This FlatNode was already optimized.".to_string()));
-	}
 	let mut inlined = inline_variables_and_fold(node, context)?;
 	if function_inlining::inline_functions(&mut inlined, context)? > 0 {
 		inlined = inline_variables_and_fold(&inlined, context)?;
@@ -255,7 +253,7 @@ pub enum IntegralNode<F: EvalexprFloat> {
 	},
 	PreparedFunc {
 		func:            ExpressionFunction<F>,
-		variable: IStr,
+		variable:        IStr,
 		/// inverse_indices from outer scope
 		additional_args: Vec<u32>,
 	},
@@ -463,8 +461,11 @@ impl<F: EvalexprFloat> FlatNode<F> {
 		let mut ops = Vec::new();
 		for op in self.ops.iter() {
 			match op {
-				FlatOperator::Product { expr, .. } | FlatOperator::Sum { expr, .. } => {
-					ops.extend(expr.iter());
+				FlatOperator::Product { expr, variable, .. } | FlatOperator::Sum { expr, variable, .. } => {
+					ops.extend(expr.iter().filter(|op| match op {
+						FlatOperator::ReadVar { identifier } => identifier != variable,
+						_ => true,
+					}));
 				},
 				FlatOperator::Integral(int) => match int.as_ref() {
 					IntegralNode::UnpreparedExpr { expr, variable } => {
@@ -473,13 +474,11 @@ impl<F: EvalexprFloat> FlatNode<F> {
 							_ => true,
 						}));
 					},
-					IntegralNode::PreparedFunc { func, variable,.. } => {
-						ops.extend(func.expr.ops.iter().filter(|op|{
-              match op {
-                FlatOperator::ReadVar { identifier } => identifier != variable,
-                _ => true,
-              }
-            }));
+					IntegralNode::PreparedFunc { func, variable, .. } => {
+						ops.extend(func.expr.ops.iter().filter(|op| match op {
+							FlatOperator::ReadVar { identifier } => identifier != variable,
+							_ => true,
+						}));
 					},
 				},
 				op => {

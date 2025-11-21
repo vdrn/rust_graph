@@ -1017,7 +1017,9 @@ fn side_panel<T: EvalexprFloat>(
 							};
 							if let Err((id, e)) = entry::inline_and_fold_entry(entry, &mut state.ctx) {
 								ui_state.parsing_errors.insert(id, e);
-							}
+							}else{
+                ui_state.parsing_errors.remove(&entry.id);
+              }
 							let ge = functions.swap_remove(i);
 
 							for graph_entry in functions.iter_mut() {

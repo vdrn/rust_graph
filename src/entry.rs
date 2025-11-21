@@ -1483,17 +1483,18 @@ pub fn inline_and_fold_entry<T: EvalexprFloat>(
 	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
 ) -> Result<(), (u64, String)> {
 	match &mut entry.ty {
-		EntryType::Function { func, ty, identifier, .. } => {
+		EntryType::Function { func, identifier, .. } => {
 			let Some(node) = &func.node else { return Ok(()) };
-			// println!("INLINING FUNC {} {}",entry.name, func.text);
+			// println!("INLINING FUNC {} {}", entry.name, func.text);
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
-			// println!("inlined_node: {:#?}", func.inlined_node);
+			// println!("INLINED FUNC: {:#?}", inlined_node);
 
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
-			let expr_function = ExpressionFunction::new(inlined_node, &func.args);
-			// println!("expr function {:?}", expr_function);
+			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
+				.map_err(|e| (entry.id, e.to_string()))?;
+			// println!("FUNC EXPRESSION {:#?}", expr_function);
 
 			if identifier.to_str() != "" {
 				ctx.set_expression_function(*identifier, expr_function.clone());
