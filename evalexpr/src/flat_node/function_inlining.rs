@@ -31,7 +31,7 @@ pub fn inline_functions<F: EvalexprFloat>(
 				}
 			},
 			FlatOperator::Integral(int) => match int.as_ref() {
-				IntegralNode::PreparedFunc { func, variable, additional_args, .. } => {
+				IntegralNode::PreparedFunc { func, additional_args, .. } => {
 					if additional_args.is_empty() {
 						// println!("inlining integral closure");
 						let arg_ranges = get_arg_ranges(&node.ops, cur_idx);
@@ -162,7 +162,7 @@ fn inline_function<F: EvalexprFloat>(
 						},
 						_ => {},
 					}),
-					IntegralNode::PreparedFunc { func, variable, additional_args, .. } => {
+					IntegralNode::PreparedFunc { func, additional_args, .. } => {
 						additional_args.retain(|&idx| idx != inverse_idx);
 						func.args.retain(|&arg| arg != expr_func.args[expr_func.args.len() - i - 1]);
 

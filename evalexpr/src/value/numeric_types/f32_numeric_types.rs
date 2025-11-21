@@ -1,6 +1,5 @@
 use std::sync::OnceLock;
 
-use crate::math::float_to_rational;
 use crate::math::integrate::Precision;
 use crate::{EvalexprError, EvalexprResult};
 
@@ -21,7 +20,7 @@ impl EvalexprFloat for f32 {
 	const EPSILON: f64 = f64::EPSILON;
 	fn from_usize(int: usize) -> Self { int as Self }
 	const INTEGRATION_PRECISION: Precision<Self> =
-		Precision { lower: 1e-7, upper: 1e-5, precision: 1e-6 };
+		Precision { lower: 1e-7, upper: 1e-4, precision: 1e-5 };
 	fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self> {
 		static PRECOMPUTED: OnceLock<crate::math::integrate::AbscissasWeights<f32>> = OnceLock::new();
 		PRECOMPUTED.get_or_init(crate::math::integrate::get_tanh_sinh_abscissas_and_weights)

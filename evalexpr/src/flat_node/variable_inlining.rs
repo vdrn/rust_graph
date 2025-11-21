@@ -1,10 +1,8 @@
-use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::flat_node::eval::{eval_range, eval_range_with_step};
-use crate::flat_node::subexpression_elemination::get_arg_ranges;
 use crate::flat_node::{FlatOperator, IntegralNode};
-use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
+use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
 
 /// Inlines variables and folds the expression tree
 pub fn inline_variables_and_fold<F: EvalexprFloat>(
@@ -257,7 +255,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_unary_op(&mut new_ops, source_op, |a| a.factorial())?;
 			},
 			FlatOperator::Gcd => {
-				fold_binary_op(&mut new_ops, source_op, |a,b| a.gcd(&b))?;
+				fold_binary_op(&mut new_ops, source_op, |a, b| a.gcd(&b))?;
 			},
 			FlatOperator::MulAdd => {
 				// a*b - c

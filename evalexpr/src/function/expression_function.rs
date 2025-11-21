@@ -2,18 +2,18 @@ use smallvec::SmallVec;
 
 use crate::error::{expect_function_argument_amount, EvalexprResultValue};
 use crate::flat_node::{inline_functions, FlatOperator, IntegralNode};
-use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
+use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
 
 #[derive(Clone, PartialEq, Debug)]
 /// Struct that represents expression function
 pub struct ExpressionFunction<F: EvalexprFloat> {
-	pub(crate) expr:     FlatNode<F>,
+	pub(crate) expr: FlatNode<F>,
 	pub(crate) args: Vec<IStr>,
 }
 impl<F: EvalexprFloat> ExpressionFunction<F> {
 	/// Creates new ExpressionFunction from FlatNode and arguments
 	pub fn new(
-		mut expr: FlatNode<F>, args: &[IStr], mut context: &mut Option<&mut HashMapContext<F>>,
+		mut expr: FlatNode<F>, args: &[IStr], context: &mut Option<&mut HashMapContext<F>>,
 	) -> EvalexprResult<Self, F> {
 		let mut has_integrals = false;
 		let mut error = None;
@@ -35,12 +35,14 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 					let mut additional_arg_indices = Vec::with_capacity(args.len());
 					for (i, arg) in args.iter().enumerate() {
 						if arg != variable {
-              for internal_var in expr.iter_variable_identifiers() {
-                if internal_var == arg.to_str() && arg_names.iter().all(|e| e.to_str() != internal_var) {
-                  arg_names.push(*arg);
-                  additional_arg_indices.push((args.len() - i) as u32);
-                }
-              }
+							for internal_var in expr.iter_variable_identifiers() {
+								if internal_var == arg.to_str()
+									&& arg_names.iter().all(|e| e.to_str() != internal_var)
+								{
+									arg_names.push(*arg);
+									additional_arg_indices.push((args.len() - i) as u32);
+								}
+							}
 							// arg_names.push(*arg);
 							// additional_arg_indices.push((args.len() - i) as u32);
 						}
@@ -56,13 +58,13 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 					};
 					*op = FlatOperator::Integral(Box::new(IntegralNode::PreparedFunc {
 						func,
-						variable:        *variable,
+						variable: *variable,
 						additional_args: additional_arg_indices,
 					}));
 				},
 				IntegralNode::PreparedFunc { .. } => {
-          has_integrals = true;
-        },
+					has_integrals = true;
+				},
 			},
 			_ => {},
 		});
@@ -80,10 +82,10 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 	/// Returns the constant value of this node it it only contains a single PushConst operator.
 	pub fn as_constant(&self) -> Option<Value<F>> { self.expr.as_constant() }
 
-  /// Returns the arguments this expression function takes.
-	pub fn args(&self) -> &[IStr] {&self.args}
+	/// Returns the arguments this expression function takes.
+	pub fn args(&self) -> &[IStr] { &self.args }
 	/// Returns the number of arguments this expression function takes.
-	pub fn num_args(&self) -> usize { self.args.len()}
+	pub fn num_args(&self) -> usize { self.args.len() }
 	pub(crate) fn unchecked_call(
 		&self, stack: &mut Stack<F>, context: &HashMapContext<F>,
 	) -> EvalexprResultValue<F> {

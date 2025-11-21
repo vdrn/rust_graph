@@ -180,6 +180,7 @@ unused_async ="warn"
 unused_result_ok ="warn"
 
 ### Allows
+single_match = "allow"
 let_and_return = "allow" # this is just a bad lint
 new_without_default = "allow" # no thanks
 collapsible_if = "allow" # too strict. too much trouble `allow`ing it.

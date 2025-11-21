@@ -9,7 +9,7 @@ use evalexpr::{EvalexprFloat, istr};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
-	Expr, FunctionType, GLineStyle, IntegralStyle, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, TextboxType, preprecess_fn
+	Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprecess_fn
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -34,15 +34,13 @@ pub struct EntrySerialized {
 #[derive(Serialize, PartialEq, Deserialize, Default)]
 pub struct ExprSer {
 	#[serde(default)]
-	text:         String,
+	text:             String,
 	#[serde(default)]
-	textbox_type: TextboxType,
-  #[serde(default)]
-  display_rational: bool
+	display_rational: bool,
 }
 impl ExprSer {
 	pub fn from_expr<T: EvalexprFloat>(expr: &Expr<T>) -> Self {
-		Self { text: expr.text.clone(), textbox_type: expr.textbox_type, display_rational: expr.display_rational }
+		Self { text: expr.text.clone(), display_rational: expr.display_rational }
 	}
 	pub fn into_expr<T: EvalexprFloat>(self, preprocess: bool) -> Expr<T> {
 		let temp;
@@ -52,14 +50,13 @@ impl ExprSer {
 			txt = &temp;
 		};
 		Expr {
-			node:          evalexpr::build_operator_tree::<T>(txt).ok(),
+			node: evalexpr::build_operator_tree::<T>(txt).ok(),
 
-			inlined_node:  None,
-			args:          Vec::new(),
-			expr_function: None,
-			text:          self.text,
-			textbox_type:  self.textbox_type,
-      display_rational: self.display_rational
+			inlined_node:     None,
+			args:             Vec::new(),
+			expr_function:    None,
+			text:             self.text,
+			display_rational: self.display_rational,
 		}
 	}
 }
@@ -74,7 +71,7 @@ pub enum EntryTypeSerialized {
 		#[serde(default)]
 		range_end:           ExprSer,
 		#[serde(default)]
-		style:               GLineStyle,
+		style:               LineStyleConfig,
 		#[serde(default)]
 		implicit_resolution: usize,
 	},
@@ -87,18 +84,6 @@ pub enum EntryTypeSerialized {
 		points: Vec<EntryPointSerialized>,
 		#[serde(default)]
 		style:  PointStyle,
-	},
-	Integral {
-		#[serde(default)]
-		func:  ExprSer,
-		#[serde(default)]
-		lower: ExprSer,
-		#[serde(default)]
-		upper: ExprSer,
-		#[serde(default)]
-		style: IntegralStyle,
-
-		resolution: usize,
 	},
 	Label {
 		#[serde(default)]
@@ -168,15 +153,6 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 						points_serialized.push(point_serialized);
 					}
 					EntryTypeSerialized::Points { points: points_serialized, style: style.clone() }
-				},
-				EntryType::Integral { func, lower, upper, resolution, style, .. } => {
-					EntryTypeSerialized::Integral {
-						func:       ExprSer::from_expr(func),
-						lower:      ExprSer::from_expr(lower),
-						upper:      ExprSer::from_expr(upper),
-						resolution: *resolution,
-						style:      style.clone(),
-					}
 				},
 				EntryType::Label { x, y, size, underline, .. } => EntryTypeSerialized::Label {
 					x:         ExprSer::from_expr(x),
@@ -298,17 +274,6 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 						points_deserialized.push(point_deserialized);
 					}
 					EntryType::Points { points: points_deserialized, style }
-				},
-				EntryTypeSerialized::Integral { func, lower, upper, resolution, style } => {
-					EntryType::Integral {
-						func: func.into_expr(false),
-						lower: lower.into_expr(false),
-						upper: upper.into_expr(false),
-
-						calculated: None,
-						resolution: resolution.max(10),
-						style,
-					}
 				},
 				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {
 					x: text_x.into_expr(false),

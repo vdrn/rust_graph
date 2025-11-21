@@ -49,8 +49,7 @@ pub fn get_tanh_sinh_abscissas_and_weights<F: EvalexprFloat>() -> AbscissasWeigh
 }
 
 pub struct IntegrationResult<F: EvalexprFloat> {
-	pub value:           F,
-	pub iteration_count: usize,
+	pub value: F,
 }
 pub struct Precision<F: EvalexprFloat> {
 	pub lower:     F,
@@ -64,6 +63,7 @@ pub struct Precision<F: EvalexprFloat> {
 /// Implements the Tanh-Sinh quadrature
 ///
 /// Adapted from: https://github.com/Proektsoftbg/Numerical/blob/main/Numerical/Integrator/TanhSinh.cs
+/// which is based on [Improving the Double Exponential Quadrature Tanh-Sinh, Sinh-Sinh and Exp-Sinh Formulas](https://www.genivia.com/files/qthsh.pdf)
 pub fn tanh_sinh<F: EvalexprFloat>(
 	x1: F, x2: F, mut f: impl FnMut(F) -> EvalexprResult<F, F>, precision: &Precision<F>,
 ) -> EvalexprResult<IntegrationResult<F>, F> {
@@ -73,37 +73,35 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 	let half = F::f64_to_float(0.5);
 	let two = F::f64_to_float(2.0);
 
-	let mut iteration_count = 1;
-
 	let c = (x1 + x2) * half;
 	let d = (x2 - x1) * half;
 	let mut s = f(c)?;
 
-	let eps = precision.precision.clamp(&precision.lower, &precision.upper) * F::f64_to_float(0.1);
+	let eps = (precision.precision * F::f64_to_float(0.1)).clamp(&precision.lower, &precision.upper);
 	let tol = F::f64_to_float(10.0) * precision.precision;
 	let mut err;
 	let mut i = 0;
 
 	loop {
 		let mut p = zero;
-		let mut j = 0;
+		let mut fp = zero;
+		let mut fm = zero;
 
+		let mut j = 0;
 		loop {
 			let x = data.r[i][j] * d;
-			let mut fp = zero;
-			let mut fm = zero;
 
+			// if too close to x1 then reuse previous fp
 			if x1 + x > x1 {
 				let y = f(x1 + x)?;
-				iteration_count += 1;
 				if y.is_finite() {
 					fp = y;
 				}
 			}
 
+			// if too close to x2 then reuse previous fm
 			if x2 - x < x2 {
 				let y = f(x2 - x)?;
-				iteration_count += 1;
 				if y.is_finite() {
 					fm = y;
 				}
@@ -135,7 +133,7 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 
 	let result = d * s * two.pow(&F::from_i32(1 - i as i32));
 
-	Ok(IntegrationResult { value: result, iteration_count })
+	Ok(IntegrationResult { value: result })
 }
 
 /// Integrate over possibly infinite bounds using appropriate transformations.

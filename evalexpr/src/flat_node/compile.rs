@@ -1,8 +1,6 @@
 use crate::error::{expect_function_argument_amount, expect_operator_argument_amount};
 use crate::flat_node::{FlatOperator, IntegralNode};
-use crate::{
-	EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, IStr, Node, Operator, Value
-};
+use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value};
 /// Helper function to extract exactly one child node
 fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<Node<F>, F> {
 	expect_operator_argument_amount(children.len(), 1)?;
@@ -705,7 +703,7 @@ fn compile_operator_function<NumericTypes: EvalexprFloat>(
 			expect_function_argument_amount(arg_num, 1)?;
 			Some(FlatOperator::Factorial)
 		},
-		"gcd"  => {
+		"gcd" => {
 			expect_function_argument_amount(arg_num, 2)?;
 			Some(FlatOperator::Gcd)
 		},
