@@ -1,5 +1,5 @@
 use egui_plot::PlotPoint;
- 
+
 pub fn zoom_in_x_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,
 ) -> Option<(f64, f64)> {
@@ -223,9 +223,7 @@ pub fn intersect_segs(
 	}
 }
 
-pub fn minimize(
-	cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> (f64, f64),
-) -> f64 {
+pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> (f64, f64)) -> f64 {
 	// Levenberg-Marquardt
 	// minimizing abs(f(val) - mouse_pos)^2
 

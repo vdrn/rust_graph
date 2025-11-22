@@ -774,7 +774,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					},
 				};
 
-				stack.push(Value::Float(result.value));
+				stack.push(Value::Float(result));
 			},
 			FlatOperator::ReadLocalVar { idx } => {
 				let value = stack.get_unchecked(base_index + *idx as usize);

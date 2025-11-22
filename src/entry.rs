@@ -1,18 +1,18 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{self, Color32};
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Value, istr};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Value, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
+mod drag_point;
 mod entry_plot_elements;
 mod entry_processing;
 mod entry_ui;
-mod drag_point;
 
-pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
-pub use entry_processing::{optimize_entries, prepare_entry, preprecess_fn};
-pub use entry_ui::entry_ui;
 pub use drag_point::point_dragging;
+pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
+pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprecess_fn};
+pub use entry_ui::entry_ui;
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
@@ -46,7 +46,7 @@ pub const NUM_COLORS: usize = COLORS.len();
 pub struct Entry<T: EvalexprFloat> {
 	pub id:      u64,
 	pub name:    String,
-	pub visible: bool,
+	pub active: bool,
 	pub color:   usize,
 	pub ty:      EntryType<T>,
 }
@@ -279,7 +279,7 @@ impl<T: EvalexprFloat> Entry<T> {
 		match self.ty {
 			EntryType::Function { .. } => "λ",
 			EntryType::Constant { .. } => {
-				if self.visible {
+				if self.active {
 					"⏸"
 				} else {
 					"⏵"
@@ -304,10 +304,10 @@ impl<T: EvalexprFloat> Entry<T> {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
-			visible: true,
+			active: true,
 			name: String::new(),
 			ty: EntryType::Function {
-				identifier:   istr(""),
+				identifier:   istr_empty(),
 				can_be_drawn: true,
 
 				func:                Expr {
@@ -331,10 +331,10 @@ impl<T: EvalexprFloat> Entry<T> {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
-			visible: false,
+			active: false,
 			name: String::new(),
 			ty: EntryType::Constant {
-				istr_name: istr(""),
+				istr_name: istr_empty(),
 				value:     T::ZERO,
 				step:      0.01,
 				ty:        ConstantType::LoopForwardAndBackward {
@@ -349,7 +349,7 @@ impl<T: EvalexprFloat> Entry<T> {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
-			visible: true,
+			active: true,
 			name: String::new(),
 			ty: EntryType::Points { points: vec![PointEntry::default()], style: PointStyle::default() },
 		}
@@ -358,7 +358,7 @@ impl<T: EvalexprFloat> Entry<T> {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
-			visible: true,
+			active: true,
 			name: String::new(),
 			ty: EntryType::Label {
 				x:         Expr::default(),
@@ -372,7 +372,7 @@ impl<T: EvalexprFloat> Entry<T> {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
-			visible: true,
+			active: true,
 			name: String::new(),
 			ty: EntryType::Folder { entries: Vec::new() },
 		}

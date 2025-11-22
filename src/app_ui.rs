@@ -9,10 +9,22 @@ use evalexpr::EvalexprFloat;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::draw_buffer::{PointInteraction, PointInteractionType, process_draw_buffers};
-use crate::entry::{self, Entry, EntryType, f64_to_float, point_dragging};
+use crate::entry::{self, Entry, EntryType, f64_to_float, point_dragging, prepare_entries};
 use crate::{
 	BOOLEAN_OPERATORS, BUILTIN_CONSTS, BUILTIN_FUNCTIONS, OPERATORS, State, UiState, init_consts, init_functions, persistence, scope
 };
+
+fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
+	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
+		ui.label(RichText::new(parsing_error).color(Color32::RED));
+	} else if let Some(preparation_error) = ui_state.prepare_errors.get(&entry_id) {
+		ui.label(RichText::new(preparation_error).color(Color32::RED));
+	} else if let Some(optimization_error) = ui_state.optimization_errors.get(&entry_id) {
+		ui.label(RichText::new(optimization_error).color(Color32::RED));
+	} else if let Some(eval_error) = ui_state.eval_errors.get(&entry_id) {
+		ui.label(RichText::new(eval_error).color(Color32::RED));
+	}
+}
 
 pub fn side_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
@@ -62,7 +74,7 @@ pub fn side_panel<T: EvalexprFloat>(
 							handle.ui(ui, |ui| {
 								ui.label("||");
 							});
-							let folder_symbol = if entry.visible { "📂" } else { "📁" };
+							let folder_symbol = if entry.active { "📂" } else { "📁" };
 							if ui
 								.add(
 									Button::new(RichText::new(folder_symbol).strong().monospace())
@@ -70,7 +82,7 @@ pub fn side_panel<T: EvalexprFloat>(
 								)
 								.clicked()
 							{
-								entry.visible = !entry.visible;
+								entry.active = !entry.active;
 							}
 
 							ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
@@ -91,7 +103,7 @@ pub fn side_panel<T: EvalexprFloat>(
 								.changed();
 							});
 						});
-						if entry.visible {
+						if entry.active {
 							let mut remove_from_folder = None;
 
 							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
@@ -113,11 +125,7 @@ pub fn side_panel<T: EvalexprFloat>(
 										}
 									});
 								});
-								if let Some(parsing_error) = ui_state.parsing_errors.get(&entry.id) {
-									ui.label(RichText::new(parsing_error).color(Color32::RED));
-								} else if let Some(eval_error) = ui_state.eval_errors.get(&entry.id) {
-									ui.label(RichText::new(eval_error).color(Color32::RED));
-								}
+								display_entry_errors(ui, ui_state, entry.id);
 							});
 							if let Some(id) = remove_from_folder {
 								if let Some(index) = entries.iter().position(|e| e.id == id) {
@@ -146,11 +154,7 @@ pub fn side_panel<T: EvalexprFloat>(
 						});
 					});
 				}
-				if let Some(parsing_error) = ui_state.parsing_errors.get(&entry.id) {
-					ui.label(RichText::new(parsing_error).color(Color32::RED));
-				} else if let Some(eval_error) = ui_state.eval_errors.get(&entry.id) {
-					ui.label(RichText::new(eval_error).color(Color32::RED));
-				}
+				display_entry_errors(ui, ui_state, entry.id);
 				ui.separator();
 			});
 
@@ -256,7 +260,7 @@ pub fn side_panel<T: EvalexprFloat>(
 			ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
 
 			if needs_recompilation || state.clear_cache {
-				scope!("clear_cache");
+				scope!("prepare_entries");
 				// state.points_cache.clear();
 				match persistence::serialize_to_url(&state.entries, Some(&ui_state.plot_bounds)) {
 					Ok(output) => {
@@ -279,39 +283,13 @@ pub fn side_panel<T: EvalexprFloat>(
 
 				// state.context_stash.lock().unwrap().clear();
 
-				for entry in state.entries.iter_mut() {
-					scope!("entry_recompile");
-					if let Err((id, e)) = entry::prepare_entry(entry, &mut state.ctx) {
-						ui_state.parsing_errors.insert(id, e);
-					}
-				}
+				prepare_entries(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
 			} else if animating {
-				for entry in state.entries.iter_mut() {
-					scope!("entry_process");
-					match &mut entry.ty {
-						EntryType::Constant { value, istr_name, .. } => {
-							if !entry.name.is_empty() {
-								state.ctx.set_value(*istr_name, evalexpr::Value::<T>::Float(*value)).unwrap();
-							}
-						},
-						EntryType::Folder { entries } => {
-							for entry in entries {
-								if let EntryType::Constant { value, istr_name, .. } = &mut entry.ty {
-									if !entry.name.is_empty() {
-										state
-											.ctx
-											.set_value(*istr_name, evalexpr::Value::<T>::Float(*value))
-											.unwrap();
-									}
-								}
-							}
-						},
-						_ => {},
-					}
-				}
+				scope!("prepare_constants");
+				entry::prepare_constants(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
 			}
 			if needs_recompilation || state.clear_cache || animating {
-				entry::optimize_entries(&mut state.entries, &mut state.ctx, &mut ui_state.parsing_errors);
+				entry::optimize_entries(&mut state.entries, &mut state.ctx, &mut ui_state.optimization_errors);
 			}
 			state.clear_cache = false;
 

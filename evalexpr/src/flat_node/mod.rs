@@ -217,7 +217,7 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	Clamp, // 3 params
 
 	Factorial,
-  Gcd,
+	Gcd,
 
 	Range,
 	RangeWithStep,

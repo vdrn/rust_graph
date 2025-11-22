@@ -131,6 +131,13 @@ impl<F: EvalexprFloat> HashMapContext<F> {
 		}
 	}
 
+	/// does constext contain a value for the given identifier
+	pub fn has_value(&self, identifier: IStr) -> bool {
+		self.variables.contains_key(&identifier)
+			|| self.expr_functions.contains_key(&identifier)
+			|| self.functions.contains_key(&identifier)
+	}
+
 	/// Sets the variable with the given identifier to the given value.
 	pub fn set_value(&mut self, identifier: IStr, value: Value<F>) -> EvalexprResult<(), F> {
 		if let Some(existing_value) = self.variables.get_mut(&identifier) {

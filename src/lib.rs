@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use thread_local::ThreadLocal;
 
 mod app_ui;
+mod builtins;
 mod draw_buffer;
 mod entry;
 mod marching_squares;
@@ -45,6 +46,7 @@ use eframe::wasm_bindgen::{self, prelude::*};
 pub use wasm_bindgen_rayon::init_thread_pool;
 
 use crate::draw_buffer::DrawBufferRC;
+use crate::entry::f64_to_value;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -121,15 +123,21 @@ fn init_consts<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 		};
 	}
 
-	add_const!(E, "E", "e");
-	add_const!(PI, "PI", "pi");
-	add_const!(TAU, "TAU", "tau");
+	ctx.set_value(istr("e"), f64_to_value(core::f64::consts::E)).unwrap();
+	ctx.set_value(istr("pi"), f64_to_value(core::f64::consts::PI)).unwrap();
+	ctx.set_value(istr("π"), f64_to_value(core::f64::consts::PI)).unwrap();
+	ctx.set_value(istr("tau"), f64_to_value(core::f64::consts::TAU)).unwrap();
+	ctx.set_value(istr("τ"), f64_to_value(core::f64::consts::TAU)).unwrap();
+	ctx.set_value(istr("inf"), f64_to_value(f64::INFINITY)).unwrap();
+	ctx.set_value(istr("infinity"), f64_to_value(f64::INFINITY)).unwrap();
+	ctx.set_value(istr("∞"), f64_to_value(f64::INFINITY)).unwrap();
 }
 #[rustfmt::skip]
 const BUILTIN_CONSTS: &[(&str, &str)] = &[
   ("e","2.718281828459045"),
-  ("pi","3.141592653589793"),
-  ("tau","6.283185307179586"),
+  ("π/pi","3.141592653589793"),
+  ("τ/tau","6.283185307179586"),
+  ("∞/inf/infinity/","infinity"),
 ];
 pub fn expect_function_argument_amount<NumericTypes: EvalexprFloat>(
 	actual: usize, expected: usize,
@@ -299,8 +307,11 @@ struct UiState {
 	cur_dir:             String,
 	serialization_error: Option<String>,
 	serialized_states:   BTreeMap<String, String>,
-	eval_errors:         FxHashMap<u64, String>,
+
 	parsing_errors:      FxHashMap<u64, String>,
+	prepare_errors:      FxHashMap<u64, String>,
+	optimization_errors: FxHashMap<u64, String>,
+	eval_errors:         FxHashMap<u64, String>,
 
 	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<draw_buffer::PointInteraction>,
@@ -342,6 +353,10 @@ pub fn run_puffin_server() -> puffin_http::Server {
 impl Application {
 	#[allow(unused_mut)]
 	pub fn new(cc: &CreationContext) -> Self {
+		// let mut fonts = egui::FontDefinitions::default();
+		// egui_nerdfonts::add_to_fonts(&mut fonts, egui_nerdfonts::Variant::Regular);
+		// cc.egui_ctx.set_fonts(fonts);
+
 		let mut entries_s = Vec::new();
 		let mut entries_d = Vec::new();
 		let mut default_bounds_s = None;
@@ -447,8 +462,11 @@ impl Application {
 
 				cur_dir,
 				serialization_error,
-				eval_errors: FxHashMap::default(),
 				parsing_errors: FxHashMap::default(),
+				prepare_errors: FxHashMap::default(),
+				optimization_errors: FxHashMap::default(),
+				eval_errors: FxHashMap::default(),
+
 				selected_plot_line: None,
 				showing_custom_label: false,
 				dragging_point_i: None,

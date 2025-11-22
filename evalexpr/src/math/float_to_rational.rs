@@ -1,8 +1,8 @@
 use crate::math::gcd;
 
-pub fn decimal_places(v: f64, sig_figs:u32) -> u32 {
+pub fn decimal_places(v: f64, sig_figs: u32) -> u32 {
 	let magnitude = v.abs().log10().floor();
-	 ((sig_figs as f64 - 1.0 - magnitude).max(0.0) as u32).min(sig_figs)
+	((sig_figs as f64 - 1.0 - magnitude).max(0.0) as u32).min(sig_figs)
 }
 pub fn f64_to_rational_display(v: f64, sig_figs: u32) -> (i64, u64) {
 	if v == 0.0 {
@@ -12,7 +12,7 @@ pub fn f64_to_rational_display(v: f64, sig_figs: u32) -> (i64, u64) {
 	let sign = v.signum() as i64;
 	let v = v.abs();
 
-  let decimal_places = decimal_places(v, sig_figs);
+	let decimal_places = decimal_places(v, sig_figs);
 
 	// Format with calculated precision
 	let s = format!("{:.prec$}", v, prec = decimal_places as usize);

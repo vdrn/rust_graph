@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
 use egui_plot::PlotBounds;
-use evalexpr::{EvalexprFloat, istr};
+use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
@@ -120,7 +120,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 	for entry in entries {
 		let entry_serialized = EntrySerialized {
 			name:    entry.name.clone(),
-			visible: entry.visible,
+			visible: entry.active,
 			color:   entry.color,
 			ty:      match &entry.ty {
 				EntryType::Function {
@@ -229,7 +229,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 		*id += 1;
 		let entry_deserialized = Entry {
 			id:      *id,
-			visible: entry.visible,
+			active: entry.visible,
 			color:   entry.color,
 			ty:      match entry.ty {
 				EntryTypeSerialized::Function {
@@ -241,7 +241,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					implicit_resolution,
 				} => EntryType::Function {
 					parametric: ranged,
-					identifier: istr(""),
+					identifier: istr_empty(),
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,

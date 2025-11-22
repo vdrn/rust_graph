@@ -1,4 +1,6 @@
 use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
+use eframe::egui::text::CCursorRange;
+use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
 	self, Align, Button, Color32, DragValue, Label, PopupCloseBehavior, RichText, Slider, TextEdit, Widget, vec2
 };
@@ -29,13 +31,13 @@ pub fn entry_ui<T: EvalexprFloat>(
 		error: None,
 	};
 
-	let (text_col, fill_col) = if entry.visible {
+	let (text_col, fill_col) = if entry.active {
 		(Color32::BLACK, entry.color())
 	} else {
 		(Color32::LIGHT_GRAY, egui::Color32::TRANSPARENT)
 	};
 
-	let prev_visible = entry.visible;
+	let prev_visible = entry.active;
 	// name and visibility
 	ui.horizontal(|ui| {
 		if ui
@@ -46,7 +48,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 			)
 			.clicked()
 		{
-			entry.visible = !entry.visible;
+			entry.active = !entry.active;
 		}
 
 		let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
@@ -166,7 +168,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 	});
 }
 fn entry_type_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool, prev_visible: bool,
+	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
 	result: &mut EditEntryResult,
 ) {
 	match &mut entry.ty {
@@ -403,7 +405,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					v = v.clamp(start, end);
 
 					if slider_full_width(ui, &mut v, range, *step) {
-						entry.visible = false;
+						entry.active = false;
 					}
 
 					if original_value.to_f64() != v {
@@ -453,46 +455,47 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					DragValue::new(step).prefix("Step:").speed(0.00001).ui(ui);
 
-					if !prev_visible && entry.visible {
+					if !prev_active && entry.active {
 						if value.to_f64() >= end {
 							*value = f64_to_float::<T>(start);
 							result.animating = true;
 						}
 					}
 
-					if entry.visible {
-						ui.ctx().request_repaint();
-						result.animating = true;
+					if !entry.active {
+						return;
+					}
+					ui.ctx().request_repaint();
+					result.animating = true;
 
-						match ty {
-							ConstantType::LoopForwardAndBackward { forward, .. } => {
-								if *forward {
-									*value = *value + step_f;
-								} else {
-									*value = *value - step_f;
-								}
-								if value.to_f64() > end {
-									*forward = false;
-									*value = f64_to_float::<T>(end);
-								}
-								if value.to_f64() < start {
-									*forward = true;
-									*value = f64_to_float::<T>(start);
-								}
-							},
-							ConstantType::LoopForward { .. } => {
+					match ty {
+						ConstantType::LoopForwardAndBackward { forward, .. } => {
+							if *forward {
 								*value = *value + step_f;
-								if value.to_f64() >= end {
-									*value = f64_to_float::<T>(start);
-								}
-							},
-							ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
-								*value = *value + step_f;
-								if value.to_f64() >= end {
-									entry.visible = false;
-								}
-							},
-						}
+							} else {
+								*value = *value - step_f;
+							}
+							if value.to_f64() > end {
+								*forward = false;
+								*value = f64_to_float::<T>(end);
+							}
+							if value.to_f64() < start {
+								*forward = true;
+								*value = f64_to_float::<T>(start);
+							}
+						},
+						ConstantType::LoopForward { .. } => {
+							*value = *value + step_f;
+							if value.to_f64() >= end {
+								*value = f64_to_float::<T>(start);
+							}
+						},
+						ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
+							*value = *value + step_f;
+							if value.to_f64() >= end {
+								entry.active = false;
+							}
+						},
 					}
 				});
 
@@ -501,7 +504,89 @@ fn entry_type_ui<T: EvalexprFloat>(
 		},
 	}
 }
+fn is_alphanumeric_or_underscore(c: char) -> bool { c.is_alphanumeric() || c == '_' }
+fn replace_symbols(ui: &egui::Ui, response: egui::Response, text: &mut String) {
+	const REPLACEMENTS: &[(&str, char)] = &[
+		("infinity", '∞'),
+		("Infinity", '∞'),
+		("pi", 'π'),
+		("tau", 'τ'),
+		("Integral", '∫'),
+		("integral", '∫'),
+		("Sum", '∑'),
+		("sum", '∑'),
+		("Product", '∏'),
+		("product", '∏'),
+	];
 
+	let Some(mut state) = TextEditState::load(ui.ctx(), response.id) else {
+		return;
+	};
+	let Some(cursor_range) = state.cursor.char_range() else {
+		return;
+	};
+	let cursor_pos = cursor_range.primary.index;
+	let text_len = text.len();
+
+	for &(pattern, replacement) in REPLACEMENTS {
+		let pattern_len = pattern.len();
+
+		// check all possible positions
+		let start_min = cursor_pos.saturating_sub(pattern_len + 1);
+		let start_max = cursor_pos;
+		for start in start_min..=start_max {
+			let end = start + pattern_len;
+
+			if end > text_len {
+				continue;
+			}
+			let Some(slice) = text.get(start..end) else {
+				continue;
+			};
+			if slice != pattern {
+				continue;
+			}
+
+			// check char before pattern
+			let valid_before = if start == 0 {
+				true
+			} else if let Some(before_char) = text[..start].chars().last() {
+				!is_alphanumeric_or_underscore(before_char)
+			} else {
+				true
+			};
+
+			// check char after pattern
+			let valid_after = if end >= text_len {
+				true
+			} else if let Some(after_char) = text[end..].chars().next() {
+				!is_alphanumeric_or_underscore(after_char)
+			} else {
+				true
+			};
+
+			if !(valid_before && valid_after) {
+				continue;
+			}
+			text.replace_range(start..end, &replacement.to_string());
+
+			let new_cursor_pos = if cursor_pos <= start {
+				start
+			} else if cursor_pos > end {
+				start + 2
+			} else {
+				start + 1
+			};
+
+			// update cursor
+			let ccursor = egui::text::CCursor::new(new_cursor_pos);
+			state.cursor.set_char_range(Some(CCursorRange::one(ccursor)));
+			state.store(ui.ctx(), response.id);
+			ui.ctx().memory_mut(|mem| mem.request_focus(response.id));
+			return;
+		}
+	}
+}
 fn expr_ui<T: EvalexprFloat>(
 	expr: &mut Expr<T>, ui: &mut egui::Ui, hint_text: &str, desired_width: Option<f32>, force_update: bool,
 	preprocess: bool,
@@ -528,10 +613,13 @@ fn expr_ui<T: EvalexprFloat>(
 		// text_edit = text_edit.layouter(&mut layouter);
 
 		text_edit = text_edit.hint_text(hint_text);
-		if ui.add(text_edit).changed() || force_update {
+		let response = ui.add(text_edit);
+		if response.changed() || force_update {
 			if expr.text.is_empty() {
 				expr.node = None;
 			} else {
+				replace_symbols(ui, response, &mut expr.text);
+
 				let temp;
 				let mut txt = &expr.text;
 				if preprocess {

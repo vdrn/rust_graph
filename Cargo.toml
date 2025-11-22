@@ -56,6 +56,7 @@ thread_local="1"
 regex = "1"
 # needed so dependencies downstream can compile to wasm
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# egui_nerdfonts = {path = "../../contrib/egui_nerdfonts"}
 # debug-cell="*"
 [patch.crates-io]
 # egui_plot = { path = "../../contrib/egui_plot/egui_plot" }

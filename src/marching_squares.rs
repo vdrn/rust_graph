@@ -362,7 +362,7 @@ fn is_edge_discontinuous(
 	let right_change = (val_end - val_mid).abs();
 	let max_half = left_change.max(right_change);
 
-  const TOLERANCE: f64 = 0.95;
+	const TOLERANCE: f64 = 0.95;
 	if max_half < TOLERANCE * abs_change {
 		return false;
 	}

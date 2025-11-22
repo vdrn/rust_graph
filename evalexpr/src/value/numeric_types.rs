@@ -46,6 +46,11 @@ pub trait EvalexprFloat:
 	/// Typically, this is positive infinity.
 	const MAX: Self;
 
+	/// NaN
+	const NAN: Self;
+	/// Infinity
+	const INFINITY: Self;
+
 	/// 0.5
 	const ZERO: Self;
 	/// 1.0
@@ -217,12 +222,29 @@ pub trait EvalexprFloat:
 			let (numerator, denominator) = self.rational_display();
 			format!("{}/{}", numerator, denominator)
 		} else {
-			let decimal_places =
-				float_to_rational::decimal_places(self.to_f64(), Self::HUMAN_DISPLAY_SIG_DIGITS);
-			format!("{:.prec$}", self.to_f64(), prec = decimal_places as usize)
-				.trim_end_matches('0')
-				.trim_end_matches('.')
-				.to_string()
+			let v = self.to_f64();
+			if v.is_nan() {
+				return "undefined".to_string();
+			}
+			if v == 0.0 {
+				return "0".to_string();
+			}
+
+			let magnitude = v.abs().log10().floor();
+
+			// use scientific notation if too large or too small
+			if magnitude >= Self::HUMAN_DISPLAY_SIG_DIGITS as f64 || magnitude < -4.0 {
+				format!("{:.prec$e}", v, prec = (Self::HUMAN_DISPLAY_SIG_DIGITS - 1) as usize)
+					.trim_end_matches('0')
+					.trim_end_matches('.')
+					.to_string()
+			} else {
+				let decimal_places = float_to_rational::decimal_places(v, Self::HUMAN_DISPLAY_SIG_DIGITS);
+				format!("{:.prec$}", v, prec = decimal_places as usize)
+					.trim_end_matches('0')
+					.trim_end_matches('.')
+					.to_string()
+			}
 		}
 	}
 }

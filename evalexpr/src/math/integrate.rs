@@ -52,9 +52,10 @@ pub struct IntegrationResult<F: EvalexprFloat> {
 	pub value: F,
 }
 pub struct Precision<F: EvalexprFloat> {
-	pub lower:     F,
-	pub upper:     F,
-	pub precision: F,
+	pub lower:                F,
+	pub upper:                F,
+	pub precision:            F,
+	pub large_integral_value: F,
 }
 
 /// Calculates the definite integral of the function `f`
@@ -131,7 +132,14 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 	//     err = err / s.abs();
 	// }
 
-	let result = d * s * two.pow(&F::from_i32(1 - i as i32));
+	let mut result = d * s * two.pow(&F::from_i32(1 - i as i32));
+
+	// Check for divergence. This is a crude check, might want to revisit it.
+	// when we hit max iterations, we check for either huge result, or large error.
+	// We might want to use && istead of ||
+	if i >= N && (result.abs() > precision.large_integral_value || err > tol * F::f64_to_float(10.0)) {
+		result = F::INFINITY * result.signum();
+	}
 
 	Ok(IntegrationResult { value: result })
 }
@@ -145,7 +153,7 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 /// * (-∞, ∞): x = t/(1-t²), t ∈ (-1, 1)
 pub fn integrate<F: EvalexprFloat>(
 	mut lower: F, mut upper: F, mut f: impl FnMut(F) -> EvalexprResult<F, F>, precision: &Precision<F>,
-) -> EvalexprResult<IntegrationResult<F>, F> {
+) -> EvalexprResult<F, F> {
 	if lower.is_nan() || upper.is_nan() {
 		return Err(EvalexprError::CustomMessage("Integral bounds are undefined.".to_string()));
 	}
@@ -155,7 +163,7 @@ pub fn integrate<F: EvalexprFloat>(
 	let zero = F::f64_to_float(0.0);
 	let one = F::f64_to_float(1.0);
 
-	match (lower.is_finite(), upper.is_finite()) {
+	let result = match (lower.is_finite(), upper.is_finite()) {
 		// Both bounds finite
 		(true, true) => tanh_sinh(lower, upper, f, precision),
 
@@ -189,29 +197,76 @@ pub fn integrate<F: EvalexprFloat>(
 			tanh_sinh(zero, one, transformed, precision)
 		},
 
-		// Both bounds infinite: (-∞, ∞)
-		// Transform: x = t/(1-t²), dx = (1+t²)/(1-t²)² dt
+		// Both bounds infinite
 		(false, false) => {
-			let transformed = |t: F| {
-				if t.abs() >= one {
-					return Ok(zero);
-				}
-				let t_sq = t * t;
-				let one_minus_t_sq = one - t_sq;
-				let x = t / one_minus_t_sq;
-				let dx_dt = (one + t_sq) / (one_minus_t_sq * one_minus_t_sq);
-				Ok(f(x)? * dx_dt)
-			};
-			tanh_sinh(-one, one, transformed, precision)
+			const USE_CAUCHY: bool = false;
+			if USE_CAUCHY {
+				// Cauchy principal value: symmetric limit
+				// Transform: x = t/(1-t²), dx = (1+t²)/(1-t²)² dt
+				let transformed = |t: F| {
+					if t.abs() >= one {
+						return Ok(zero);
+					}
+					let t_sq = t * t;
+					let one_minus_t_sq = one - t_sq;
+					let x = t / one_minus_t_sq;
+					let dx_dt = (one + t_sq) / (one_minus_t_sq * one_minus_t_sq);
+					Ok(f(x)? * dx_dt)
+				};
+				tanh_sinh(-one, one, transformed, precision)
+			} else {
+				// Standard definition: sum the two halves independently
+
+				// Left half: (-∞, 0]
+				// Transform: x = -t/(1-t), dx = dt/(1-t)²
+				let left_half = {
+					let transformed = |t: F| {
+						if t >= one {
+							return Ok(zero);
+						}
+						let one_minus_t = one - t;
+						let x = -t / one_minus_t;
+						let dx_dt = one / (one_minus_t * one_minus_t);
+						Ok(f(x)? * dx_dt)
+					};
+					tanh_sinh(zero, one, transformed, precision)?
+				};
+
+				// Right half: [0, ∞)
+				// Transform: x = t/(1-t), dx = dt/(1-t)²
+				let right_half = {
+					let transformed = |t: F| {
+						if t >= one {
+							return Ok(zero);
+						}
+						let one_minus_t = one - t;
+						let x = t / one_minus_t;
+						let dx_dt = one / (one_minus_t * one_minus_t);
+						Ok(f(x)? * dx_dt)
+					};
+					tanh_sinh(zero, one, transformed, precision)?
+				};
+
+				Ok(IntegrationResult { value: left_half.value + right_half.value })
+			}
 		},
+	}?;
+	if !result.value.is_finite() {
+		return Ok(F::NAN);
 	}
+	Ok(result.value)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	const PRECISION: Precision<f64> = Precision { lower: 1e-12, upper: 1e-8, precision: 1e-10 };
+	const PRECISION: Precision<f64> = Precision {
+		lower:                1e-12,
+		upper:                1e-8,
+		precision:            1e-10,
+		large_integral_value: 1e30,
+	};
 	#[test]
 	fn test_simple_integral() {
 		let result = tanh_sinh(0.0, 1.0, |x| Ok(x * x), &PRECISION).unwrap();
@@ -233,25 +288,25 @@ mod tests {
 	#[test]
 	fn test_infinite_upper_bound() {
 		let result = integrate(0.0, f64::INFINITY, |x| Ok((-x).exp()), &PRECISION).unwrap();
-		assert!((result.value - 1.0).abs() < 1e-9);
+		assert!((result - 1.0).abs() < 1e-9);
 	}
 
 	#[test]
 	fn test_infinite_lower_bound() {
 		let result = integrate(f64::NEG_INFINITY, 0.0, |x| Ok(x.exp()), &PRECISION).unwrap();
-		assert!((result.value - 1.0).abs() < 1e-9);
+		assert!((result - 1.0).abs() < 1e-9);
 	}
 
 	#[test]
 	fn test_both_infinite_bounds() {
 		let result = integrate(f64::NEG_INFINITY, f64::INFINITY, |x| Ok((-x * x).exp()), &PRECISION).unwrap();
 		let expected = std::f64::consts::PI.sqrt();
-		assert!((result.value - expected).abs() < 1e-8);
+		assert!((result - expected).abs() < 1e-8);
 	}
 
 	#[test]
 	fn test_finite_bounds_with_integrate() {
 		let result = integrate(0.0, 1.0, |x| Ok(x * x), &PRECISION).unwrap();
-		assert!((result.value - 1.0 / 3.0).abs() < 1e-10);
+		assert!((result - 1.0 / 3.0).abs() < 1e-10);
 	}
 }

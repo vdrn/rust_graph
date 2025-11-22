@@ -410,7 +410,7 @@ fn compile_special_function<F: EvalexprFloat>(
 ) -> EvalexprResult<CompileNativeResult<F>, F> {
 	match identifier.to_str() {
 		// "Deriv" | "Derivative" | "D" => Ok(CompileNativeResult::NotNative(node)),
-		"Sum" | "Product" => {
+		"Sum" | "sum" | "∑" | "Product" | "product" | "∏" => {
 			let len = node.children.len();
 			if len != 3 {
 				return Err(EvalexprError::CustomMessage(format!(
@@ -433,17 +433,17 @@ fn compile_special_function<F: EvalexprFloat>(
 
 			let exp_node = compile_to_flat(expr_child)?;
 			match identifier.to_str() {
-				"Sum" => {
+				"Sum" | "sum" | "∑" => {
 					ops.push(FlatOperator::Sum { variable: variable_ident, expr: Box::new(exp_node) });
 				},
-				"Product" => {
+				"Product" | "product" | "∏" => {
 					ops.push(FlatOperator::Product { variable: variable_ident, expr: Box::new(exp_node) });
 				},
 				_ => unreachable!(),
 			}
 			Ok(CompileNativeResult::Compiled)
 		},
-		"Integral" => {
+		"Integral" | "integral" | "∫" => {
 			let len = node.children.len();
 			if len != 4 {
 				return Err(EvalexprError::CustomMessage(

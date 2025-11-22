@@ -64,7 +64,7 @@ pub fn inline_functions<F: EvalexprFloat>(
 							cur_idx -= 2;
 
 							// replace the integral op with the result
-							node.ops[cur_idx] = FlatOperator::PushConst { value: Value::Float(result.value) };
+							node.ops[cur_idx] = FlatOperator::PushConst { value: Value::Float(result) };
 						}
 					}
 				},

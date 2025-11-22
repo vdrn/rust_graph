@@ -1,11 +1,12 @@
 use std::sync::LazyLock;
 
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, istr};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, istr, istr_empty};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::entry::{DragPoint, Entry, EntryType, FunctionType, PointDragType, RESERVED_NAMES};
+use crate::builtins::is_builtin;
+use crate::entry::{DragPoint, Entry, EntryType, FunctionType, PointDragType};
 use crate::scope;
 
 pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
@@ -61,121 +62,133 @@ pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
 	Ok(Some(new))
 }
 
-pub fn prepare_entry<T: EvalexprFloat>(
-	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
-) -> Result<(), (u64, String)> {
-	if RESERVED_NAMES.contains(&entry.name.trim()) {
-		return Ok(());
+pub fn prepare_entries<T: EvalexprFloat>(
+	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
+	prepare_erros: &mut FxHashMap<u64, String>,
+) {
+	for entry in entries.iter_mut() {
+		match &mut entry.ty {
+			EntryType::Folder { entries } => {
+				prepare_entries(entries, ctx, prepare_erros);
+			},
+			_ => {
+				if let Err(err) = prepare_entry(entry, ctx) {
+					prepare_erros.insert(entry.id, err);
+				} else {
+					prepare_erros.remove(&entry.id);
+				}
+			},
+		}
 	}
+}
+fn prepare_entry<T: EvalexprFloat>(
+	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
+) -> Result<(), String> {
 	match &mut entry.ty {
-		EntryType::Folder { entries } => {
-			for entry in entries {
-				prepare_entry(entry, ctx)?;
-			}
+		EntryType::Folder { .. } => {
+			//handled in outer scope
 		},
 		EntryType::Points { points, .. } => {
 			for point in points {
-				if let (Some(x), Some(y)) = (&point.x.node, &point.y.node) {
-					let x_state = analyze_node(x);
-					let y_state = analyze_node(y);
+				let (Some(x), Some(y)) = (&point.x.node, &point.y.node) else {
+					point.drag_point = None;
 
-					let both_dirs_available = x_state.constants.iter().all(|c| !y_state.constants.contains(c));
-					if !both_dirs_available
-						&& point.both_drag_dirs_available
-						&& !matches!(point.drag_type, PointDragType::NoDrag)
-					{
-						point.drag_type = PointDragType::X;
-					}
-					point.both_drag_dirs_available = both_dirs_available;
+					return Ok(());
+				};
+				let x_state = analyze_node(x);
+				let y_state = analyze_node(y);
 
-					match point.drag_type {
-						PointDragType::NoDrag => {
-							point.drag_point = None;
-						},
-						PointDragType::Both => {
-							if x_state.is_literal && y_state.is_literal {
-								point.drag_point = Some(DragPoint::BothCoordLiterals);
-							} else if x_state.is_literal
-								&& let Some(y_const) = y_state.constants.first()
-							{
-								point.drag_point = Some(DragPoint::XLiteralYConstant(istr(y_const)));
-							} else if y_state.is_literal
-								&& let Some(x_const) = x_state.constants.first()
-							{
-								point.drag_point = Some(DragPoint::YLiteralXConstant(istr(x_const)));
-							} else if let (Some(x_const), Some(y_const)) =
-								(x_state.constants.first(), y_state.constants.first())
-							{
-								// todo:
-								if x_const == y_const {
-									if let Some(y_const) = y_state.constants.get(1) {
-										point.drag_point =
-											Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
-									} else if let Some(x_const) = x_state.constants.get(1) {
-										point.drag_point =
-											Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
-									} else {
-										point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-									}
-								} else {
+				let both_dirs_available = x_state.constants.iter().all(|c| !y_state.constants.contains(c));
+				if !both_dirs_available
+					&& point.both_drag_dirs_available
+					&& !matches!(point.drag_type, PointDragType::NoDrag)
+				{
+					point.drag_type = PointDragType::X;
+				}
+				point.both_drag_dirs_available = both_dirs_available;
+
+				match point.drag_type {
+					PointDragType::NoDrag => {
+						point.drag_point = None;
+					},
+					PointDragType::Both => {
+						if x_state.is_literal && y_state.is_literal {
+							point.drag_point = Some(DragPoint::BothCoordLiterals);
+						} else if x_state.is_literal
+							&& let Some(y_const) = y_state.constants.first()
+						{
+							point.drag_point = Some(DragPoint::XLiteralYConstant(istr(y_const)));
+						} else if y_state.is_literal
+							&& let Some(x_const) = x_state.constants.first()
+						{
+							point.drag_point = Some(DragPoint::YLiteralXConstant(istr(x_const)));
+						} else if let (Some(x_const), Some(y_const)) =
+							(x_state.constants.first(), y_state.constants.first())
+						{
+							// todo:
+							if x_const == y_const {
+								if let Some(y_const) = y_state.constants.get(1) {
 									point.drag_point =
 										Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
+								} else if let Some(x_const) = x_state.constants.get(1) {
+									point.drag_point =
+										Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
+								} else {
+									point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
 								}
-							} else if let Some(x_const) = x_state.constants.first()
-							// && y_state.first_constant.is_none()
-							{
-								point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-							} else if let Some(y_const) = y_state.constants.first() {
-								point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
 							} else {
-								point.drag_point = None;
+								point.drag_point =
+									Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
 							}
-						},
-						PointDragType::X => {
-							if x_state.is_literal {
-								println!("DP LIETRAL");
-								point.drag_point = Some(DragPoint::XLiteral);
-							} else if let Some(x_const) = x_state.constants.first() {
-								if x_state.num_identifiers_and_special_ops == 1 {
-									point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-								} else if y_state.constants.iter().any(|c| c == x_const) {
-									point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(x_const)));
-								} else {
-									point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-								}
+						} else if let Some(x_const) = x_state.constants.first()
+						// && y_state.first_constant.is_none()
+						{
+							point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+						} else if let Some(y_const) = y_state.constants.first() {
+							point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
+						} else {
+							point.drag_point = None;
+						}
+					},
+					PointDragType::X => {
+						if x_state.is_literal {
+							println!("DP LIETRAL");
+							point.drag_point = Some(DragPoint::XLiteral);
+						} else if let Some(x_const) = x_state.constants.first() {
+							if x_state.num_identifiers_and_special_ops == 1 {
+								point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+							} else if y_state.constants.iter().any(|c| c == x_const) {
+								point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(x_const)));
+							} else {
+								point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
 							}
-						},
-						PointDragType::Y => {
-							if y_state.is_literal {
-								point.drag_point = Some(DragPoint::YLiteral);
-							} else if let Some(y_const) = y_state.constants.first() {
-								if y_state.num_identifiers_and_special_ops == 1 {
-									point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
-								} else if x_state.constants.iter().any(|c| c == y_const) {
-									point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(y_const)));
-								} else {
-									point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
-								}
+						}
+					},
+					PointDragType::Y => {
+						if y_state.is_literal {
+							point.drag_point = Some(DragPoint::YLiteral);
+						} else if let Some(y_const) = y_state.constants.first() {
+							if y_state.num_identifiers_and_special_ops == 1 {
+								point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
+							} else if x_state.constants.iter().any(|c| c == y_const) {
+								point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(y_const)));
+							} else {
+								point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
 							}
-						},
-					}
-				} else {
-					point.drag_point = None;
+						}
+					},
 				}
 			}
 		},
 		EntryType::Label { .. } => {},
-		EntryType::Constant { value, istr_name, .. } => {
-			*istr_name = istr(entry.name.as_str());
-			if !entry.name.is_empty() {
-				ctx.set_value(*istr_name, evalexpr::Value::<T>::Float(*value)).unwrap();
-			}
+		EntryType::Constant { .. } => {
+			prepare_constant(entry, ctx)?;
 		},
 		EntryType::Function { func, identifier, ty, .. } => {
-			if let Some(func_node) = func.node.clone() {
+			if let Some(func_node) = &func.node {
 				func.args.clear();
 
-				let name_ast = evalexpr::build_ast::<T>(&entry.name).map_err(|e| (entry.id, e.to_string()))?;
+				let name_ast = evalexpr::build_ast::<T>(&entry.name).map_err(|e| e.to_string())?;
 				// println!("name ast {:#?}", name_ast);
 
 				let first_ast_node =
@@ -205,7 +218,7 @@ pub fn prepare_entry<T: EvalexprFloat>(
 						{
 							*identifier = *function_ident;
 						} else {
-							*identifier = istr("");
+							*identifier = istr_empty();
 						}
 					},
 					evalexpr::Operator::FunctionIdentifier { identifier: function_ident } => {
@@ -216,18 +229,73 @@ pub fn prepare_entry<T: EvalexprFloat>(
 							{
 								func.args.push(*arg_ident);
 							} else {
-								return Err((entry.id, "Invalid function parameter name".to_string()));
+								return Err("Invalid function parameter name".to_string());
 							}
 						}
 						*identifier = *function_ident;
 					},
 					_ => {
-						*identifier = istr("");
-						return Err((entry.id, "Invalid function name".to_string()));
+						if let Some(builtin_type) = is_builtin(*identifier) {
+							let err = format!("Cannot use builtin {} as name: {}", builtin_type, identifier);
+							*identifier = istr_empty();
+							return Err(err);
+						}
+						*identifier = istr_empty();
+						return Err("Invalid function name".to_string());
 					},
+				}
+				if let Some(builtin_type) = is_builtin(*identifier) {
+					let err = format!("Cannot use builtin {} as name: {}", builtin_type, identifier);
+					*identifier = istr_empty();
+					return Err(err);
+				}
+
+				if ctx.has_value(*identifier) {
+					let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
+					*identifier = istr_empty();
+					return Err(err);
 				}
 			}
 		},
+	}
+	Ok(())
+}
+
+pub fn prepare_constants<T: EvalexprFloat>(
+	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
+	prepare_errors: &mut FxHashMap<u64, String>,
+) {
+	for entry in entries.iter_mut() {
+		match &mut entry.ty {
+			EntryType::Constant { .. } => {
+				if let Err(e) = prepare_constant(entry, ctx) {
+					prepare_errors.insert(entry.id, e);
+				} else {
+					prepare_errors.remove(&entry.id);
+				}
+			},
+			EntryType::Folder { entries } => {
+				prepare_constants(entries, ctx, prepare_errors);
+			},
+			_ => {},
+		}
+	}
+}
+fn prepare_constant<T: EvalexprFloat>(
+	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
+) -> Result<(), String> {
+	let EntryType::Constant { value, istr_name, .. } = &mut entry.ty else {
+		return Ok(());
+	};
+
+	*istr_name = istr(entry.name.as_str().trim());
+
+	if let Some(builtin_type) = is_builtin(*istr_name) {
+		let err = format!("Cannot use builtin {} as name: {}", builtin_type, *istr_name);
+		*istr_name = istr_empty();
+		return Err(err);
+	} else if !entry.name.is_empty() {
+		ctx.set_value(*istr_name, evalexpr::Value::<T>::Float(*value)).unwrap();
 	}
 	Ok(())
 }
@@ -272,7 +340,7 @@ fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 }
 pub fn optimize_entries<T: EvalexprFloat>(
 	root_entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
-	parsing_errors: &mut FxHashMap<u64, String>,
+	optimization_errors: &mut FxHashMap<u64, String>,
 ) {
 	scope!("optimizing_pass");
 
@@ -311,9 +379,9 @@ pub fn optimize_entries<T: EvalexprFloat>(
 					&mut root_entries[functions[i].idx]
 				};
 				if let Err((id, e)) = inline_and_fold_entry(entry, ctx) {
-					parsing_errors.insert(id, e);
+					optimization_errors.insert(id, e);
 				} else {
-					parsing_errors.remove(&entry.id);
+					optimization_errors.remove(&entry.id);
 				}
 				let ge = functions.swap_remove(i);
 
@@ -408,9 +476,8 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = size.node.clone() else {
 				return Ok(());
 			};
-			let expr_function =
-				ExpressionFunction::new(node, &[istr("x"), istr("y")], &mut Some(ctx))
-					.map_err(|e| (entry.id, e.to_string()))?;
+			let expr_function = ExpressionFunction::new(node, &[istr("x"), istr("y")], &mut Some(ctx))
+				.map_err(|e| (entry.id, e.to_string()))?;
 			size.expr_function = Some(expr_function);
 		},
 		_ => {},

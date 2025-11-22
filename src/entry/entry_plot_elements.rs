@@ -35,7 +35,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 ) -> Result<(), Vec<(u64, String)>> {
 	// thread_local_get(tl_context).stack_overflow_guard.set(0);
 
-	let visible = entry.visible;
+	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
 		return Ok(());
 	}

@@ -15,13 +15,20 @@ impl EvalexprFloat for f64 {
 	const MIN: Self = Self::NEG_INFINITY;
 	const MAX: Self = Self::INFINITY;
 
+	const NAN: Self = Self::NAN;
+	const INFINITY: Self = Self::INFINITY;
+
 	const ZERO: Self = 0.0;
 	const ONE: Self = 1.0;
 	const HALF: Self = 0.5;
 	const EPSILON: f64 = f64::EPSILON;
 
-	const INTEGRATION_PRECISION: Precision<Self> =
-		Precision { lower: 1e-11, upper: 1e-7, precision: 1e-9 };
+	const INTEGRATION_PRECISION: Precision<Self> = Precision {
+		lower:                1e-11,
+		upper:                1e-7,
+		precision:            1e-9,
+		large_integral_value: 1e30,
+	};
 	fn abscissas_and_weights() -> &'static crate::math::integrate::AbscissasWeights<Self> {
 		static PRECOMPUTED: OnceLock<crate::math::integrate::AbscissasWeights<f64>> = OnceLock::new();
 		PRECOMPUTED.get_or_init(crate::math::integrate::get_tanh_sinh_abscissas_and_weights)
