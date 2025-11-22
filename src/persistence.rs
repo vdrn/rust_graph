@@ -76,9 +76,13 @@ pub enum EntryTypeSerialized {
 		implicit_resolution: usize,
 	},
 	Constant {
-		value: f64,
-		step:  f64,
-		ty:    ConstantType,
+		value:       f64,
+		step:        f64,
+		ty:          ConstantType,
+		#[serde(default)]
+		range_start: ExprSer,
+		#[serde(default)]
+		range_end:   ExprSer,
 	},
 	Points {
 		points: Vec<EntryPointSerialized>,
@@ -139,8 +143,14 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					style:               style.clone(),
 					implicit_resolution: *implicit_resolution,
 				},
-				EntryType::Constant { value, step, ty, istr_name: _ } => {
-					EntryTypeSerialized::Constant { value: value.to_f64(), step: *step, ty: ty.clone() }
+				EntryType::Constant { value, step, ty, istr_name: _, range_start, range_end } => {
+					EntryTypeSerialized::Constant {
+						value:       value.to_f64(),
+						step:        *step,
+						ty:          ty.clone(),
+						range_start: ExprSer::from_expr(range_start),
+						range_end:   ExprSer::from_expr(range_end),
+					}
 				},
 				EntryType::Points { points, style } => {
 					let mut points_serialized = Vec::new();
@@ -228,10 +238,10 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 	for entry in ser.entries {
 		*id += 1;
 		let entry_deserialized = Entry {
-			id:      *id,
+			id:     *id,
 			active: entry.visible,
-			color:   entry.color,
-			ty:      match entry.ty {
+			color:  entry.color,
+			ty:     match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
 					ranged,
@@ -254,11 +264,15 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 
 					style,
 				},
-				EntryTypeSerialized::Constant { value, step, ty } => EntryType::Constant {
-					value: T::f64_to_float(value),
-					step,
-					ty,
-					istr_name: istr(&entry.name),
+				EntryTypeSerialized::Constant { value, step, ty, range_start, range_end } => {
+					EntryType::Constant {
+						value: T::f64_to_float(value),
+						step,
+						ty,
+						istr_name: istr(&entry.name),
+						range_start: range_start.into_expr(false),
+						range_end: range_end.into_expr(false),
+					}
 				},
 				EntryTypeSerialized::Points { points, style } => {
 					let mut points_deserialized = Vec::new();
@@ -286,7 +300,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					EntryType::Folder { entries }
 				},
 			},
-			name:    entry.name,
+			name:   entry.name,
 		};
 
 		result.push(entry_deserialized);

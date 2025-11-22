@@ -1,3 +1,5 @@
+use core::ops::RangeInclusive;
+
 use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
 use eframe::egui::text::CCursorRange;
 use eframe::egui::text_edit::TextEditState;
@@ -5,7 +7,7 @@ use eframe::egui::{
 	self, Align, Button, Color32, DragValue, Label, PopupCloseBehavior, RichText, Slider, TextEdit, Widget, vec2
 };
 
-use evalexpr::EvalexprFloat;
+use evalexpr::{EvalexprFloat, HashMapContext};
 
 use crate::entry::entry_processing::preprecess_fn;
 use crate::entry::{
@@ -20,7 +22,7 @@ pub struct EditEntryResult {
 	pub parsed:              bool,
 }
 pub fn entry_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool,
 ) -> EditEntryResult {
 	let mut result = EditEntryResult {
 		needs_recompilation: false,
@@ -80,7 +82,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 		});
 		// entry edit
 		ui.horizontal(|ui| {
-			entry_type_ui(ui, entry, clear_cache, prev_visible, &mut result);
+			entry_type_ui(ui, ctx, entry, clear_cache, prev_visible, &mut result);
 		});
 	});
 
@@ -168,7 +170,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 	});
 }
 fn entry_type_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
 	result: &mut EditEntryResult,
 ) {
 	match &mut entry.ty {
@@ -383,10 +385,21 @@ fn entry_type_ui<T: EvalexprFloat>(
 			});
 		},
 
-		EntryType::Constant { value, step, ty, .. } => {
+		EntryType::Constant { value, step, ty, range_start, range_end, .. } => {
 			let original_value = *value;
 			let step_f = f64_to_float::<T>(*step);
-			let range = ty.range();
+
+			let mut range_error = None;
+			let mut range = match ty.range(ctx, range_start, range_end) {
+				Ok(range) => range,
+				Err(err) => {
+					range_error = Some(err);
+					RangeInclusive::new(f64::NEG_INFINITY, f64::INFINITY)
+				},
+			};
+			if range.start() > range.end() {
+				range = *range.end()..=*range.start();
+			}
 			let start = *range.start();
 			let end = *range.end();
 
@@ -416,40 +429,43 @@ fn entry_type_ui<T: EvalexprFloat>(
 				// second row: type/start/end/step
 				ui.horizontal(|ui| {
 					ui.menu_button(ty.symbol(), |ui| {
-						let new_end = if end.is_infinite() { start + 20.0 } else { end };
-						let lfab = ConstantType::LoopForwardAndBackward { start, end: new_end, forward: true };
+						let lfab = ConstantType::LoopForwardAndBackward { forward: true };
 						if ui.button(lfab.name()).clicked() {
 							*ty = lfab;
 							result.animating = true;
 						}
-						let lf = ConstantType::LoopForward { start, end: new_end };
-						if ui.button(lf.name()).clicked() {
-							*ty = lf;
+						if ui.button(ConstantType::LoopForward.name()).clicked() {
+							*ty = ConstantType::LoopForward;
 							result.animating = true;
 						}
-						let po = ConstantType::PlayOnce { start, end: new_end };
-						if ui.button(po.name()).clicked() {
-							*ty = po;
+						if ui.button(ConstantType::PlayOnce.name()).clicked() {
+							*ty = ConstantType::PlayOnce;
 							result.animating = true;
 						}
-						let pi = ConstantType::PlayIndefinitely { start };
-						if ui.button(pi.name()).clicked() {
-							*ty = pi;
+						if ui.button(ConstantType::PlayIndefinitely.name()).clicked() {
+							*ty = ConstantType::PlayIndefinitely;
 							result.animating = true;
 						}
 					});
 
 					match ty {
-						ConstantType::LoopForwardAndBackward { start, end, .. }
-						| ConstantType::LoopForward { start, end }
-						| ConstantType::PlayOnce { start, end } => {
-							DragValue::new(start).prefix("Start:").speed(*step).ui(ui);
-							DragValue::new(end).prefix("End:").speed(*step).ui(ui);
-							*start = start.min(*end);
-							*end = end.max(*start);
+						ConstantType::LoopForwardAndBackward { .. }
+						| ConstantType::LoopForward
+						| ConstantType::PlayOnce => {
+							ui.label("Start: ");
+							if let Err(e) = expr_ui(range_start, ui, "start", Some(80.0), clear_cache, false) {
+								range_error = Some(e);
+							}
+							ui.label("End: ");
+							if let Err(e) = expr_ui(range_end, ui, "end", Some(80.0), clear_cache, false) {
+								range_error = Some(e);
+							}
 						},
-						ConstantType::PlayIndefinitely { start } => {
-							DragValue::new(start).prefix("Start:").ui(ui);
+						ConstantType::PlayIndefinitely => {
+							ui.label("Start: ");
+							if let Err(e) = expr_ui(range_start, ui, "start", Some(80.0), clear_cache, false){
+                range_error = Some(e);
+              }
 						},
 					}
 
@@ -498,6 +514,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 						},
 					}
 				});
+        if let Some(e) = range_error {
+          ui.label(RichText::new(e).color(Color32::RED));
+        }
 
 				// *value = f64_to_float::<T>(v);
 			});

@@ -112,7 +112,7 @@ pub fn side_panel<T: EvalexprFloat>(
 										ui.label("    |");
 									});
 									ui.horizontal(|ui| {
-										let fe_result = entry::entry_ui(ui, entry, state.clear_cache);
+										let fe_result = entry::entry_ui(ui,&state.ctx, entry, state.clear_cache);
 										if fe_result.remove {
 											remove_from_folder = Some(entry.id);
 										}
@@ -140,7 +140,7 @@ pub fn side_panel<T: EvalexprFloat>(
 							ui.label("||");
 						});
 						ui.horizontal(|ui| {
-							let result = entry::entry_ui(ui, entry, state.clear_cache);
+							let result = entry::entry_ui(ui,&state.ctx, entry, state.clear_cache);
 							if result.remove {
 								remove = Some(entry.id);
 							}

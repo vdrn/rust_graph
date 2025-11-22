@@ -1,7 +1,9 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{self, Color32};
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Value, istr, istr_empty};
+use evalexpr::{
+	EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr, istr_empty
+};
 use serde::{Deserialize, Serialize};
 
 mod drag_point;
@@ -44,11 +46,11 @@ pub const NUM_COLORS: usize = COLORS.len();
 
 #[derive(Clone, Debug)]
 pub struct Entry<T: EvalexprFloat> {
-	pub id:      u64,
-	pub name:    String,
+	pub id:     u64,
+	pub name:   String,
 	pub active: bool,
-	pub color:   usize,
-	pub ty:      EntryType<T>,
+	pub color:  usize,
+	pub ty:     EntryType<T>,
 }
 impl<T: EvalexprFloat> core::hash::Hash for Entry<T> {
 	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
@@ -143,6 +145,9 @@ pub enum EntryType<T: EvalexprFloat> {
 		value:     T,
 		step:      f64,
 		ty:        ConstantType,
+
+		range_start: Expr<T>,
+		range_end:   Expr<T>,
 	},
 	Points {
 		points: Vec<PointEntry<T>>,
@@ -334,14 +339,12 @@ impl<T: EvalexprFloat> Entry<T> {
 			active: false,
 			name: String::new(),
 			ty: EntryType::Constant {
-				istr_name: istr_empty(),
-				value:     T::ZERO,
-				step:      0.01,
-				ty:        ConstantType::LoopForwardAndBackward {
-					start:   -10.0,
-					end:     10.0,
-					forward: true,
-				},
+				istr_name:   istr_empty(),
+				value:       T::ZERO,
+				step:        0.01,
+				ty:          ConstantType::LoopForwardAndBackward { forward: true },
+				range_start: Expr::from_text("-10"),
+				range_end:   Expr::from_text("10"),
 			},
 		}
 	}
@@ -430,18 +433,45 @@ impl<T: EvalexprFloat> Default for PointEntry<T> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ConstantType {
-	LoopForwardAndBackward { start: f64, end: f64, forward: bool },
-	LoopForward { start: f64, end: f64 },
-	PlayOnce { start: f64, end: f64 },
-	PlayIndefinitely { start: f64 },
+	// LoopForwardAndBackward { start: f64, end: f64, forward: bool },
+	// LoopForward { start: f64, end: f64 },
+	// PlayOnce { start: f64, end: f64 },
+	// PlayIndefinitely { start: f64 },
+	LoopForwardAndBackward { forward: bool },
+	LoopForward,
+	PlayOnce,
+	PlayIndefinitely,
 }
 impl ConstantType {
-	pub fn range(&self) -> RangeInclusive<f64> {
+	pub fn range<T: EvalexprFloat>(
+		&self, ctx: &HashMapContext<T>, start: &Expr<T>, end: &Expr<T>,
+	) -> Result<RangeInclusive<f64>, String> {
+		let mut stack = Stack::<T>::with_capacity(0);
 		match self {
-			ConstantType::LoopForwardAndBackward { start, end, .. } => *start..=*end,
-			ConstantType::LoopForward { start, end } => *start..=*end,
-			ConstantType::PlayOnce { start, end } => *start..=*end,
-			ConstantType::PlayIndefinitely { start } => *start..=f64::INFINITY,
+			ConstantType::LoopForwardAndBackward { .. }
+			| ConstantType::LoopForward
+			| ConstantType::PlayOnce => {
+				let start = if let Some(start) = start.node.as_ref() {
+					start.eval_float_with_context(&mut stack, ctx).map_err(|e| e.to_string())?.to_f64()
+				} else {
+					-f64::INFINITY
+				};
+				let end = if let Some(end) = end.node.as_ref() {
+					end.eval_float_with_context(&mut stack, ctx).map_err(|e| e.to_string())?.to_f64()
+				} else {
+					f64::INFINITY
+				};
+
+				Ok(start.to_f64()..=end.to_f64())
+			},
+			ConstantType::PlayIndefinitely => {
+				let start = if let Some(start) = start.node.as_ref() {
+					start.eval_float_with_context(&mut stack, ctx).map_err(|e| e.to_string())?.to_f64()
+				} else {
+					-f64::NEG_INFINITY
+				};
+				Ok(start..=f64::INFINITY)
+			},
 		}
 	}
 	pub fn symbol(&self) -> &'static str {

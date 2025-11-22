@@ -56,11 +56,11 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, contex
 				let cur_local_var_idx = local_var_idx;
 				local_var_idx += 1;
 
-				println!(
-					"exracting {:?} from {:?} to local vars and replacing with index {cur_local_var_idx}",
-					&node.ops[start_idx..=cur_idx],
-					&node.ops
-				);
+				// println!(
+				// 	"exracting {:?} from {:?} to local vars and replacing with index {cur_local_var_idx}",
+				// 	&node.ops[start_idx..=cur_idx],
+				// 	&node.ops
+				// );
 
 				let extracted = node
 					.ops

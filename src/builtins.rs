@@ -13,7 +13,7 @@ const BUILTIN_CONSTANTS:&[&str] = &[
 ];
 #[rustfmt::skip]
 const BUILTIN_FUNCTIONS:&[&str] = &[
-  "normaldist", "g", "get",
+  "normaldist", "get",
 
   "is_nan", "is_finite", "is_infinite", "is_normal", "if", "If",
   "contains", "contains_any", "len", "random",

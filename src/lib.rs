@@ -177,24 +177,6 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 		}),
 	);
 	ctx.set_function(
-		istr("g"),
-		evalexpr::RustFunction::new(|s, _| {
-			expect_function_argument_amount(s.num_args(), 2)?;
-			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
-			let index: T = s.get_arg(1).unwrap().as_float()?;
-
-			let index = index.to_f64() as usize;
-
-			let value = tuple.get(index).ok_or_else(|| {
-				EvalexprError::CustomMessage(format!(
-					"Index out of bounds: index = {index} but the length was {}",
-					tuple.len()
-				))
-			})?;
-			Ok(value.clone())
-		}),
-	);
-	ctx.set_function(
 		istr("get"),
 		evalexpr::RustFunction::new(|s, _| {
 			expect_function_argument_amount(s.num_args(), 2)?;
@@ -218,14 +200,13 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
 	("if(bool_expr,true_expr,false_expr)", " If the bool_expr is true, then evaluate the true_expr, otherwise evaluate the false_expr.",),
   ("get(tuple,index)", " Get the value at the index from the tuple."),
-  ("g(tuple, index)", " Alias for `get`."),
 	("", ""),
 	("max(a, b)", " Returns the maximum of the two numbers."),
 	("min(a, b)", " Returns the minimum of the two numbers."),
 	("floor(a)", " Returns the largest integer less than or equal to a."),
 	("round(a)", " Returns the nearest integer to a. If a value is half-way between two integers, round away from 0.0.",),
 	("ceil(a)", "Returns the smallesst integer greater than or equal to a."),
-	("singnum(a)", " Returns the sign of a."),
+	("signnum(a)", " Returns the sign of a."),
 	("abs(a)", " Returns the absolute value of a."),
 	("", ""),
 	("ln(a)", " Compute the natural logarithm."),
