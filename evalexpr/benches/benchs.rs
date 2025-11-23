@@ -5,7 +5,7 @@ extern crate rand;
 extern crate rand_pcg;
 extern crate test;
 
-use evalexpr::{build_operator_tree, DefaultNumericTypes};
+use evalexpr::{build_flat_node, DefaultNumericTypes};
 use rand::distributions::Uniform;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -71,7 +71,7 @@ fn bench_parse_long_expression_chains(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(0);
 	let long_expression_chain = generate_expression_chain(BENCHMARK_LEN, &mut gen);
 
-	bencher.iter(|| build_operator_tree::<DefaultNumericTypes>(&long_expression_chain).unwrap());
+	bencher.iter(|| build_flat_node::<DefaultNumericTypes>(&long_expression_chain).unwrap());
 }
 
 #[bench]
@@ -79,7 +79,7 @@ fn bench_parse_deep_expression_trees(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(15);
 	let deep_expression_tree = generate_expression(BENCHMARK_LEN, &mut gen);
 
-	bencher.iter(|| build_operator_tree::<DefaultNumericTypes>(&deep_expression_tree).unwrap());
+	bencher.iter(|| build_flat_node::<DefaultNumericTypes>(&deep_expression_tree).unwrap());
 }
 
 #[bench]
@@ -89,7 +89,7 @@ fn bench_parse_many_small_expressions(bencher: &mut Bencher) {
 
 	bencher.iter(|| {
 		for expression in &small_expressions {
-			black_box(build_operator_tree::<DefaultNumericTypes>(expression).unwrap());
+			black_box(build_flat_node::<DefaultNumericTypes>(expression).unwrap());
 		}
 	});
 }
@@ -98,7 +98,7 @@ fn bench_parse_many_small_expressions(bencher: &mut Bencher) {
 fn bench_evaluate_long_expression_chains(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(0);
 	let long_expression_chain =
-		build_operator_tree::<DefaultNumericTypes>(&generate_expression_chain(BENCHMARK_LEN, &mut gen))
+		build_flat_node::<DefaultNumericTypes>(&generate_expression_chain(BENCHMARK_LEN, &mut gen))
 			.unwrap();
 
 	bencher.iter(|| long_expression_chain.eval().unwrap());
@@ -108,7 +108,7 @@ fn bench_evaluate_long_expression_chains(bencher: &mut Bencher) {
 fn bench_evaluate_deep_expression_trees(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(15);
 	let deep_expression_tree =
-		build_operator_tree::<DefaultNumericTypes>(&generate_expression(BENCHMARK_LEN, &mut gen)).unwrap();
+		build_flat_node::<DefaultNumericTypes>(&generate_expression(BENCHMARK_LEN, &mut gen)).unwrap();
 
 	bencher.iter(|| deep_expression_tree.eval().unwrap());
 }
@@ -118,7 +118,7 @@ fn bench_evaluate_many_small_expressions(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(33);
 	let small_expressions: Vec<_> = generate_small_expressions(BENCHMARK_LEN, &mut gen)
 		.iter()
-		.map(|expression| build_operator_tree::<DefaultNumericTypes>(expression).unwrap())
+		.map(|expression| build_flat_node::<DefaultNumericTypes>(expression).unwrap())
 		.collect();
 
 	bencher.iter(|| {
@@ -131,7 +131,7 @@ fn bench_evaluate_many_small_expressions(bencher: &mut Bencher) {
 #[bench]
 fn bench_evaluate_large_tuple_expression(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(44);
-	let large_tuple_expression = build_operator_tree::<DefaultNumericTypes>(&generate_large_tuple_expression(
+	let large_tuple_expression = build_flat_node::<DefaultNumericTypes>(&generate_large_tuple_expression(
 		EXPONENTIAL_TUPLE_ITERATIONS, &mut gen,
 	))
 	.unwrap();

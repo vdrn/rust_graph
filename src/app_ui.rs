@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use eframe::egui::{
-	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, TextEdit, TextStyle, Window
+	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, Shadow, SidePanel, Slider, Stroke, TextEdit, TextStyle, Widget, Window
 };
 use eframe::epaint::Color32;
 use egui_plot::{HLine, Legend, Plot, PlotPoint, VLine};
@@ -16,11 +16,11 @@ use crate::{
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
-		ui.label(RichText::new(parsing_error).color(Color32::RED));
+		ui.label(RichText::new(parsing_error).color(Color32::YELLOW));
 	} else if let Some(preparation_error) = ui_state.prepare_errors.get(&entry_id) {
-		ui.label(RichText::new(preparation_error).color(Color32::RED));
+		ui.label(RichText::new(preparation_error).color(Color32::ORANGE));
 	} else if let Some(optimization_error) = ui_state.optimization_errors.get(&entry_id) {
-		ui.label(RichText::new(optimization_error).color(Color32::RED));
+		ui.label(RichText::new(optimization_error).color(Color32::DARK_RED));
 	} else if let Some(eval_error) = ui_state.eval_errors.get(&entry_id) {
 		ui.label(RichText::new(eval_error).color(Color32::RED));
 	}
@@ -64,98 +64,134 @@ pub fn side_panel<T: EvalexprFloat>(
 
 			ui.add_space(4.5);
 
+			fn entry_frame(
+				ui: &mut egui::Ui, is_dark_mode: bool, alternate: bool, cb: impl FnOnce(&mut egui::Ui),
+			) {
+
+				let border_color = if is_dark_mode { Color32::from_gray(56) } else { Color32::from_gray(220) };
+				let bg_color = if is_dark_mode { Color32::from_gray(32) } else { Color32::from_gray(240) };
+				let shadow = egui::Shadow {
+					offset: [0, 0],
+					blur:   4,
+					spread: 0,
+					color:  if is_dark_mode { Color32::from_gray(65) } else { Color32::from_gray(195) },
+				};
+
+				egui::Frame::new()
+					.inner_margin(4.0)
+					.fill(bg_color)
+					.shadow(shadow)
+					.corner_radius(4.0)
+					.stroke(Stroke::new(1.0, border_color))
+					.show(ui, cb);
+			}
+
 			let mut remove = None;
 			let mut animating = false;
+			let mut alternate = false;
 			// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
-				if let EntryType::Folder { entries } = &mut entry.ty {
-					ui.vertical(|ui| {
+				alternate = !alternate;
+				entry_frame(ui, ui_state.conf.dark_mode, alternate, |ui: &mut egui::Ui| {
+					if let EntryType::Folder { entries } = &mut entry.ty {
+						ui.vertical(|ui| {
+							ui.horizontal(|ui| {
+								handle.ui(ui, |ui| {
+									ui.label("||");
+								});
+								let folder_symbol = if entry.active { "📂" } else { "📁" };
+								if ui
+									.add(
+										Button::new(RichText::new(folder_symbol).strong().monospace())
+											.corner_radius(10),
+									)
+									.clicked()
+								{
+									entry.active = !entry.active;
+								}
+
+								ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
+									if entries.is_empty() {
+										if ui.button("X").clicked() {
+											remove = Some(entry.id);
+										}
+									}
+									if add_new_entry_btn(ui, &mut ui_state.next_id, entries, false) {
+										needs_recompilation = true;
+									}
+									ui.add(
+										TextEdit::multiline(&mut entry.name)
+											.hint_text("name")
+											.desired_rows(1)
+											.desired_width(ui.available_width()),
+									)
+									.changed();
+								});
+							});
+							if entry.active {
+								let mut remove_from_folder = None;
+
+								egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
+									alternate = !alternate;
+
+									entry_frame(
+										ui,
+										ui_state.conf.dark_mode,
+										alternate,
+										|ui: &mut egui::Ui| {
+											ui.horizontal(|ui| {
+												handle.ui(ui, |ui| {
+													ui.label("    |");
+												});
+												ui.horizontal(|ui| {
+													let fe_result = entry::entry_ui(
+														ui, &state.ctx, entry, state.clear_cache,
+													);
+													if fe_result.remove {
+														remove_from_folder = Some(entry.id);
+													}
+													animating |= fe_result.animating;
+													needs_recompilation |= fe_result.needs_recompilation;
+													if let Some(error) = fe_result.error {
+														ui_state.parsing_errors.insert(entry.id, error);
+													} else if fe_result.parsed {
+														ui_state.parsing_errors.remove(&entry.id);
+													}
+												});
+											});
+											display_entry_errors(ui, ui_state, entry.id);
+										},
+									);
+								});
+								if let Some(id) = remove_from_folder {
+									if let Some(index) = entries.iter().position(|e| e.id == id) {
+										entries.remove(index);
+									}
+								}
+							}
+						});
+					} else {
 						ui.horizontal(|ui| {
 							handle.ui(ui, |ui| {
 								ui.label("||");
 							});
-							let folder_symbol = if entry.active { "📂" } else { "📁" };
-							if ui
-								.add(
-									Button::new(RichText::new(folder_symbol).strong().monospace())
-										.corner_radius(10),
-								)
-								.clicked()
-							{
-								entry.active = !entry.active;
-							}
-
-							ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
-								if entries.is_empty() {
-									if ui.button("X").clicked() {
-										remove = Some(entry.id);
-									}
+							ui.horizontal(|ui| {
+								let result = entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
+								if result.remove {
+									remove = Some(entry.id);
 								}
-								if add_new_entry_btn(ui, &mut ui_state.next_id, entries, false) {
-									needs_recompilation = true;
+								animating |= result.animating;
+								needs_recompilation |= result.needs_recompilation;
+								if let Some(error) = result.error {
+									ui_state.parsing_errors.insert(entry.id, error);
+								} else if result.parsed {
+									ui_state.parsing_errors.remove(&entry.id);
 								}
-								ui.add(
-									TextEdit::multiline(&mut entry.name)
-										.hint_text("name")
-										.desired_rows(1)
-										.desired_width(ui.available_width()),
-								)
-								.changed();
 							});
 						});
-						if entry.active {
-							let mut remove_from_folder = None;
-
-							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
-								ui.horizontal(|ui| {
-									handle.ui(ui, |ui| {
-										ui.label("    |");
-									});
-									ui.horizontal(|ui| {
-										let fe_result = entry::entry_ui(ui,&state.ctx, entry, state.clear_cache);
-										if fe_result.remove {
-											remove_from_folder = Some(entry.id);
-										}
-										animating |= fe_result.animating;
-										needs_recompilation |= fe_result.needs_recompilation;
-										if let Some(error) = fe_result.error {
-											ui_state.parsing_errors.insert(entry.id, error);
-										} else if fe_result.parsed {
-											ui_state.parsing_errors.remove(&entry.id);
-										}
-									});
-								});
-								display_entry_errors(ui, ui_state, entry.id);
-							});
-							if let Some(id) = remove_from_folder {
-								if let Some(index) = entries.iter().position(|e| e.id == id) {
-									entries.remove(index);
-								}
-							}
-						}
-					});
-				} else {
-					ui.horizontal(|ui| {
-						handle.ui(ui, |ui| {
-							ui.label("||");
-						});
-						ui.horizontal(|ui| {
-							let result = entry::entry_ui(ui,&state.ctx, entry, state.clear_cache);
-							if result.remove {
-								remove = Some(entry.id);
-							}
-							animating |= result.animating;
-							needs_recompilation |= result.needs_recompilation;
-							if let Some(error) = result.error {
-								ui_state.parsing_errors.insert(entry.id, error);
-							} else if result.parsed {
-								ui_state.parsing_errors.remove(&entry.id);
-							}
-						});
-					});
-				}
-				display_entry_errors(ui, ui_state, entry.id);
-				ui.separator();
+					}
+					display_entry_errors(ui, ui_state, entry.id);
+				});
 			});
 
 			if let Some(id) = remove {
@@ -421,6 +457,10 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
+      for mesh in p_draw_buffer.draw_meshes {
+        plot_ui.add(mesh);
+        // plot_ui.mesh(mesh.mesh);
+      }
 			for draw_poly_group in p_draw_buffer.draw_polygons {
 				for poly in draw_poly_group.polygons {
 					plot_ui.polygon(poly);
@@ -560,7 +600,7 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 		return false;
 	}
 	ui.menu_button("➕ Add", |ui| {
-		let new_function = Entry::new_function(*next_id, String::new());
+		let new_function = Entry::new_function(*next_id, "");
 		if ui.button(new_function.type_name()).clicked() {
 			entries.push(new_function);
 			*next_id += 1;

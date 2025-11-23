@@ -1,18 +1,19 @@
 use alloc::sync::Arc;
-use core::cell::RefMut;
+use core::cell::{RefCell, RefMut};
 use core::mem;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
-use eframe::egui::{self, Color32, Id, RichText, Stroke};
-use egui_plot::{Line, PlotPoint, PlotPoints, Points, Polygon, Text};
+use eframe::egui::{self, Color32, Id, Mesh, RichText, Shape, Stroke};
+use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawLine, DrawPoint, DrawPolygonGroup, DrawText, OtherPointType, PointInteraction, PointInteractionType
+	DrawLine, DrawMesh, DrawPoint, DrawPolygonGroup, DrawText, OtherPointType, PointInteraction, PointInteractionType
 };
-use crate::entry::{Entry, EntryType, f64_to_float, f64_to_value};
+use crate::entry::{Entry, EntryType, EquationType, f64_to_float, f64_to_value};
+use crate::marching_squares::MeshBuilder;
 use crate::math::{DiscontinuityDetector, zoom_in_x_on_nan_boundary};
 use crate::{ThreadLocalContext, marching_squares, thread_local_get};
 
@@ -268,64 +269,151 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						.color(color),
 				));
 			};
+			let mut add_mesh = |mesh: MeshBuilder| {
+				if mesh.is_empty() {
+					return;
+				}
+				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
+				draw_buffer.meshes.push(DrawMesh {
+					bounds: mesh.bounds,
+					sorting_index: sorting_idx,
+
+					mesh: RefCell::new(mesh),
+					plot_item_base: PlotItemBase::new(display_name.clone()),
+					color,
+				});
+			};
+      let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
 					let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 					// horizontal line
-					let value = expr_func
-						.call(&mut stack, ctx, &[])
-						.and_then(|v| v.as_float())
-						.map_err(|e| vec![(entry.id, e.to_string())])?;
+					let value = match expr_func.call(&mut stack, ctx, &[]) {
+						Ok(v) => match v {
+							Value::Float(v) => v,
+							Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
+								return Ok(());
+							},
+						},
+						Err(e) => return Err(vec![(entry.id, e.to_string())]),
+					};
 					add_line(vec![
 						PlotPoint::new(plot_params.first_x, value.to_f64()),
 						PlotPoint::new(plot_params.last_x, value.to_f64()),
 					]);
 				} else if func.args.len() == 1 {
 					// starndard X or Y function
-					if *parametric {
-						if func.args[0].to_str() == "y" {
-							draw_parametric_function::<T, { SimpleFunctionType::Y }>(
-								tl_context,
-								ctx,
-								plot_params,
-								entry.id,
-								expr_func,
-								range_start.node.as_ref(),
-								range_end.node.as_ref(),
-								&mut add_line,
-							)?;
-						} else {
-							draw_parametric_function::<T, { SimpleFunctionType::X }>(
-								tl_context,
-								ctx,
-								plot_params,
-								entry.id,
-								expr_func,
-								range_start.node.as_ref(),
-								range_end.node.as_ref(),
-								&mut add_line,
-							)?;
-						}
-					} else {
-						if func.args[0].to_str() == "y" {
-							draw_simple_function::<T, { SimpleFunctionType::Y }>(
-								tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-							)?;
-						} else {
-							draw_simple_function::<T, { SimpleFunctionType::X }>(
-								tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-							)?;
-							// draw_y_function(tl_context, ctx, plot_params, entry.id, expr_func, &mut
-							// add_line)?;
-						}
+					match func.equation_type {
+						EquationType::None => {
+							if *parametric {
+								if func.args[0].to_str() == "y" {
+									draw_parametric_function::<T, { SimpleFunctionType::Y }>(
+										tl_context,
+										ctx,
+										plot_params,
+										entry.id,
+										expr_func,
+										range_start.node.as_ref(),
+										range_end.node.as_ref(),
+										&mut add_line,
+									)?;
+								} else {
+									draw_parametric_function::<T, { SimpleFunctionType::X }>(
+										tl_context,
+										ctx,
+										plot_params,
+										entry.id,
+										expr_func,
+										range_start.node.as_ref(),
+										range_end.node.as_ref(),
+										&mut add_line,
+									)?;
+								}
+							} else {
+								if func.args[0].to_str() == "y" {
+									draw_simple_function::<T, { SimpleFunctionType::Y }>(
+										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
+									)?;
+								} else {
+									draw_simple_function::<T, { SimpleFunctionType::X }>(
+										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
+									)?;
+								}
+							}
+						},
+						EquationType::Equality => {
+							let mut stack = Stack::<T>::with_capacity(0);
+							let value = match expr_func.call(&mut stack, ctx, &[Value::Float(T::ZERO)]) {
+								Ok(v) => match v {
+									Value::Float(v) => v,
+									Value::Float2(_, _)
+									| Value::Boolean(_)
+									| Value::Tuple(_)
+									| Value::Empty => {
+										return Ok(());
+									},
+								},
+								Err(e) => return Err(vec![(entry.id, e.to_string())]),
+							};
+
+							if func.args[0].to_str() == "x" {
+								add_line(vec![
+									PlotPoint::new(-value.to_f64(), plot_params.first_y),
+									PlotPoint::new(-value.to_f64(), plot_params.last_x),
+								]);
+							} else {
+								add_line(vec![
+									PlotPoint::new(plot_params.first_x, -value.to_f64()),
+									PlotPoint::new(plot_params.last_x, -value.to_f64()),
+								]);
+							}
+						},
+						equation_type => {
+							if func.args[0].to_str() == "y" {
+								draw_implicit(
+									tl_context,
+									plot_params,
+									entry.id,
+									*implicit_resolution,
+									equation_type,
+									fill_color,
+									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
+									&mut add_line,
+									&mut add_mesh,
+								)?;
+							} else {
+								draw_implicit(
+									tl_context,
+									plot_params,
+									entry.id,
+									*implicit_resolution,
+									equation_type,
+									fill_color,
+									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
+									&mut add_line,
+									&mut add_mesh,
+								)?;
+							}
+						},
 					}
 				} else if func.args.len() == 2 {
 					if func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
-						draw_xy_function(
-							tl_context, ctx, plot_params, entry.id, expr_func, *implicit_resolution,
-							&mut add_line,
-						)?;
+						if func.equation_type != EquationType::None {
+							draw_implicit(
+								tl_context,
+								plot_params,
+								entry.id,
+								*implicit_resolution,
+								func.equation_type,
+								fill_color,
+								|cc, x, y| {
+									expr_func.call(cc, ctx, &[f64_to_value::<T>(x), f64_to_value::<T>(y)])
+								},
+								&mut add_line,
+								&mut add_mesh,
+							)?;
+						}
 					}
 				}
 			}
@@ -373,7 +461,12 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	};
 
 	if let Some(constant) = func.as_constant() {
-		let value = constant.as_float().map_err(|e| vec![(id, e.to_string())])?;
+		let value = match constant {
+			Value::Float(v) => v,
+			Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
+				return Ok(());
+			},
+		};
 		pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
 		pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
 	} else {
@@ -562,39 +655,74 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 
 	Ok(())
 }
-fn draw_xy_function<T: EvalexprFloat>(
-	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
-	id: u64, func: &ExpressionFunction<T>, resolution: usize, mut add_line: impl FnMut(Vec<PlotPoint>),
+#[allow(clippy::too_many_arguments)]
+fn draw_implicit<T: EvalexprFloat>(
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, plot_params: &PlotParams, id: u64,
+	resolution: usize, equation_type: EquationType, color: Color32,
+	call: impl Fn(&mut RefMut<Stack<T>>, f64, f64) -> Result<Value<T>, EvalexprError<T>> + Sync,
+	mut add_line: impl FnMut(Vec<PlotPoint>), mut add_mesh: impl FnMut(MeshBuilder),
 ) -> Result<(), Vec<(u64, String)>> {
 	let mins = (plot_params.first_x, plot_params.first_y);
 	let maxs = (plot_params.last_x, plot_params.last_y);
 
-	for (_, lines) in marching_squares::marching_squares(
-		|cc: &mut RefMut<Stack<T>>, x, y| match func.call(
-			&mut *cc,
-			ctx,
-			&[f64_to_value::<T>(x), f64_to_value::<T>(y)],
-		) {
-			Ok(v) => match v {
-				Value::Float(v) => Ok(v.to_f64()),
-				Value::Empty => Ok(f64::NAN),
-				Value::Tuple(_) | Value::Float2(_, _) => {
-					Err("Implicit function must return a single value.".to_string())
-				},
-				Value::Boolean(_) => Err("Implicit function must return a number.".to_string()),
-			},
-			Err(EvalexprError::ExpectedFloat { actual }) => {
-				if actual == Value::Empty {
-					Ok(f64::NAN)
-				} else {
-					Err(EvalexprError::ExpectedFloat { actual }.to_string())
-				}
-			},
-			Err(e) => Err(e.to_string()),
+	let mut draw_lines = true;
+	let mut draw_fill = None;
+	match equation_type {
+		EquationType::Equality => {},
+		EquationType::LessThan => {
+			draw_lines = false;
+			draw_fill = Some(marching_squares::MarchingSquaresFill::Negative);
 		},
-		mins,
-		maxs,
+		EquationType::LessThanOrEqual => {
+			draw_fill = Some(marching_squares::MarchingSquaresFill::Negative);
+		},
+		EquationType::GreaterThan => {
+			draw_lines = false;
+			draw_fill = Some(marching_squares::MarchingSquaresFill::Positive);
+		},
+		EquationType::GreaterThanOrEqual => {
+			draw_fill = Some(marching_squares::MarchingSquaresFill::Positive);
+		},
+		EquationType::None => {
+			return Ok(());
+		},
+	}
+
+	let params = marching_squares::MarchingSquaresParams {
 		resolution,
+		bounds_min: mins,
+		bounds_max: maxs,
+		draw_lines,
+		draw_fill,
+		fill_color: color,
+	};
+	for result in marching_squares::marching_squares(
+		params,
+		|cc: &mut RefMut<Stack<T>>, x, y| {
+			let value = call(cc, x, y);
+			// let value = match TY {
+			// 	SimpleFunctionType::X => func.call(&mut *cc, ctx, &[f64_to_value::<T>(x)]),
+			// 	SimpleFunctionType::Y => func.call(&mut *cc, ctx, &[f64_to_value::<T>(y)]),
+			// };
+			match value {
+				Ok(v) => match v {
+					Value::Float(v) => Ok(v.to_f64()),
+					Value::Empty => Ok(f64::NAN),
+					Value::Tuple(_) | Value::Float2(_, _) => {
+						Err("Implicit function must return a single value.".to_string())
+					},
+					Value::Boolean(_) => Err("Implicit function must return a number.".to_string()),
+				},
+				Err(EvalexprError::ExpectedFloat { actual }) => {
+					if actual == Value::Empty {
+						Ok(f64::NAN)
+					} else {
+						Err(EvalexprError::ExpectedFloat { actual }.to_string())
+					}
+				},
+				Err(e) => Err(e.to_string()),
+			}
+		},
 		|| {
 			let tl_context = thread_local_get(tl_context);
 			// tl_context.stack_overflow_guard.set(0);
@@ -604,9 +732,10 @@ fn draw_xy_function<T: EvalexprFloat>(
 	)
 	.map_err(|e| vec![(id, e)])?
 	{
-		for line in lines {
+		for line in result.lines {
 			add_line(line);
 		}
+		add_mesh(result.mesh);
 	}
 
 	Ok(())

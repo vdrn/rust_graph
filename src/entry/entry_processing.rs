@@ -1,66 +1,60 @@
 use std::sync::LazyLock;
 
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, istr, istr_empty};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, istr, istr_empty};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::builtins::is_builtin;
-use crate::entry::{DragPoint, Entry, EntryType, FunctionType, PointDragType};
+use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType};
 use crate::scope;
 
-pub fn preprecess_fn(text: &str) -> Result<Option<String>, String> {
-	// regex to check if theres an y identifier (single y not surrounded by alphanumerics on either
-	// side)
-	static RE_Y: LazyLock<Regex> =
-		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])y(?:$|[^a-zA-Z0-9])").unwrap());
-	static RE_X: LazyLock<Regex> =
-		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])x(?:$|[^a-zA-Z0-9])").unwrap());
-	static RE_ZY: LazyLock<Regex> =
-		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])zy(?:$|[^a-zA-Z0-9])").unwrap());
-	static RE_ZX: LazyLock<Regex> =
-		LazyLock::new(|| Regex::new(r"(?:^|[^a-zA-Z0-9])zx(?:$|[^a-zA-Z0-9])").unwrap());
+pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {
+	let mut equation_type = EquationType::None;
+	fn walk_ast<T: EvalexprFloat>(ast: &mut Node<T>, equation_type: &mut EquationType, mut replace_writes:bool) -> Result<(), String> {
+		let op = ast.operator_mut();
+    if *op ==  Operator::Assign {
+      replace_writes = true;
+    }
+		match op {
+			Operator::FunctionIdentifier { .. } => {
+				// <=, <, >=, > inside function call params are not threated as equation types, but boolean
+				// ops
+				return Ok(());
+			},
+			Operator::Assign | Operator::Lt | Operator::Gt | Operator::Leq | Operator::Geq => {
+				if *equation_type != EquationType::None {
+					return Err("You cannot have multiple `=`, `<`, `>`, `<=` or `>=` operators in the same \
+					            function."
+						.to_string());
+				}
+				*equation_type = match op {
+					Operator::Assign => EquationType::Equality,
+					Operator::Lt => EquationType::LessThan,
+					Operator::Gt => EquationType::GreaterThan,
+					Operator::Leq => EquationType::LessThanOrEqual,
+					Operator::Geq => EquationType::GreaterThanOrEqual,
+					_ => unreachable!(),
+				};
+				*op = Operator::Sub;
+			},
+      Operator::VariableIdentifierWrite {identifier} => {
+        if replace_writes {
+          *op = Operator::VariableIdentifierRead { identifier:core::mem::take(identifier) };
+        }
+      }
+			_ => {},
+		}
+		for child in ast.children_mut() {
+			walk_ast(child, equation_type, replace_writes)?;
+		}
+		Ok(())
+	}
+	walk_ast(&mut ast, &mut equation_type, false)?;
 
-	let text_b = text.as_bytes();
-	let mut split = None;
-	for (i, &c) in text_b.iter().enumerate() {
-		if c == b'=' {
-			let prev = text_b.get(i - 1).copied();
-			let next = text_b.get(i + 1).copied();
-			static IGNORE_PREV: &[u8] = b"!=<>+-*/%^|&";
-			if next != Some(b'=') && IGNORE_PREV.iter().all(|&c| Some(c) != prev) {
-				split = Some((&text[0..i], text.get(i + 1..).unwrap_or("")));
-				break;
-			}
-		}
-	}
-
-	let Some((left, right)) = split else {
-		return Ok(None);
-	};
-	let left = left.trim();
-	let right = right.trim();
-	if left.is_empty() || right.is_empty() {
-		return Err("Something is needed on both sides of the = sign".to_string());
-	}
-	if left == "y" {
-		if RE_Y.is_match(right) || RE_ZY.is_match(right) || RE_ZX.is_match(right) {
-			return Ok(Some(format!("y - ({right})")));
-		}
-		return Ok(Some(right.to_string()));
-	}
-	if left == "x" {
-		if RE_X.is_match(right) || RE_ZY.is_match(right) || RE_ZX.is_match(right) {
-			return Ok(Some(format!("x - ({right})")));
-		}
-		if RE_Y.is_match(right) {
-			return Ok(Some(right.to_string()));
-		}
-		return Ok(Some(format!("{right} + y*0")));
-	}
-	let new = format!("{} - ({})", left, right);
-	Ok(Some(new))
+	Ok((ast, equation_type))
 }
+
 
 pub fn prepare_entries<T: EvalexprFloat>(
 	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
@@ -467,7 +461,9 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 				.map_err(|e| (entry.id, e.to_string()))?;
 			// println!("FUNC EXPRESSION {:#?}", expr_function);
 
-			if identifier.to_str() != "" {
+
+
+			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());
 			}
 			func.expr_function = Some(expr_function);

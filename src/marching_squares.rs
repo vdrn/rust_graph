@@ -2,7 +2,9 @@ use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
 
 use arrayvec::ArrayVec;
-use egui_plot::PlotPoint;
+use eframe::egui::{Color32, Mesh, Pos2};
+use eframe::epaint::Vertex;
+use egui_plot::{PlotBounds, PlotPoint};
 use rayon::iter::{
 	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator
 };
@@ -58,34 +60,52 @@ impl MarchingSquaresCache {
 	// 	self.polyline_builders.borrow_mut().push(polyline_builder);
 	// }
 }
+#[derive(Clone, Copy)]
+pub enum MarchingSquaresFill {
+	Negative,
+	Positive,
+}
+pub struct MarchingSquaresParams {
+	pub resolution: usize,
+	pub bounds_min: (f64, f64),
+	pub bounds_max: (f64, f64),
+	pub draw_lines: bool,
+	pub draw_fill:  Option<MarchingSquaresFill>,
+	pub fill_color: Color32,
+}
 
-pub type MarchingSquaresResult = Result<Vec<((f64, f64), Vec<Vec<PlotPoint>>)>, String>;
+#[derive(Default)]
+pub struct MarchingSquaresResult {
+	pub y_bounds: (f64, f64),
+	pub lines:    Vec<Vec<PlotPoint>>,
+	pub mesh:     MeshBuilder,
+}
+
 pub fn marching_squares<C>(
-	f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync, bounds_min: (f64, f64),
-	bounds_max: (f64, f64), resolution: usize, thread_prepare: impl Fn() -> C + Sync,
-	cache: &MarchingSquaresCache,
-) -> MarchingSquaresResult {
+	params: MarchingSquaresParams, f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync,
+	thread_prepare: impl Fn() -> C + Sync, cache: &MarchingSquaresCache,
+) -> Result<Vec<MarchingSquaresResult>, String> {
 	scope!("marching_squares");
-	let (x_min, y_min) = bounds_min;
-	let (x_max, y_max) = bounds_max;
+	let (x_min, y_min) = params.bounds_min;
+	let (x_max, y_max) = params.bounds_max;
 
-	let dx = (x_max - x_min) / resolution as f64;
-	let dy = (y_max - y_min) / resolution as f64;
+	let dx = (x_max - x_min) / params.resolution as f64;
+	let dy = (y_max - y_min) / params.resolution as f64;
 
 	let mut grid;
 	{
 		scope!("grid_calc");
 
 		let mut error = std::sync::Mutex::new(None);
-		grid = cache.get_grid(resolution);
+		grid = cache.get_grid(params.resolution);
 
 		grid.par_iter_mut().enumerate().for_each(|(i, grid_i)| {
 			scope!("grid_calc_par");
 			let mut ctx = thread_prepare();
 
-			grid_i.resize(resolution + 1, 0.0);
+			grid_i.resize(params.resolution + 1, 0.0);
 			let y = y_min + i as f64 * dy;
-			for j in 0..=resolution {
+			for j in 0..=params.resolution {
 				let x = x_min + j as f64 * dx;
 				match f(&mut ctx, x, y) {
 					Ok(v) => {
@@ -110,18 +130,18 @@ pub fn marching_squares<C>(
 	scope!("generate_polylines");
 
 	let num_threads = rayon::current_num_threads();
-	let num_chunks = (num_threads * 2).min(resolution);
+	let num_chunks = (num_threads * 2).min(params.resolution);
 	// let num_chunks = 1;
 
 	let mut error = std::sync::Mutex::new(None);
-	let chunk_results: Vec<((f64, f64), Vec<Vec<PlotPoint>>)> = (0..num_chunks)
+	let chunk_results: Vec<MarchingSquaresResult> = (0..num_chunks)
 		.into_par_iter()
 		.map(|chunk_idx| {
 			scope!("polyline_chunk");
 
 			#[allow(clippy::integer_division)]
-			let chunk_size = resolution / num_chunks;
-			let remainder = resolution % num_chunks;
+			let chunk_size = params.resolution / num_chunks;
+			let remainder = params.resolution % num_chunks;
 
 			// Distribute remainder across first chunks
 			let start = chunk_idx * chunk_size + chunk_idx.min(remainder);
@@ -129,9 +149,10 @@ pub fn marching_squares<C>(
 
 			let mut ctx = thread_prepare();
 			let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
+			let mut mesh_builder = MeshBuilder::new(params.fill_color);
 
 			// Cache for bottom-mid values from previous row
-			let mut prev_row_top_mid: Vec<(f64, bool)> = vec![(f64::NAN, false); resolution];
+			let mut prev_row_top_mid: Vec<(f64, bool)> = vec![(f64::NAN, false); params.resolution];
 			let sub_dx = dx * 0.5;
 			let sub_dy = dy * 0.5;
 
@@ -141,16 +162,37 @@ pub fn marching_squares<C>(
 				let mut prev_right_mid = (f64::NAN, false);
 				let y = y_min + i as f64 * dy;
 				// println!("NEW ROT Y = {y}");
+				let mut prev_was_square = false;
 
-				for j in 0..resolution {
+				for j in 0..params.resolution {
 					let x = x_min + j as f64 * dx;
 
 					let vals = [grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]];
 
-					let mut config = 0u8;
-					for (idx, &val) in vals.iter().enumerate() {
-						if val > 0.0 {
-							config |= 1 << idx;
+					let config = get_config(&vals, params.draw_fill);
+
+					// Process mesh for config 0 or 15 (full squares)
+					if let Some(ref fill_type) = params.draw_fill {
+						let is_positive = matches!(fill_type, MarchingSquaresFill::Positive);
+
+						if config == 0 {
+							if !is_positive {
+								let can_merge = prev_was_square;
+								mesh_builder.add_square(x, y, dx, dy, can_merge);
+								prev_was_square = true;
+							} else {
+								prev_was_square = false;
+							}
+						} else if config == 15 {
+							if is_positive {
+								let can_merge = prev_was_square;
+								mesh_builder.add_square(x, y, dx, dy, can_merge);
+								prev_was_square = true;
+							} else {
+								prev_was_square = false;
+							}
+						} else {
+							prev_was_square = false;
 						}
 					}
 
@@ -168,7 +210,7 @@ pub fn marching_squares<C>(
 								),
 								Err(e) => {
 									*error.lock().unwrap() = Some(e);
-									return ((0.0, 0.0), vec![]);
+									return Default::default();
 								},
 							}
 						} else {
@@ -185,7 +227,7 @@ pub fn marching_squares<C>(
 								),
 								Err(e) => {
 									*error.lock().unwrap() = Some(e);
-									return ((0.0, 0.0), vec![]);
+									return Default::default();
 								},
 							}
 						} else {
@@ -196,7 +238,7 @@ pub fn marching_squares<C>(
 							Ok(v) => v,
 							Err(e) => {
 								*error.lock().unwrap() = Some(e);
-								return ((0.0, 0.0), vec![]);
+								return Default::default();
 							},
 						};
 
@@ -204,14 +246,14 @@ pub fn marching_squares<C>(
 							Ok(v) => v,
 							Err(e) => {
 								*error.lock().unwrap() = Some(e);
-								return ((0.0, 0.0), vec![]);
+								return Default::default();
 							},
 						};
 						let center = match f(&mut ctx, x + sub_dx, y + sub_dy) {
 							Ok(v) => v,
 							Err(e) => {
 								*error.lock().unwrap() = Some(e);
-								return ((0.0, 0.0), vec![]);
+								return Default::default();
 							},
 						};
 
@@ -233,74 +275,114 @@ pub fn marching_squares<C>(
 							|x, y| f(&mut ctx, x, y).ok(),
 						);
 
-						// Store for next iteration
-
 						// Process 4 subcells
 						// Bottom-left subcell
 						if !discontinuous_bottom && !discontinuous_left {
-							process_subcell(
-								x,
-								y,
-								sub_dx,
-								sub_dy,
-								[vals[0], bot_mid, center, left_mid],
-								&mut polyline_builder,
-								eps,
-							);
+							if params.draw_lines {
+								process_subcell(
+									x,
+									y,
+									sub_dx,
+									sub_dy,
+									[vals[0], bot_mid, center, left_mid],
+									&mut polyline_builder,
+									eps,
+								);
+							}
+							if let Some(fill_type) = params.draw_fill {
+								process_subcell_mesh(
+									x,
+									y,
+									sub_dx,
+									sub_dy,
+									[vals[0], bot_mid, center, left_mid],
+									&mut mesh_builder,
+									fill_type,
+								);
+							}
 						}
 
 						// Bottom-right subcell
 						if !discontinuous_bottom && !discontinuous_right {
-							process_subcell(
-								x + sub_dx,
-								y,
-								sub_dx,
-								sub_dy,
-								[bot_mid, vals[1], right_mid, center],
-								&mut polyline_builder,
-								eps,
-							);
+							if params.draw_lines {
+								process_subcell(
+									x + sub_dx,
+									y,
+									sub_dx,
+									sub_dy,
+									[bot_mid, vals[1], right_mid, center],
+									&mut polyline_builder,
+									eps,
+								);
+							}
+							if let Some(fill_type) = params.draw_fill {
+								process_subcell_mesh(
+									x + sub_dx,
+									y,
+									sub_dx,
+									sub_dy,
+									[bot_mid, vals[1], right_mid, center],
+									&mut mesh_builder,
+									fill_type,
+								);
+							}
 						}
 
 						// Top-right subcell
 						if !discontinuous_right && !discontinuous_top {
-							process_subcell(
-								x + sub_dx,
-								y + sub_dy,
-								sub_dx,
-								sub_dy,
-								[center, right_mid, vals[2], top_mid],
-								&mut polyline_builder,
-								eps,
-							);
+							if params.draw_lines {
+								process_subcell(
+									x + sub_dx,
+									y + sub_dy,
+									sub_dx,
+									sub_dy,
+									[center, right_mid, vals[2], top_mid],
+									&mut polyline_builder,
+									eps,
+								);
+							}
+							if let Some(fill_type) = params.draw_fill {
+								process_subcell_mesh(
+									x + sub_dx,
+									y + sub_dy,
+									sub_dx,
+									sub_dy,
+									[center, right_mid, vals[2], top_mid],
+									&mut mesh_builder,
+									fill_type,
+								);
+							}
 						}
 
 						// Top-left subcell
 						if !discontinuous_left && !discontinuous_top {
-							process_subcell(
-								x,
-								y + sub_dy,
-								sub_dx,
-								sub_dy,
-								[left_mid, center, top_mid, vals[3]],
-								&mut polyline_builder,
-								eps,
-							);
+							if params.draw_lines {
+								process_subcell(
+									x,
+									y + sub_dy,
+									sub_dx,
+									sub_dy,
+									[left_mid, center, top_mid, vals[3]],
+									&mut polyline_builder,
+									eps,
+								);
+							}
+							if let Some(fill_type) = params.draw_fill {
+								process_subcell_mesh(
+									x,
+									y + sub_dy,
+									sub_dx,
+									sub_dy,
+									[left_mid, center, top_mid, vals[3]],
+									&mut mesh_builder,
+									fill_type,
+								);
+							}
 						}
 						prev_right_mid = (right_mid, discontinuous_right);
 						prev_row_top_mid[j] = (top_mid, discontinuous_top);
 					} else {
 						// No subdivision needed
-						// for (edge1, edge2) in get_edges_for_config(config) {
-						// 	let p1 = interpolate_edge(edge1, x, y, dx, dy, &vals);
-						// 	let p2 = interpolate_edge(edge2, x, y, dx, dy, &vals);
-
-						// 	let start = PlotPoint::new(p1.0, p1.1);
-						// 	let end = PlotPoint::new(p2.0, p2.1);
-						// 	if !equals(start, end, eps) {
-						// 		polyline_builder.add_segment(start, end);
-						// 	}
-						// }
 
 						// Reset cache entries since we didn't subdivide
 						prev_right_mid = (f64::NAN, false);
@@ -309,7 +391,12 @@ pub fn marching_squares<C>(
 				}
 			}
 
-			((y_start, y_end), polyline_builder.finish())
+			MarchingSquaresResult {
+				y_bounds: (y_start, y_end),
+
+				lines: polyline_builder.finish(),
+				mesh:  mesh_builder,
+			}
 		})
 		.collect();
 	if let Some(error) = error.get_mut().unwrap().take() {
@@ -371,6 +458,7 @@ fn is_edge_discontinuous(
 
 	// Determine which half has the larger change
 	if left_change > right_change {
+		// println!("MORE");
 		// Check left half: val_start -> val_mid
 		let left_mid_param = ((start_param.0 + mid_param.0) * 0.5, (start_param.1 + mid_param.1) * 0.5);
 
@@ -407,12 +495,7 @@ fn is_edge_discontinuous(
 fn process_subcell(
 	x: f64, y: f64, dx: f64, dy: f64, vals: [f64; 4], polyline_builder: &mut PolylineBuilder, eps: f64,
 ) {
-	let mut config = 0u8;
-	for (idx, &val) in vals.iter().enumerate() {
-		if val > 0.0 {
-			config |= 1 << idx;
-		}
-	}
+	let config = get_config(&vals, None);
 
 	for (edge1, edge2) in get_edges_for_config(config) {
 		let p1 = interpolate_edge(edge1, x, y, dx, dy, &vals);
@@ -580,6 +663,332 @@ fn merge_polyline_chunks2(
 
 	result
 }
+fn get_config(vals: &[f64; 4], fill_type: Option<MarchingSquaresFill>) -> u8 {
+	let mut config = 0u8;
+	for (idx, &val) in vals.iter().enumerate() {
+		if val > 0.0 {
+			config |= 1 << idx;
+		} else if val < 0.0 {
+		} else {
+			// val is NaN or 0.0
+			if let Some(MarchingSquaresFill::Negative) = fill_type {
+				config |= 1 << idx;
+			}
+		}
+	}
+	config
+}
+#[allow(clippy::too_many_arguments)]
+fn process_subcell_mesh(
+	x: f64, y: f64, dx: f64, dy: f64, vals: [f64; 4], mesh_builder: &mut MeshBuilder,
+	fill_type: MarchingSquaresFill,
+) {
+	let config = get_config(&vals, Some(fill_type));
+
+	let is_positive = matches!(fill_type, MarchingSquaresFill::Positive);
+
+	match config {
+		0b0000 => {
+			if !is_positive {
+				mesh_builder.add_square(x, y, dx, dy, false);
+			}
+		},
+		0b1111 => {
+			if is_positive {
+				mesh_builder.add_square(x, y, dx, dy, false);
+			}
+		},
+
+		0b0001 | 0b1110 => {
+			// bot-left corner different
+			if (config == 0b0001) == is_positive {
+				// bot-left, interp(bot), interp(left)
+				let v1 = (x, y);
+				let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+				let v2 = (p_bot.0, p_bot.1);
+				let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+				let v3 = (p_left.0, p_left.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+			} else {
+				// interp(bot), bot-right, top-right, top-left, interp(left)
+				let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+				let v1 = (p_bot.0, p_bot.1);
+				let v2 = (x + dx, y);
+				let v3 = (x + dx, y + dy);
+				let v4 = (x, y + dy);
+				let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+				let v5 = (p_left.0, p_left.1);
+				mesh_builder.add_pentagon(v1, v2, v3, v4, v5);
+			}
+		},
+		0b0010 | 0b1101 => {
+			// bot-right corner different
+			if (config == 0b0010) == is_positive {
+				// bot-right, interp(right), interp(bot)
+				let v1 = (x + dx, y);
+				let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+				let v2 = (p_right.0, p_right.1);
+				let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+				let v3 = (p_bot.0, p_bot.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+			} else {
+				// interp(bot), bot-left, top-left, top-right, interp(right)
+				let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+				let v1 = (p_bot.0, p_bot.1);
+				let v2 = (x, y);
+				let v3 = (x, y + dy);
+				let v4 = (x + dx, y + dy);
+				let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+				let v5 = (p_right.0, p_right.1);
+				mesh_builder.add_pentagon(v1, v2, v3, v4, v5);
+			}
+		},
+		0b0100 | 0b1011 => {
+			// top-right corner different
+			if (config == 0b0100) == is_positive {
+				// top-right, interp(top), interp(right)
+				let v1 = (x + dx, y + dy);
+				let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+				let v2 = (p_top.0, p_top.1);
+				let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+				let v3 = (p_right.0, p_right.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+			} else {
+				// interp(right), bot-right, bot-left, top-left, interp(top)
+				let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+				let v1 = (p_right.0, p_right.1);
+				let v2 = (x + dx, y);
+				let v3 = (x, y);
+				let v4 = (x, y + dy);
+				let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+				let v5 = (p_top.0, p_top.1);
+				mesh_builder.add_pentagon(v1, v2, v3, v4, v5);
+			}
+		},
+		0b1000 | 0b0111 => {
+			// top-left corner different
+			if (config == 0b1000) == is_positive {
+				// top-left, interp(left), interp(top)
+				let v1 = (x, y + dy);
+				let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+				let v2 = (p_left.0, p_left.1);
+				let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+				let v3 = (p_top.0, p_top.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+			} else {
+				// interp(left), bot-left, bot-right, top-right, interp(top)
+				let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+				let v1 = (p_left.0, p_left.1);
+				let v2 = (x, y);
+				let v3 = (x + dx, y);
+				let v4 = (x + dx, y + dy);
+				let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+				let v5 = (p_top.0, p_top.1);
+				mesh_builder.add_pentagon(v1, v2, v3, v4, v5);
+			}
+		},
+		0b0011 | 0b1100 => {
+			// vertical split
+			let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+			let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+			if (config == 0b0011) == is_positive {
+				// bot-left, bot-right, interp(right), interp(left)
+				let v1 = (x, y);
+				let v2 = (x + dx, y);
+				let v3 = (p_right.0, p_right.1);
+				let v4 = (p_left.0, p_left.1);
+				mesh_builder.add_quad(v1, v2, v3, v4);
+			} else {
+				// interp(left), interp(right), top-right, top-left
+				let v1 = (p_left.0, p_left.1);
+				let v2 = (p_right.0, p_right.1);
+				let v3 = (x + dx, y + dy);
+				let v4 = (x, y + dy);
+				mesh_builder.add_quad(v1, v2, v3, v4);
+			}
+		},
+		0b0110 | 0b1001 => {
+			// horizontal split
+			let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+			let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+			if (config == 0b0110) == is_positive {
+				// interp(bot), bot-right, top-right, interp(top)
+				let v1 = (p_bot.0, p_bot.1);
+				let v2 = (x + dx, y);
+				let v3 = (x + dx, y + dy);
+				let v4 = (p_top.0, p_top.1);
+				mesh_builder.add_quad(v1, v2, v3, v4);
+			} else {
+				// bot-left, interp(bot), interp(top), top-left
+				let v1 = (x, y);
+				let v2 = (p_bot.0, p_bot.1);
+				let v3 = (p_top.0, p_top.1);
+				let v4 = (x, y + dy);
+				mesh_builder.add_quad(v1, v2, v3, v4);
+			}
+		},
+		0b0101 => {
+			// top-left and bot-right are positive
+			let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+			let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+			let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+			let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+
+			if is_positive {
+				// top-left, interp(top), interp(right), bot-right, interp(bot), interp(left)
+				let v1 = (x, y + dy);
+				let v2 = (p_top.0, p_top.1);
+				let v3 = (p_right.0, p_right.1);
+				let v4 = (x + dx, y);
+				let v5 = (p_bot.0, p_bot.1);
+				let v6 = (p_left.0, p_left.1);
+				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
+			} else {
+				// bot-left, interp(left), interp(bot)
+				let v1 = (x, y);
+				let v2 = (p_left.0, p_left.1);
+				let v3 = (p_bot.0, p_bot.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+				// top-right, interp(right), interp(top)
+				let v4 = (x + dx, y + dy);
+				let v5 = (p_right.0, p_right.1);
+				let v6 = (p_top.0, p_top.1);
+				mesh_builder.add_triangle(v4, v5, v6);
+			}
+		},
+		0b1010 => {
+			// top-right and bot-left are positive
+			let p_bot = interpolate_edge(Edge::Bottom, x, y, dx, dy, &vals);
+			let p_right = interpolate_edge(Edge::Right, x, y, dx, dy, &vals);
+			let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
+			let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
+
+			if is_positive {
+				// bot-left, interp(bot), interp(right), top-right, interp(top), interp(left)
+				let v1 = (x, y);
+				let v2 = (p_bot.0, p_bot.1);
+				let v3 = (p_right.0, p_right.1);
+				let v4 = (x + dx, y + dy);
+				let v5 = (p_top.0, p_top.1);
+				let v6 = (p_left.0, p_left.1);
+				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
+			} else {
+				// bot-right, interp(bot), interp(right)
+				let v1 = (x + dx, y);
+				let v2 = (p_bot.0, p_bot.1);
+				let v3 = (p_right.0, p_right.1);
+				mesh_builder.add_triangle(v1, v2, v3);
+				// top-left, interp(top), interp(left)
+				let v4 = (x, y + dy);
+				let v5 = (p_top.0, p_top.1);
+				let v6 = (p_left.0, p_left.1);
+				mesh_builder.add_triangle(v4, v5, v6);
+			}
+		},
+		_ => {
+			unreachable!();
+		},
+	}
+}
+
+pub struct MeshBuilder {
+	pub color:    Color32,
+	pub bounds:   PlotBounds,
+	pub vertices: Vec<Vertex>,
+	pub indices:  Vec<u32>,
+}
+
+impl Default for MeshBuilder {
+	fn default() -> Self {
+		Self {
+			bounds:   PlotBounds::NOTHING,
+			vertices: Default::default(),
+			color:    Color32::WHITE,
+			indices:  Default::default(),
+		}
+	}
+}
+
+impl MeshBuilder {
+	pub fn is_empty(&self) -> bool { self.vertices.is_empty() }
+	fn new(color: Color32) -> Self {
+		Self { color, bounds: PlotBounds::NOTHING, vertices: Vec::new(), indices: Vec::new() }
+	}
+	fn add_vert(&mut self, v: (f64, f64)) -> Vertex {
+		let (x, y) = v;
+		self.bounds.extend_with(&PlotPoint::new(x, y));
+		Vertex { pos: Pos2::new(x as f32, y as f32), uv: Pos2::new(0.0, 0.0), color: self.color }
+	}
+	fn add_triangle(&mut self, v1: (f64, f64), v2: (f64, f64), v3: (f64, f64)) {
+		let base = self.vertices.len() as u32;
+		let verts = [self.add_vert(v1), self.add_vert(v2), self.add_vert(v3)];
+		self.vertices.extend(verts);
+		self.indices.extend([base, base + 1, base + 2]);
+	}
+
+  #[rustfmt::skip]
+	fn add_quad(&mut self, v1: (f64, f64), v2: (f64, f64), v3: (f64, f64), v4: (f64, f64)) {
+		let base = self.vertices.len() as u32;
+		let verts = [self.add_vert(v1), self.add_vert(v2), self.add_vert(v3), self.add_vert(v4)];
+		self.vertices.extend(verts);
+		self.indices.extend([
+			base, base + 1, base + 2,
+			base, base + 2, base + 3
+    ]);
+	}
+
+  #[rustfmt::skip]
+	fn add_pentagon(
+		&mut self, v1: (f64, f64), v2: (f64, f64), v3: (f64, f64), v4: (f64, f64), v5: (f64, f64),
+	) {
+		let base = self.vertices.len() as u32;
+		let verts =
+			[self.add_vert(v1), self.add_vert(v2), self.add_vert(v3), self.add_vert(v4), self.add_vert(v5)];
+		self.vertices.extend(verts);
+		self.indices.extend([
+ 			base, base + 1, base + 2,
+ 			base, base + 2, base + 3,
+ 			base, base + 3, base + 4
+		]);
+	}
+
+  #[rustfmt::skip]
+	fn add_hexagon(
+		&mut self, v1: (f64, f64), v2: (f64, f64), v3: (f64, f64), v4: (f64, f64), v5: (f64, f64),
+		v6: (f64, f64),
+	) {
+		let base = self.vertices.len() as u32;
+		let verts = [
+			self.add_vert(v1), self.add_vert(v2), self.add_vert(v3),
+			self.add_vert(v4), self.add_vert(v5), self.add_vert(v6),
+		];
+		self.vertices.extend(verts);
+		self.indices.extend([
+			base, base + 1, base + 2,
+			base, base + 2, base + 3,
+			base, base + 3, base + 4,
+			base, base + 4, base + 5,
+		]);
+	}
+
+	fn add_square(&mut self, x: f64, y: f64, dx: f64, dy: f64, can_merge: bool) {
+		// bot-left, bot-right, top-right, top-left
+		if can_merge {
+			let new_bot_right = self.add_vert((x + dx, y));
+			let new_top_right = self.add_vert((x + dx, y + dy));
+			let len = self.vertices.len();
+			self.vertices[len - 3] = new_bot_right;
+			self.vertices[len - 2] = new_top_right;
+		} else {
+			let v1 = (x, y);
+			let v2 = (x + dx, y);
+			let v3 = (x + dx, y + dy);
+			let v4 = (x, y + dy);
+			self.add_quad(v1, v2, v3, v4);
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 struct HashablePoint {
 	x: i64,

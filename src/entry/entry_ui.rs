@@ -9,9 +9,9 @@ use eframe::egui::{
 
 use evalexpr::{EvalexprFloat, HashMapContext};
 
-use crate::entry::entry_processing::preprecess_fn;
+use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES, f64_to_float
+	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES, f64_to_float
 };
 
 pub struct EditEntryResult {
@@ -202,7 +202,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 							}
 						});
 					}
-					if func.args.len() == 1 {
+					if func.args.len() == 1 && func.equation_type == EquationType::None {
 						ui.horizontal(|ui| {
 							ui.checkbox(parametric, "Parametric");
 							if *parametric && func.args.len() == 1 {
@@ -229,7 +229,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 							}
 						});
 						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
-					}
+					}else{
+            *parametric = false;
+          }
 					if func.args.len() == 2 && func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
 						ui.horizontal(|ui| {
 							Slider::new(
@@ -463,9 +465,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 						},
 						ConstantType::PlayIndefinitely => {
 							ui.label("Start: ");
-							if let Err(e) = expr_ui(range_start, ui, "start", Some(80.0), clear_cache, false){
-                range_error = Some(e);
-              }
+							if let Err(e) = expr_ui(range_start, ui, "start", Some(80.0), clear_cache, false) {
+								range_error = Some(e);
+							}
 						},
 					}
 
@@ -514,9 +516,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 						},
 					}
 				});
-        if let Some(e) = range_error {
-          ui.label(RichText::new(e).color(Color32::RED));
-        }
+				if let Some(e) = range_error {
+					ui.label(RichText::new(e).color(Color32::RED));
+				}
 
 				// *value = f64_to_float::<T>(v);
 			});
@@ -639,28 +641,34 @@ fn expr_ui<T: EvalexprFloat>(
 			} else {
 				replace_symbols(ui, response, &mut expr.text);
 
-				let temp;
-				let mut txt = &expr.text;
+				// let temp;
+				// let mut txt = &expr.text;
+
+				let mut ast = evalexpr::build_ast::<T>(&expr.text).map_err(|e| e.to_string())?;
+
+				expr.node = None;
+				expr.inlined_node = None;
+				expr.equation_type = EquationType::None;
+
 				if preprocess {
-					match preprecess_fn(&expr.text) {
-						Ok(Some(new_text)) => {
-							temp = new_text;
-							txt = &temp;
+					match preprocess_ast(ast) {
+						Ok((new_ast, equation_type)) => {
+							expr.equation_type = equation_type;
+							ast = new_ast;
 						},
 						Err(e) => {
 							return Err(e);
 						},
-						_ => {},
 					}
 				}
 
-				expr.node = match evalexpr::build_operator_tree::<T>(txt) {
-					Ok(func) => Some(func),
+				expr.node = match evalexpr::build_flat_node_from_ast::<T>(ast) {
+					Ok(func) => {
+            Some(func)},
 					Err(e) => {
 						return Err(e.to_string());
 					},
 				};
-				expr.inlined_node = None;
 			}
 
 			changed = true;

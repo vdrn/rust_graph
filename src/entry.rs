@@ -13,7 +13,7 @@ mod entry_ui;
 
 pub use drag_point::point_dragging;
 pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
-pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprecess_fn};
+pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprocess_ast};
 pub use entry_ui::entry_ui;
 
 pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
@@ -56,6 +56,17 @@ impl<T: EvalexprFloat> core::hash::Hash for Entry<T> {
 	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum EquationType {
+	#[default]
+	None,
+	Equality,
+	LessThan,
+	LessThanOrEqual,
+	GreaterThan,
+	GreaterThanOrEqual,
+}
+
 #[derive(Clone, Debug)]
 pub struct Expr<T: EvalexprFloat> {
 	pub text:             String,
@@ -64,6 +75,7 @@ pub struct Expr<T: EvalexprFloat> {
 	pub inlined_node:     Option<FlatNode<T>>,
 	pub expr_function:    Option<ExpressionFunction<T>>,
 	pub args:             Vec<IStr>,
+	pub equation_type:    EquationType,
 }
 
 impl<T: EvalexprFloat> Default for Expr<T> {
@@ -75,6 +87,7 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 			inlined_node:     Default::default(),
 			args:             Default::default(),
 			expr_function:    Default::default(),
+			equation_type:    Default::default(),
 		}
 	}
 }
@@ -94,8 +107,10 @@ impl<T: EvalexprFloat> Expr<T> {
 		}
 	}
 	fn from_text(text: &str) -> Self {
+		// TODO preprocess here too
 		Self {
-			node:             evalexpr::build_operator_tree::<T>(text).ok(),
+			node:             evalexpr::build_flat_node::<T>(text).ok(),
+			equation_type:    EquationType::None,
 			display_rational: false,
 			inlined_node:     None,
 			expr_function:    None,
@@ -305,7 +320,7 @@ impl<T: EvalexprFloat> Entry<T> {
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
-	pub fn new_function(id: u64, text: String) -> Self {
+	pub fn new_function(id: u64, text: &str) -> Self {
 		Self {
 			id,
 			color: id as usize % NUM_COLORS,
@@ -315,14 +330,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				identifier:   istr_empty(),
 				can_be_drawn: true,
 
-				func:                Expr {
-					node: evalexpr::build_operator_tree::<T>(&text).ok(),
-					display_rational: false,
-					inlined_node: None,
-					expr_function: None,
-					text,
-					args: Vec::new(),
-				},
+				func:                Expr::from_text(&text),
 				parametric:          false,
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),

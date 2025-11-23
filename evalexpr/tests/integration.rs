@@ -643,16 +643,16 @@ fn test_shortcut_functions() {
 		Err(EvalexprError::VariableIdentifierNotFound("xaq".to_owned()))
 	);
 
-	// With detour via build_operator_tree
+	// With detour via build_flat_node
 
 	// assert_eq!(
-	//     build_operator_tree::<DefaultNumericTypes>("\"3.3\"")
+	//     build_flat_node::<DefaultNumericTypes>("\"3.3\"")
 	//         .unwrap()
 	//         .eval_string(),
 	//     Ok("3.3".to_owned())
 	// );
 	// assert_eq!(
-	//     build_operator_tree::<DefaultNumericTypes>("3.3")
+	//     build_flat_node::<DefaultNumericTypes>("3.3")
 	//         .unwrap()
 	//         .eval_string(),
 	//     Err(EvalexprError::ExpectedString {
@@ -660,19 +660,19 @@ fn test_shortcut_functions() {
 	//     })
 	// );
 	// assert_eq!(
-	//     build_operator_tree::<DefaultNumericTypes>("3..3")
+	//     build_flat_node::<DefaultNumericTypes>("3..3")
 	//         .unwrap()
 	//         .eval_string(),
 	//     Err(EvalexprError::VariableIdentifierNotFound("3..3".to_owned()))
 	// );
 	// assert_eq!(
-	//     build_operator_tree("string")
+	//     build_flat_node("string")
 	//         .unwrap()
 	//         .eval_string_with_context(&context),
 	//     Ok("a string".to_owned())
 	// );
 	// assert_eq!(
-	//     build_operator_tree("3.3")
+	//     build_flat_node("3.3")
 	//         .unwrap()
 	//         .eval_string_with_context(&context),
 	//     Err(EvalexprError::ExpectedString {
@@ -680,19 +680,19 @@ fn test_shortcut_functions() {
 	//     })
 	// );
 	// assert_eq!(
-	//     build_operator_tree("3..3")
+	//     build_flat_node("3..3")
 	//         .unwrap()
 	//         .eval_string_with_context(&context),
 	//     Err(EvalexprError::VariableIdentifierNotFound("3..3".to_owned()))
 	// );
 	// assert_eq!(
-	//     build_operator_tree("string")
+	//     build_flat_node("string")
 	//         .unwrap()
 	//         .eval_string_with_context_mut(&mut context),
 	//     Ok("a string".to_string())
 	// );
 	// assert_eq!(
-	//     build_operator_tree("3.3")
+	//     build_flat_node("3.3")
 	//         .unwrap()
 	//         .eval_string_with_context_mut(&mut context),
 	//     Err(EvalexprError::ExpectedString {
@@ -700,171 +700,171 @@ fn test_shortcut_functions() {
 	//     })
 	// );
 	// assert_eq!(
-	//     build_operator_tree("3..3")
+	//     build_flat_node("3..3")
 	//         .unwrap()
 	//         .eval_string_with_context_mut(&mut context),
 	//     Err(EvalexprError::VariableIdentifierNotFound("3..3".to_owned()))
 	// );
 	let mut stack = Stack::new();
 
-	assert_eq!(build_operator_tree::<DefaultNumericTypes>("3.3").unwrap().eval_float(), Ok(3.3));
+	assert_eq!(build_flat_node::<DefaultNumericTypes>("3.3").unwrap().eval_float(), Ok(3.3));
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("asd()").unwrap().eval_float(),
+		build_flat_node::<DefaultNumericTypes>("asd()").unwrap().eval_float(),
 		Err(EvalexprError::FunctionIdentifierNotFound("asd".to_owned()))
 	);
-	assert_eq!(build_operator_tree("3.3").unwrap().eval_float_with_context(&mut stack, &context), Ok(3.3));
+	assert_eq!(build_flat_node("3.3").unwrap().eval_float_with_context(&mut stack, &context), Ok(3.3));
 	assert_eq!(
-		build_operator_tree("asd").unwrap().eval_float_with_context(&mut stack, &context),
+		build_flat_node("asd").unwrap().eval_float_with_context(&mut stack, &context),
 		Err(EvalexprError::VariableIdentifierNotFound("asd".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("3.3").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
+		build_flat_node("3.3").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
 		Ok(3.3)
 	);
 	assert_eq!(
-		build_operator_tree("asd").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
+		build_flat_node("asd").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::VariableIdentifierNotFound("asd".to_owned()))
 	);
 
-	assert_eq!(build_operator_tree::<DefaultNumericTypes>("3").unwrap().eval_float(), Ok(3.0));
+	assert_eq!(build_flat_node::<DefaultNumericTypes>("3").unwrap().eval_float(), Ok(3.0));
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("true").unwrap().eval_float(),
+		build_flat_node::<DefaultNumericTypes>("true").unwrap().eval_float(),
 		Err(EvalexprError::ExpectedFloat { actual: Value::Boolean(true) })
 	);
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("abc").unwrap().eval_float(),
+		build_flat_node::<DefaultNumericTypes>("abc").unwrap().eval_float(),
 		Err(EvalexprError::VariableIdentifierNotFound("abc".to_owned()))
 	);
-	assert_eq!(build_operator_tree("3").unwrap().eval_float_with_context(&mut stack, &context), Ok(3.0));
+	assert_eq!(build_flat_node("3").unwrap().eval_float_with_context(&mut stack, &context), Ok(3.0));
 	assert_eq!(
-		build_operator_tree("true").unwrap().eval_float_with_context(&mut stack, &context),
+		build_flat_node("true").unwrap().eval_float_with_context(&mut stack, &context),
 		Err(EvalexprError::ExpectedFloat { actual: Value::Boolean(true) })
 	);
 	assert_eq!(
-		build_operator_tree("abc").unwrap().eval_float_with_context(&mut stack, &context),
+		build_flat_node("abc").unwrap().eval_float_with_context(&mut stack, &context),
 		Err(EvalexprError::VariableIdentifierNotFound("abc".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("3").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
+		build_flat_node("3").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
 		Ok(3.0)
 	);
 	assert_eq!(
-		build_operator_tree("true").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
+		build_flat_node("true").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::ExpectedFloat { actual: Value::Boolean(true) })
 	);
 	assert_eq!(
-		build_operator_tree("abc").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
+		build_flat_node("abc").unwrap().eval_float_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::VariableIdentifierNotFound("abc".to_owned()))
 	);
 
-	assert_eq!(build_operator_tree::<DefaultNumericTypes>("true").unwrap().eval_boolean(), Ok(true));
+	assert_eq!(build_flat_node::<DefaultNumericTypes>("true").unwrap().eval_boolean(), Ok(true));
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("4").unwrap().eval_boolean(),
+		build_flat_node::<DefaultNumericTypes>("4").unwrap().eval_boolean(),
 		Err(EvalexprError::ExpectedBoolean { actual: Value::Float(4.0) })
 	);
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("trueee").unwrap().eval_boolean(),
+		build_flat_node::<DefaultNumericTypes>("trueee").unwrap().eval_boolean(),
 		Err(EvalexprError::VariableIdentifierNotFound("trueee".to_owned()))
 	);
-	assert_eq!(build_operator_tree("true").unwrap().eval_boolean_with_context(&mut stack, &context), Ok(true));
+	assert_eq!(build_flat_node("true").unwrap().eval_boolean_with_context(&mut stack, &context), Ok(true));
 	assert_eq!(
-		build_operator_tree("4").unwrap().eval_boolean_with_context(&mut stack, &context),
+		build_flat_node("4").unwrap().eval_boolean_with_context(&mut stack, &context),
 		Err(EvalexprError::ExpectedBoolean { actual: Value::Float(4.0) })
 	);
 	assert_eq!(
-		build_operator_tree("trueee").unwrap().eval_boolean_with_context(&mut stack, &context),
+		build_flat_node("trueee").unwrap().eval_boolean_with_context(&mut stack, &context),
 		Err(EvalexprError::VariableIdentifierNotFound("trueee".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("true").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
+		build_flat_node("true").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
 		Ok(true)
 	);
 	assert_eq!(
-		build_operator_tree("4").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
+		build_flat_node("4").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::ExpectedBoolean { actual: Value::Float(4.0) })
 	);
 	assert_eq!(
-		build_operator_tree("trueee").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
+		build_flat_node("trueee").unwrap().eval_boolean_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::VariableIdentifierNotFound("trueee".to_owned()))
 	);
 
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("3,3").unwrap().eval_tuple(),
+		build_flat_node::<DefaultNumericTypes>("3,3").unwrap().eval_tuple(),
 		Ok(thin_vec![Value::Float(3.0), Value::Float(3.0)])
 	);
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("33").unwrap().eval_tuple(),
+		build_flat_node::<DefaultNumericTypes>("33").unwrap().eval_tuple(),
 		Err(EvalexprError::ExpectedTuple { actual: Value::Float(33.0) })
 	);
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("3a3").unwrap().eval_tuple(),
+		build_flat_node::<DefaultNumericTypes>("3a3").unwrap().eval_tuple(),
 		Err(EvalexprError::VariableIdentifierNotFound("3a3".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("3,3").unwrap().eval_tuple_with_context(&mut stack, &context),
+		build_flat_node("3,3").unwrap().eval_tuple_with_context(&mut stack, &context),
 		Ok(thin_vec![Value::Float(3.0), Value::Float(3.0)])
 	);
 	assert_eq!(
-		build_operator_tree("33").unwrap().eval_tuple_with_context(&mut stack, &context),
+		build_flat_node("33").unwrap().eval_tuple_with_context(&mut stack, &context),
 		Err(EvalexprError::ExpectedTuple { actual: Value::Float(33.0) })
 	);
 	assert_eq!(
-		build_operator_tree("3a3").unwrap().eval_tuple_with_context(&mut stack, &context),
+		build_flat_node("3a3").unwrap().eval_tuple_with_context(&mut stack, &context),
 		Err(EvalexprError::VariableIdentifierNotFound("3a3".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("3,3").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
+		build_flat_node("3,3").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
 		Ok(thin_vec![Value::Float(3.0), Value::Float(3.0)])
 	);
 	assert_eq!(
-		build_operator_tree("33").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
+		build_flat_node("33").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::ExpectedTuple { actual: Value::Float(33.0) })
 	);
 	assert_eq!(
-		build_operator_tree("3a3").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
+		build_flat_node("3a3").unwrap().eval_tuple_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::VariableIdentifierNotFound("3a3".to_owned()))
 	);
 
-	assert_eq!(build_operator_tree::<DefaultNumericTypes>("").unwrap().eval_empty(), Ok(EMPTY_VALUE));
-	assert_eq!(build_operator_tree::<DefaultNumericTypes>("()").unwrap().eval_empty(), Ok(EMPTY_VALUE));
+	assert_eq!(build_flat_node::<DefaultNumericTypes>("").unwrap().eval_empty(), Ok(EMPTY_VALUE));
+	assert_eq!(build_flat_node::<DefaultNumericTypes>("()").unwrap().eval_empty(), Ok(EMPTY_VALUE));
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("(,)").unwrap().eval_empty(),
+		build_flat_node::<DefaultNumericTypes>("(,)").unwrap().eval_empty(),
 		Err(EvalexprError::ExpectedEmpty { actual: Value::Tuple(thin_vec![Value::Empty, Value::Empty]) })
 	);
 	assert_eq!(
-		build_operator_tree::<DefaultNumericTypes>("xaq").unwrap().eval_empty(),
+		build_flat_node::<DefaultNumericTypes>("xaq").unwrap().eval_empty(),
 		Err(EvalexprError::VariableIdentifierNotFound("xaq".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("").unwrap().eval_empty_with_context(&mut stack, &context),
+		build_flat_node("").unwrap().eval_empty_with_context(&mut stack, &context),
 		Ok(EMPTY_VALUE)
 	);
 	assert_eq!(
-		build_operator_tree("()").unwrap().eval_empty_with_context(&mut stack, &context),
+		build_flat_node("()").unwrap().eval_empty_with_context(&mut stack, &context),
 		Ok(EMPTY_VALUE)
 	);
 	assert_eq!(
-		build_operator_tree("(,)").unwrap().eval_empty_with_context(&mut stack, &context),
+		build_flat_node("(,)").unwrap().eval_empty_with_context(&mut stack, &context),
 		Err(EvalexprError::ExpectedEmpty { actual: Value::Tuple(thin_vec![Value::Empty, Value::Empty]) })
 	);
 	assert_eq!(
-		build_operator_tree("xaq").unwrap().eval_empty_with_context(&mut stack, &context),
+		build_flat_node("xaq").unwrap().eval_empty_with_context(&mut stack, &context),
 		Err(EvalexprError::VariableIdentifierNotFound("xaq".to_owned()))
 	);
 	assert_eq!(
-		build_operator_tree("").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
+		build_flat_node("").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
 		Ok(EMPTY_VALUE)
 	);
 	assert_eq!(
-		build_operator_tree("()").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
+		build_flat_node("()").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
 		Ok(EMPTY_VALUE)
 	);
 	assert_eq!(
-		build_operator_tree("(,)").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
+		build_flat_node("(,)").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::ExpectedEmpty { actual: Value::Tuple(thin_vec![Value::Empty, Value::Empty]) })
 	);
 	assert_eq!(
-		build_operator_tree("xaq").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
+		build_flat_node("xaq").unwrap().eval_empty_with_context_mut(&mut stack, &mut context),
 		Err(EvalexprError::VariableIdentifierNotFound("xaq".to_owned()))
 	);
 }
@@ -1117,7 +1117,7 @@ fn test_error_constructors() {
 
 #[test]
 fn test_iterators() {
-	let tree = build_operator_tree::<DefaultNumericTypes>("writevar = 5 + 3 + fun(4) + var").unwrap();
+	let tree = build_flat_node::<DefaultNumericTypes>("writevar = 5 + 3 + fun(4) + var").unwrap();
 	let mut iter = tree.iter_identifiers();
 	assert_eq!(iter.next(), Some("writevar"));
 	assert_eq!(iter.next(), Some("fun"));
@@ -1151,7 +1151,7 @@ fn test_same_operator_chains() {
 
 #[test]
 fn test_long_expression_i89() {
-	let tree = build_operator_tree::<DefaultNumericTypes>(
+	let tree = build_flat_node::<DefaultNumericTypes>(
 		"x*0.2*5/4+x*2*4*1*1*1*1*1*1*1+7*math::sin(y)-z/math::sin(3.0/2.0/(1-x*4*1*1*1*1))",
 	)
 	.unwrap();
@@ -1435,7 +1435,7 @@ fn test_try_from() {
 
 // #[test]
 // fn assignment_lhs_is_identifier() {
-//     let tree = build_operator_tree("a = 1").unwrap();
+//     let tree = build_flat_node("a = 1").unwrap();
 //     let operators: Vec<_> = tree.iter().map(|node| node.clone()).collect();
 
 //     let mut context = HashMapContext::<DefaultNumericTypes>::new();
@@ -1474,7 +1474,7 @@ fn test_variable_assignment_and_iteration() {
 
 #[test]
 fn test_negative_power() {
-	println!("{:?}", build_operator_tree::<DefaultNumericTypes>("3^-2").unwrap());
+	println!("{:?}", build_flat_node::<DefaultNumericTypes>("3^-2").unwrap());
 	assert_eq!(eval("3^-2"), Ok(Value::Float(1.0 / 9.0)));
 	assert_eq!(eval("3^(-2)"), Ok(Value::Float(1.0 / 9.0)));
 	assert_eq!(eval("-3^2"), Ok(Value::Float(-9.0)));
@@ -1600,7 +1600,7 @@ fn test_unmatched_partial_tokens() {
 
 // #[test]
 // fn test_node_mutable_access() {
-//     let mut node = build_operator_tree::<DefaultNumericTypes>("5").unwrap();
+//     let mut node = build_flat_node::<DefaultNumericTypes>("5").unwrap();
 //     assert_eq!(node.children_mut().len(), 1);
 //     assert_eq!(*node.operator_mut(), Operator::RootNode);
 // }

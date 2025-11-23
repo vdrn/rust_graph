@@ -249,7 +249,8 @@ const OPERATORS: &[(&str, &str)] = &[
 	("a ^ b", "Power"),
 	("-a", "Negation"),
 	("f(param)", "Function call"),
-	("f param", "Also a function call"),
+	("f", "Also a function call (when f has no args)"),
+	("f param", "Also a function call (when f has 1 arg)"),
 ];
 const BOOLEAN_OPERATORS: &[(&str, &str)] = &[
 	("a == b", "Equal to"),
@@ -398,13 +399,13 @@ impl Application {
 
 		if entries_s.is_empty() {
 			next_id += 1;
-			entries_s.push(Entry::new_function(0, "sin(x)".to_string()));
+			entries_s.push(Entry::new_function(0, "sin(x)"));
 		}
 		let ctx_s = evalexpr::HashMapContext::new();
 
 		if entries_d.is_empty() {
 			next_id += 1;
-			entries_d.push(Entry::new_function(0, "sin(x)".to_string()));
+			entries_d.push(Entry::new_function(0, "sin(x)"));
 		}
 		let ctx_d = evalexpr::HashMapContext::new();
 

@@ -9,7 +9,7 @@ use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::{
-	Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprecess_fn
+	EquationType, Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -43,19 +43,21 @@ impl ExprSer {
 		Self { text: expr.text.clone(), display_rational: expr.display_rational }
 	}
 	pub fn into_expr<T: EvalexprFloat>(self, preprocess: bool) -> Expr<T> {
-		let temp;
-		let mut txt = &self.text;
-		if preprocess && let Ok(Some(new_text)) = preprecess_fn(&self.text) {
-			temp = new_text;
-			txt = &temp;
-		};
+		let mut equation_type = EquationType::None;
+		let mut ast = evalexpr::build_ast::<T>(&self.text).ok();
+		if preprocess && let Some((new_ast, new_equation_type)) = ast.take().and_then(|ast| preprocess_ast(ast).ok())
+		{
+			ast = Some(new_ast);
+			equation_type = new_equation_type;
+		}
 		Expr {
-			node: evalexpr::build_operator_tree::<T>(txt).ok(),
+			node: ast.and_then(|ast| evalexpr::build_flat_node_from_ast::<T>(ast).ok()),
+			equation_type,
 
-			inlined_node:     None,
-			args:             Vec::new(),
-			expr_function:    None,
-			text:             self.text,
+			inlined_node: None,
+			args: Vec::new(),
+			expr_function: None,
+			text: self.text,
 			display_rational: self.display_rational,
 		}
 	}

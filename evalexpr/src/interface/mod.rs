@@ -70,45 +70,27 @@ pub fn eval_with_context_mut<F: EvalexprFloat>(
 	compiled_node.eval_with_context_mut(&mut Stack::new(), context)
 }
 
-/// Build the operator tree for the given expression string.
-///
-/// The operator tree can later on be evaluated directly.
-/// This saves runtime if a single expression should be evaluated multiple times, for example with differing
-/// contexts.
-///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let precomputed = build_operator_tree("one + two + three").unwrap(); // Do proper error handling here
-///
-/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-/// context.set_value("one".into(), Value::from_float(1.0)).unwrap(); // Do proper error handling here
-/// context.set_value("two".into(), Value::from_float(2.0)).unwrap(); // Do proper error handling here
-/// context.set_value("three".into(), Value::from_float(3.0)).unwrap(); // Do proper error handling here
-///
-/// assert_eq!(precomputed.eval_with_context(&context), Ok(Value::from_float(6.0)));
-///
-/// context.set_value("three".into(), Value::from_float(5.0)).unwrap(); // Do proper error handling here
-/// assert_eq!(precomputed.eval_with_context(&context), Ok(Value::from_float(8.0)));
-/// ```
-///
-/// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-pub fn build_operator_tree<NumericTypes: EvalexprFloat>(
+/// Build the flat node for the given string
+pub fn build_flat_node<F: EvalexprFloat>(
 	string: &str,
-) -> EvalexprResult<FlatNode<NumericTypes>, NumericTypes> {
+) -> EvalexprResult<FlatNode<F>, F> {
 	let node = tree::tokens_to_operator_tree(token::tokenize(string)?)?;
 	compile_to_flat(node)
 }
 
 /// Build the operator tree for the given expression string.
-pub fn build_ast<NumericTypes: EvalexprFloat>(
+pub fn build_ast<F: EvalexprFloat>(
 	string: &str,
-) -> EvalexprResult<Node<NumericTypes>, NumericTypes> {
+) -> EvalexprResult<Node<F>, F> {
 	tree::tokens_to_operator_tree(token::tokenize(string)?)
 }
 
+/// Build the flat node for the given Ast
+pub fn build_flat_node_from_ast<F: EvalexprFloat>(
+  ast:Node<F>,
+) -> EvalexprResult<FlatNode<F>, F> {
+	compile_to_flat(ast)
+}
 // /// Evaluate the given expression string into a string.
 // ///
 // /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
@@ -169,7 +151,7 @@ pub fn eval_empty(string: &str) -> EvalexprResult<EmptyType> {
 // pub fn eval_string_with_context<C: Context>(
 //     string: &str,
 //     context: &C,
-// ) -> EvalexprResult<String, C::NumericTypes> {
+// ) -> EvalexprResult<String, C::F> {
 //     match eval_with_context(string, context) {
 //         Ok(Value::String(string)) => Ok(string),
 //         Ok(value) => Err(EvalexprError::expected_string(value)),
@@ -183,7 +165,7 @@ pub fn eval_empty(string: &str) -> EvalexprResult<EmptyType> {
 // pub fn eval_int_with_context<C: Context>(
 //     string: &str,
 //     context: &C,
-// ) -> EvalexprResult<<C::NumericTypes as EvalexprNumericTypes>::Int, C::NumericTypes> {
+// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Int, C::F> {
 //     match eval_with_context(string, context) {
 //         Ok(Value::Int(int)) => Ok(int),
 //         Ok(value) => Err(EvalexprError::expected_int(value)),
@@ -211,10 +193,10 @@ pub fn eval_float_with_context<F: EvalexprFloat>(
 // pub fn eval_number_with_context<C: Context>(
 //     string: &str,
 //     context: &C,
-// ) -> EvalexprResult<<C::NumericTypes as EvalexprNumericTypes>::Float, C::NumericTypes> {
+// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Float, C::F> {
 //     match eval_with_context(string, context) {
 //         Ok(Value::Float(float)) => Ok(float),
-//         Ok(Value::Int(int)) => Ok(<C::NumericTypes as EvalexprNumericTypes>::int_as_float(
+//         Ok(Value::Int(int)) => Ok(<C::F as EvalexprNumericTypes>::int_as_float(
 //             &int,
 //         )),
 //         Ok(value) => Err(EvalexprError::expected_number(value)),
@@ -267,7 +249,7 @@ pub fn eval_empty_with_context<F: EvalexprFloat>(
 // pub fn eval_string_with_context_mut<C: ContextWithMutableVariables>(
 //     string: &str,
 //     context: &mut C,
-// ) -> EvalexprResult<String, C::NumericTypes> {
+// ) -> EvalexprResult<String, C::F> {
 //     match eval_with_context_mut(string, context) {
 //         Ok(Value::String(string)) => Ok(string),
 //         Ok(value) => Err(EvalexprError::expected_string(value)),
@@ -281,7 +263,7 @@ pub fn eval_empty_with_context<F: EvalexprFloat>(
 // pub fn eval_int_with_context_mut<C: ContextWithMutableVariables>(
 //     string: &str,
 //     context: &mut C,
-// ) -> EvalexprResult<<C::NumericTypes as EvalexprNumericTypes>::Int, C::NumericTypes> {
+// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Int, C::F> {
 //     match eval_with_context_mut(string, context) {
 //         Ok(Value::Int(int)) => Ok(int),
 //         Ok(value) => Err(EvalexprError::expected_int(value)),
@@ -309,10 +291,10 @@ pub fn eval_float_with_context_mut<F: EvalexprFloat>(
 // pub fn eval_number_with_context_mut<C: ContextWithMutableVariables>(
 //     string: &str,
 //     context: &mut C,
-// ) -> EvalexprResult<<C::NumericTypes as EvalexprNumericTypes>::Float, C::NumericTypes> {
+// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Float, C::F> {
 //     match eval_with_context_mut(string, context) {
 //         Ok(Value::Float(float)) => Ok(float),
-//         Ok(Value::Int(int)) => Ok(<C::NumericTypes as EvalexprNumericTypes>::int_as_float(
+//         Ok(Value::Int(int)) => Ok(<C::F as EvalexprNumericTypes>::int_as_float(
 //             &int,
 //         )),
 //         Ok(value) => Err(EvalexprError::expected_number(value)),

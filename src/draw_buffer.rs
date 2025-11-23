@@ -1,11 +1,12 @@
 use core::cell::RefCell;
 use std::sync::Mutex;
 
-use eframe::egui::{Color32, Id};
-use egui_plot::{PlotGeometry, PlotItem, Points};
+use eframe::egui::{Color32, Id, Mesh, Shape};
+use egui_plot::{PlotGeometry, PlotItem, PlotPoint, Points};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
 
+use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
 
@@ -22,6 +23,7 @@ pub struct DrawBuffer {
 	pub points:   Vec<DrawPoint>,
 	pub polygons: Vec<DrawPolygonGroup>,
 	pub texts:    Vec<DrawText>,
+	pub meshes:   Vec<DrawMesh>,
 }
 #[allow(clippy::non_send_fields_in_send_ty)]
 /// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
@@ -35,6 +37,7 @@ impl Default for DrawBuffer {
 			points:   Vec::with_capacity(32),
 			polygons: Vec::with_capacity(4),
 			texts:    Vec::with_capacity(4),
+			meshes:   Vec::with_capacity(8),
 		}
 	}
 }
@@ -45,6 +48,7 @@ pub struct ProcessedDrawBuffers {
 	pub draw_points:            Vec<DrawPoint>,
 	pub draw_polygons:          Vec<DrawPolygonGroup>,
 	pub draw_texts:             Vec<DrawText>,
+	pub draw_meshes:            Vec<DrawMesh>,
 }
 pub fn process_draw_buffers(
 	draw_buffers: &mut ThreadLocal<DrawBufferRC>, selected_plot_line: Option<(Id, bool)>,
@@ -225,6 +229,7 @@ pub fn process_draw_buffers(
 		});
 	}
 
+	let mut draw_meshes = vec![];
 	let mut draw_points = vec![];
 	let mut draw_polygons = vec![];
 	let mut draw_texts = vec![];
@@ -233,6 +238,7 @@ pub fn process_draw_buffers(
 		draw_polygons.append(&mut draw_buffer.polygons);
 		draw_points.append(&mut draw_buffer.points);
 		draw_texts.append(&mut draw_buffer.texts);
+		draw_meshes.append(&mut draw_buffer.meshes);
 	}
 
 	let closest_point_to_mouse = final_closest_point_to_mouse.into_inner().unwrap();
@@ -256,10 +262,64 @@ pub fn process_draw_buffers(
 	draw_points.sort_unstable_by_key(|draw_point| draw_point.sorting_index);
 	draw_polygons.sort_unstable_by_key(|draw_poly_group| draw_poly_group.sorting_index);
 	draw_texts.sort_unstable_by_key(|draw_text| draw_text.sorting_index);
+	draw_meshes.sort_unstable_by_key(|draw_mesh| draw_mesh.sorting_index);
 
-	ProcessedDrawBuffers { closest_point_to_mouse, draw_lines, draw_points, draw_polygons, draw_texts }
+	ProcessedDrawBuffers {
+		closest_point_to_mouse,
+		draw_lines,
+		draw_points,
+		draw_polygons,
+		draw_texts,
+		draw_meshes,
+	}
 }
 
+pub struct DrawMesh {
+  pub bounds:egui_plot::PlotBounds,
+  pub plot_item_base: egui_plot::PlotItemBase,
+	pub sorting_index: u32,
+	pub mesh:          RefCell<MeshBuilder>,
+  pub color: Color32,
+}
+impl PlotItem for DrawMesh {
+    fn shapes(&self, ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
+      for vertex in self.mesh.borrow_mut().vertices.iter_mut(){
+        vertex.pos = transform.position_from_point(&PlotPoint::new(vertex.pos.x as f64, vertex.pos.y as f64));
+
+      }
+      let mesh = core::mem::take(&mut *self.mesh.borrow_mut());
+      let mesh = Mesh{
+        vertices: mesh.vertices,
+        indices: mesh.indices,
+        ..Default::default()
+      };
+
+      shapes.push(Shape::mesh(mesh));
+    }
+
+    fn initialize(&mut self, x_range: std::ops::RangeInclusive<f64>) {
+    }
+
+    fn color(&self) -> Color32 {
+      self.color
+    }
+
+    fn geometry(&self) -> PlotGeometry<'_> {
+      PlotGeometry::None
+    }
+
+    fn bounds(&self) -> egui_plot::PlotBounds {
+      self.bounds
+    }
+
+    fn base(&self) -> &egui_plot::PlotItemBase {
+      &self.plot_item_base
+    }
+
+    fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase {
+      &mut self.plot_item_base
+    }
+}
 pub struct DrawLine {
 	pub sorting_index: u32,
 	pub line:          egui_plot::Line<'static>,
