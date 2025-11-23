@@ -5,6 +5,9 @@ use crate::{EvalexprFloat, FlatNode, HashMapContext};
 
 pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, context: &HashMapContext<F>) {
 	let mut local_vars: Vec<FlatOperator<F>> = Vec::new();
+
+	remove_one_op_local_vars(node);
+
 	// let mut local_vars_indices: Vec<u32> = Vec::new();
 	let mut local_var_idx = node.num_local_vars;
 
@@ -16,7 +19,7 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, contex
 
 		// functions with 0 args need to be considered too
 		match op {
-			FlatOperator::ReadVar { identifier }   => {
+			FlatOperator::ReadVar { identifier } => {
 				if !context.variables.contains_key(identifier) && context.functions.contains_key(identifier) {
 					// function calls without brackets
 					should_eliminate = true;
@@ -86,6 +89,64 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, contex
 
 		let insert_place = prev_num_local_var_ops as usize;
 		node.ops.splice(insert_place..insert_place, local_vars);
+	}
+}
+/// Inlining functions can produce local variables that are just ReadParam/ReadVar.
+/// Those are pointless, so we replace reads of those local vars with direct ReadParam/ReadVar,
+/// and then remove those local variables.
+fn remove_one_op_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) {
+	let local_var_ranges = get_n_previous_exprs(
+		&node.ops,
+		node.num_local_var_ops.saturating_sub(1) as usize,
+		node.num_local_vars as usize,
+	);
+	let total_num_local_vars = node.num_local_vars as usize;
+	assert!(local_var_ranges.len() == total_num_local_vars);
+
+	for (i, (start, end)) in local_var_ranges.into_iter().enumerate() {
+		if start != end {
+			continue;
+		}
+		if !matches!(&node.ops[start], FlatOperator::ReadParam { .. } | FlatOperator::ReadVar { .. }) {
+			continue;
+		}
+
+		let local_var_idx = total_num_local_vars - i - 1;
+		match node.ops[start] {
+			FlatOperator::ReadParam { inverse_index } => {
+				for op in node.ops[start + 1..].iter_mut() {
+					let FlatOperator::ReadLocalVar { idx } = op else {
+						continue;
+					};
+					if *idx == local_var_idx as u32 {
+						*op = FlatOperator::ReadParam { inverse_index };
+					} else if *idx > local_var_idx as u32 {
+						*idx -= 1;
+					}
+				}
+			},
+			FlatOperator::ReadVar { identifier } => {
+				for op in node.ops[start + 1..].iter_mut() {
+					let FlatOperator::ReadLocalVar { idx } = op else {
+						continue;
+					};
+
+					if *idx == local_var_idx as u32 {
+						*op = FlatOperator::ReadVar { identifier };
+					} else if *idx > local_var_idx as u32 {
+						*idx -= 1;
+					}
+				}
+			},
+			_ => {
+				unreachable!()
+			},
+		}
+		// ranges are in reverse order, so we can remove the op without affecting further start/end
+		// indices
+		node.ops.remove(start);
+		node.num_local_vars -= 1;
+		node.num_local_var_ops -= 1;
 	}
 }
 
@@ -224,7 +285,7 @@ fn get_operator_range<F: EvalexprFloat>(
 }
 pub fn get_arg_ranges<F: EvalexprFloat>(
 	ops: &[FlatOperator<F>], op_index: usize,
-) -> SmallVec<[(usize, usize); 3]> {
+) -> SmallVec<[(usize, usize); 5]> {
 	let num_args = num_args(&ops[op_index]);
 	if num_args == 0 {
 		return SmallVec::new();
@@ -233,7 +294,7 @@ pub fn get_arg_ranges<F: EvalexprFloat>(
 }
 pub fn get_n_previous_exprs<F: EvalexprFloat>(
 	ops: &[FlatOperator<F>], start_idx: usize, n: usize,
-) -> SmallVec<[(usize, usize); 3]> {
+) -> SmallVec<[(usize, usize); 5]> {
 	use smallvec::smallvec;
 	let mut result = smallvec![];
 

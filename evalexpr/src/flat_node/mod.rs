@@ -24,7 +24,7 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
 	if function_inlining::inline_functions(&mut inlined, context)? > 0 {
 		inlined = inline_variables_and_fold(&inlined, context)?;
 	};
-	// subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
+	subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
 	Ok(inlined)
 }
 

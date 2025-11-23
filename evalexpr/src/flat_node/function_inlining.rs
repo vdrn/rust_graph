@@ -174,12 +174,12 @@ fn inline_function<F: EvalexprFloat>(
 
 
 	// find local vars
-	let local_param_ranges = get_n_previous_exprs(
+	let local_var_ranges = get_n_previous_exprs(
 		&func_expr.ops,
 		func_expr.num_local_var_ops.saturating_sub(1) as usize,
 		func_expr.num_local_vars as usize,
 	);
-	let mut const_local_vars = local_param_ranges
+	let mut const_local_vars = local_var_ranges
 		.iter()
 		.map(|(start, end)| {
 			if start == end {

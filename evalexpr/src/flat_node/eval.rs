@@ -133,7 +133,7 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		Some(unsafe { self.stack.get_unchecked(arg_i) })
 	}
 	fn get_unchecked(&self, index: usize) -> &Value<T> {
-		assert!(index < self.stack.len());
+		assert!(index < self.stack.len(), "index {} out of bounds {}", index, self.stack.len());
 
 		unsafe { self.stack.get_unchecked(index) }
 	}
