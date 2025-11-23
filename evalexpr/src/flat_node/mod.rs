@@ -14,6 +14,7 @@ use variable_inlining::inline_variables_and_fold;
 
 pub use compile::compile_to_flat;
 pub use eval::Stack;
+
 /// Optimizes a FlatNode by inlining variables and eliminating subexpressions
 /// Returns optimized FlatNode without modifying the original
 pub fn optimize_flat_node<F: EvalexprFloat>(
@@ -23,19 +24,12 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
 	if function_inlining::inline_functions(&mut inlined, context)? > 0 {
 		inlined = inline_variables_and_fold(&inlined, context)?;
 	};
-	subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
-	// println!("optimized {:?}", inlined);
+	// subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
 	Ok(inlined)
 }
 
 #[cold]
 pub fn cold() {}
-// pub fn unlikely(x: bool) -> bool {
-//     if x {
-//         cold()
-//     }
-//     x
-// }
 
 const _: () = assert!(std::mem::size_of::<FlatOperator<f64>>() == 48);
 #[derive(Debug, Clone, PartialEq)]
@@ -98,10 +92,6 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	},
 	/// Read variable and push onto stack
 	ReadVar {
-		identifier: IStr,
-	},
-	/// Reads a variable and pused `-value` to the stack
-	ReadVarNeg {
 		identifier: IStr,
 	},
 	/// Write to variable (pops value from stack)
@@ -237,11 +227,6 @@ pub enum FlatOperator<F: EvalexprFloat> {
 		idx: u32,
 	},
 	ReadParam {
-		/// for arguments           (a,b,c)
-		/// inverse indices will be (3,2,1)
-		inverse_index: u32,
-	},
-	ReadParamNeg {
 		/// for arguments           (a,b,c)
 		/// inverse indices will be (3,2,1)
 		inverse_index: u32,
@@ -521,7 +506,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier }
-			| FlatOperator::ReadVarNeg { identifier }
 			| FlatOperator::WriteVar { identifier }
 			| FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),
 			_ => None,
@@ -545,7 +529,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier }
-			| FlatOperator::ReadVarNeg { identifier }
 			| FlatOperator::WriteVar { identifier } => Some(identifier.to_str()),
 			_ => None,
 		})
@@ -568,7 +551,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } => Some(identifier.to_str()),
-			FlatOperator::ReadVarNeg { identifier } => Some(identifier.to_str()),
 			_ => None,
 		})
 	}

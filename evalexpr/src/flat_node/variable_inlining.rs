@@ -21,13 +21,6 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
-			FlatOperator::ReadVarNeg { identifier } => {
-				if let Some(value) = context.get_value(*identifier) {
-					new_ops.push(FlatOperator::PushConst { value: Value::Float(-value.as_float()?) });
-				} else {
-					new_ops.push(source_op.clone());
-				}
-			},
 			FlatOperator::Range => {
 				if let Some((start, end)) = get_last_2_if_const(&new_ops)? {
 					new_ops.pop();
@@ -377,7 +370,6 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 			},
 			FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
-			| FlatOperator::ReadParamNeg { .. }
 			| FlatOperator::Eq
 			| FlatOperator::Neq
 			| FlatOperator::Gt

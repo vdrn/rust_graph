@@ -18,7 +18,6 @@ pub fn eval_flat_node<F: EvalexprFloat>(
 	match eval_priv_inner(node, stack, context, override_vars) {
 		Ok(value) => {
 			debug_assert_eq!(stack_size, stack.len());
-			debug_assert_eq!(stack.num_args, 0);
 			stack.num_args = prev_num_args;
 			Ok(value)
 		},
@@ -141,7 +140,9 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 	// fn get(&self, index: usize) -> Option<&Value<T>> {
 	//     self.stack.get(index)
 	// }
-	fn len(&self) -> usize { self.stack.len() }
+
+	/// Returns the number of elements on the stack
+	pub fn len(&self) -> usize { self.stack.len() }
 	fn truncate(&mut self, len: usize) { self.stack.truncate(len); }
 	fn drain(&mut self, range: impl RangeBounds<usize>) -> std::vec::Drain<'_, Value<T>> {
 		self.stack.drain(range)
@@ -406,10 +407,6 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::ReadVar { identifier } => {
 				let value = read_var(identifier, stack, context, override_vars)?;
 				stack.push(value);
-			},
-			FlatOperator::ReadVarNeg { identifier } => {
-				let value = read_var(identifier, stack, context, override_vars)?;
-				stack.push(Value::Float(-value.as_float()?));
 			},
 			FlatOperator::WriteVar { .. } => {
 				// Not implemented in immutable context
@@ -783,10 +780,6 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::ReadParam { inverse_index } => {
 				let value = stack.get_unchecked(base_index - *inverse_index as usize);
 				stack.push(value.clone());
-			},
-			FlatOperator::ReadParamNeg { inverse_index } => {
-				let value = stack.get_unchecked(base_index - *inverse_index as usize);
-				stack.push(Value::Float(-value.as_float()?));
 			},
 		}
 	}

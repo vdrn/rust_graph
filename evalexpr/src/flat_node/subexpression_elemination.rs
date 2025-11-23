@@ -16,7 +16,7 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, contex
 
 		// functions with 0 args need to be considered too
 		match op {
-			FlatOperator::ReadVar { identifier } | FlatOperator::ReadVarNeg { identifier } => {
+			FlatOperator::ReadVar { identifier }   => {
 				if !context.variables.contains_key(identifier) && context.functions.contains_key(identifier) {
 					// function calls without brackets
 					should_eliminate = true;
@@ -93,10 +93,8 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 	match op {
 		FlatOperator::PushConst { .. }
 		| FlatOperator::ReadVar { .. }
-		| FlatOperator::ReadVarNeg { .. }
 		| FlatOperator::ReadLocalVar { .. }
 		| FlatOperator::ReadParam { .. }
-		| FlatOperator::ReadParamNeg { .. }
 		| FlatOperator::WriteVar { .. } => 0,
 
 		FlatOperator::Neg
@@ -240,10 +238,16 @@ pub fn get_n_previous_exprs<F: EvalexprFloat>(
 	let mut result = smallvec![];
 
 	let mut cur_arg_idx = start_idx;
-	for _ in 0..n {
+	for i in 0..n {
 		let start = get_operator_range(ops, cur_arg_idx, 0).unwrap();
 		result.push((start, cur_arg_idx));
-		cur_arg_idx = start - 1;
+		cur_arg_idx = match start.checked_sub(1) {
+			Some(idx) => idx,
+			None => {
+				assert!(i == n - 1);
+				0
+			},
+		};
 	}
 
 	result

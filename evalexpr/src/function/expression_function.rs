@@ -23,11 +23,6 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 					*op = FlatOperator::ReadParam { inverse_index: (args.len() - idx) as u32 };
 				}
 			},
-			FlatOperator::ReadVarNeg { identifier } => {
-				if let Some(idx) = args.iter().position(|e| e == identifier) {
-					*op = FlatOperator::ReadParamNeg { inverse_index: (args.len() - idx) as u32 };
-				}
-			},
 			FlatOperator::Integral(int) => match int.as_ref() {
 				IntegralNode::UnpreparedExpr { expr, variable } => {
 					has_integrals = true;
@@ -101,8 +96,8 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 		&self, stack: &mut Stack<F>, context: &HashMapContext<F>, args: &[Value<F>],
 	) -> EvalexprResultValue<F> {
 		stack.push_args(args);
-		let value = self.unchecked_call(stack, context)?;
+		let value = self.unchecked_call(stack, context);
 		stack.pop_args();
-		Ok(value)
+		value
 	}
 }

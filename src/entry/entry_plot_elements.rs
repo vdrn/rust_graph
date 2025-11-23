@@ -243,6 +243,8 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				return Ok(());
 			}
+      let stack_len = thread_local_get(tl_context).stack.borrow().len();
+      assert!(stack_len == 0, "stack is not empty: {stack_len}");
 
 			let display_name = if identifier.is_empty() {
 				format!("f({}): {}", func.args_to_string(), func.text.trim())

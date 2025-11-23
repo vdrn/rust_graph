@@ -223,8 +223,6 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 			if let Operator::Const { value } = &child.operator {
 				let val = value.as_float()?;
 				ops.push(FlatOperator::PushConst { value: Value::Float(-val) });
-			} else if let &Operator::VariableIdentifierRead { identifier } = &child.operator {
-				ops.push(FlatOperator::ReadVarNeg { identifier });
 			} else {
 				compile_to_flat_inner(child, ops)?;
 				ops.push(FlatOperator::Neg);

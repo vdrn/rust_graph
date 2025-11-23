@@ -51,3 +51,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
 [lints.clippy]
 collapsible_else_if = "allow"
 tabs_in_doc_comments = "allow"
+single_match = "allow"
