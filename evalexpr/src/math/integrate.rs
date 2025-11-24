@@ -12,10 +12,10 @@ pub struct AbscissasWeights<F: EvalexprFloat> {
 pub fn get_tanh_sinh_abscissas_and_weights<F: EvalexprFloat>() -> AbscissasWeights<F> {
 	let mut r: [Vec<F>; N] = std::array::from_fn(|_| Vec::new());
 	let mut w: [Vec<F>; N] = std::array::from_fn(|_| Vec::new());
-	let zero = F::f64_to_float(0.0);
-	let one = F::f64_to_float(1.0);
-	let two = F::f64_to_float(2.0);
-	let half = F::f64_to_float(0.5);
+	let zero = F::from_f64(0.0);
+	let one = F::from_f64(1.0);
+	let two = F::from_f64(2.0);
+	let half = F::from_f64(0.5);
 
 	let mut h = two;
 
@@ -70,16 +70,16 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 ) -> EvalexprResult<IntegrationResult<F>, F> {
 	let data = F::abscissas_and_weights();
 
-	let zero = F::f64_to_float(0.0);
-	let half = F::f64_to_float(0.5);
-	let two = F::f64_to_float(2.0);
+	let zero = F::from_f64(0.0);
+	let half = F::from_f64(0.5);
+	let two = F::from_f64(2.0);
 
 	let c = (x1 + x2) * half;
 	let d = (x2 - x1) * half;
 	let mut s = f(c)?;
 
-	let eps = (precision.precision * F::f64_to_float(0.1)).clamp(&precision.lower, &precision.upper);
-	let tol = F::f64_to_float(10.0) * precision.precision;
+	let eps = (precision.precision * F::from_f64(0.1)).clamp(&precision.lower, &precision.upper);
+	let tol = F::from_f64(10.0) * precision.precision;
 	let mut err;
 	let mut i = 0;
 
@@ -137,7 +137,7 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 	// Check for divergence. This is a crude check, might want to revisit it.
 	// when we hit max iterations, we check for either huge result, or large error.
 	// We might want to use && istead of ||
-	if i >= N && (result.abs() > precision.large_integral_value || err > tol * F::f64_to_float(10.0)) {
+	if i >= N && (result.abs() > precision.large_integral_value || err > tol * F::from_f64(10.0)) {
 		result = F::INFINITY * result.signum();
 	}
 
@@ -160,8 +160,8 @@ pub fn integrate<F: EvalexprFloat>(
 	if lower > upper {
 		core::mem::swap(&mut lower, &mut upper);
 	}
-	let zero = F::f64_to_float(0.0);
-	let one = F::f64_to_float(1.0);
+	let zero = F::from_f64(0.0);
+	let one = F::from_f64(1.0);
 
 	let result = match (lower.is_finite(), upper.is_finite()) {
 		// Both bounds finite

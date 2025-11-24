@@ -11,7 +11,7 @@ use evalexpr::{EvalexprFloat, HashMapContext};
 
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES, f64_to_float
+	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES, 
 };
 
 pub struct EditEntryResult {
@@ -229,9 +229,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 							}
 						});
 						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
-					}else{
-            *parametric = false;
-          }
+					} else if func.equation_type != EquationType::None {
+						*parametric = false;
+					}
 					if func.args.len() == 2 && func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
 						ui.horizontal(|ui| {
 							Slider::new(
@@ -389,7 +389,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 		EntryType::Constant { value, step, ty, range_start, range_end, .. } => {
 			let original_value = *value;
-			let step_f = f64_to_float::<T>(*step);
+			let step_f = T::from_f64(*step);
 
 			let mut range_error = None;
 			let mut range = match ty.range(ctx, range_start, range_end) {
@@ -424,7 +424,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					}
 
 					if original_value.to_f64() != v {
-						*value = f64_to_float::<T>(v);
+						*value = T::from_f64(v);
 						result.animating = true;
 					}
 				});
@@ -475,7 +475,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					if !prev_active && entry.active {
 						if value.to_f64() >= end {
-							*value = f64_to_float::<T>(start);
+							*value = T::from_f64(start);
 							result.animating = true;
 						}
 					}
@@ -487,7 +487,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					result.animating = true;
 
 					match ty {
-						ConstantType::LoopForwardAndBackward { forward, .. } => {
+						ConstantType::LoopForwardAndBackward { forward } => {
 							if *forward {
 								*value = *value + step_f;
 							} else {
@@ -495,20 +495,20 @@ fn entry_type_ui<T: EvalexprFloat>(
 							}
 							if value.to_f64() > end {
 								*forward = false;
-								*value = f64_to_float::<T>(end);
+								*value = T::from_f64(end);
 							}
 							if value.to_f64() < start {
 								*forward = true;
-								*value = f64_to_float::<T>(start);
+								*value = T::from_f64(start);
 							}
 						},
-						ConstantType::LoopForward { .. } => {
+						ConstantType::LoopForward => {
 							*value = *value + step_f;
 							if value.to_f64() >= end {
-								*value = f64_to_float::<T>(start);
+								*value = T::from_f64(start);
 							}
 						},
-						ConstantType::PlayOnce { .. } | ConstantType::PlayIndefinitely { .. } => {
+						ConstantType::PlayOnce | ConstantType::PlayIndefinitely => {
 							*value = *value + step_f;
 							if value.to_f64() >= end {
 								entry.active = false;
@@ -520,7 +520,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					ui.label(RichText::new(e).color(Color32::RED));
 				}
 
-				// *value = f64_to_float::<T>(v);
+				// *value = T::from_f64(v);
 			});
 		},
 	}
@@ -663,8 +663,7 @@ fn expr_ui<T: EvalexprFloat>(
 				}
 
 				expr.node = match evalexpr::build_flat_node_from_ast::<T>(ast) {
-					Ok(func) => {
-            Some(func)},
+					Ok(func) => Some(func),
 					Err(e) => {
 						return Err(e.to_string());
 					},

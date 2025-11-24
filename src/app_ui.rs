@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use eframe::egui::{
-	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, Shadow, SidePanel, Slider, Stroke, TextEdit, TextStyle, Widget, Window
+	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
 };
 use eframe::epaint::Color32;
 use egui_plot::{HLine, Legend, Plot, PlotPoint, VLine};
@@ -9,7 +9,7 @@ use evalexpr::EvalexprFloat;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::draw_buffer::{PointInteraction, PointInteractionType, process_draw_buffers};
-use crate::entry::{self, Entry, EntryType, f64_to_float, point_dragging, prepare_entries};
+use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries};
 use crate::{
 	BOOLEAN_OPERATORS, BUILTIN_CONSTS, BUILTIN_FUNCTIONS, OPERATORS, State, UiState, init_consts, init_functions, persistence, scope
 };
@@ -64,10 +64,7 @@ pub fn side_panel<T: EvalexprFloat>(
 
 			ui.add_space(4.5);
 
-			fn entry_frame(
-				ui: &mut egui::Ui, is_dark_mode: bool, alternate: bool, cb: impl FnOnce(&mut egui::Ui),
-			) {
-
+			fn entry_frame(ui: &mut egui::Ui, is_dark_mode: bool, cb: impl FnOnce(&mut egui::Ui)) {
 				let border_color = if is_dark_mode { Color32::from_gray(56) } else { Color32::from_gray(220) };
 				let bg_color = if is_dark_mode { Color32::from_gray(32) } else { Color32::from_gray(240) };
 				let shadow = egui::Shadow {
@@ -88,11 +85,9 @@ pub fn side_panel<T: EvalexprFloat>(
 
 			let mut remove = None;
 			let mut animating = false;
-			let mut alternate = false;
 			// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
-				alternate = !alternate;
-				entry_frame(ui, ui_state.conf.dark_mode, alternate, |ui: &mut egui::Ui| {
+				entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
 					if let EntryType::Folder { entries } = &mut entry.ty {
 						ui.vertical(|ui| {
 							ui.horizontal(|ui| {
@@ -132,36 +127,28 @@ pub fn side_panel<T: EvalexprFloat>(
 								let mut remove_from_folder = None;
 
 								egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
-									alternate = !alternate;
-
-									entry_frame(
-										ui,
-										ui_state.conf.dark_mode,
-										alternate,
-										|ui: &mut egui::Ui| {
-											ui.horizontal(|ui| {
-												handle.ui(ui, |ui| {
-													ui.label("    |");
-												});
-												ui.horizontal(|ui| {
-													let fe_result = entry::entry_ui(
-														ui, &state.ctx, entry, state.clear_cache,
-													);
-													if fe_result.remove {
-														remove_from_folder = Some(entry.id);
-													}
-													animating |= fe_result.animating;
-													needs_recompilation |= fe_result.needs_recompilation;
-													if let Some(error) = fe_result.error {
-														ui_state.parsing_errors.insert(entry.id, error);
-													} else if fe_result.parsed {
-														ui_state.parsing_errors.remove(&entry.id);
-													}
-												});
+									entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+										ui.horizontal(|ui| {
+											handle.ui(ui, |ui| {
+												ui.label("    |");
 											});
-											display_entry_errors(ui, ui_state, entry.id);
-										},
-									);
+											ui.horizontal(|ui| {
+												let fe_result =
+													entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
+												if fe_result.remove {
+													remove_from_folder = Some(entry.id);
+												}
+												animating |= fe_result.animating;
+												needs_recompilation |= fe_result.needs_recompilation;
+												if let Some(error) = fe_result.error {
+													ui_state.parsing_errors.insert(entry.id, error);
+												} else if fe_result.parsed {
+													ui_state.parsing_errors.remove(&entry.id);
+												}
+											});
+										});
+										display_entry_errors(ui, ui_state, entry.id);
+									});
 								});
 								if let Some(id) = remove_from_folder {
 									if let Some(index) = entries.iter().position(|e| e.id == id) {
@@ -457,10 +444,10 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
-      for mesh in p_draw_buffer.draw_meshes {
-        plot_ui.add(mesh);
-        // plot_ui.mesh(mesh.mesh);
-      }
+			for mesh in p_draw_buffer.draw_meshes {
+				plot_ui.add(mesh);
+				// plot_ui.mesh(mesh.mesh);
+			}
 			for draw_poly_group in p_draw_buffer.draw_polygons {
 				for poly in draw_poly_group.polygons {
 					plot_ui.polygon(poly);
@@ -534,8 +521,8 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 				Id::new("point_on_fn"),
 				format!(
 					"x:{}\ny: {}",
-					f64_to_float::<T>(closest_point.0).human_display(false),
-					f64_to_float::<T>(closest_point.1).human_display(false)
+					T::from_f64(closest_point.0).human_display(false),
+					T::from_f64(closest_point.1).human_display(false)
 				),
 				[screen_x, screen_y],
 			);
@@ -553,8 +540,8 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 				format!(
 					"{}\nx:{}\ny: {}",
 					hovered_point.name(),
-					f64_to_float::<T>(hovered_point.x).human_display(false),
-					f64_to_float::<T>(hovered_point.y).human_display(false)
+					T::from_f64(hovered_point.x).human_display(false),
+					T::from_f64(hovered_point.y).human_display(false)
 				),
 				[screen_x, screen_y],
 			);

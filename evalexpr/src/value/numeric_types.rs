@@ -66,21 +66,21 @@ pub trait EvalexprFloat:
 	fn from_i32(int: i32) -> Self;
 
 	/// self -> i64
-	fn into_i64(&self) -> i64;
+	fn to_i64(&self) -> i64;
 
 	/// Self -> usize
-	fn into_usize(&self) -> EvalexprResult<usize, Self>;
+	fn to_usize(&self) -> EvalexprResult<usize, Self>;
 
 	/// u64 -> Self
 	fn from_u64(int: u64) -> Self;
 
 	/// 0x -> usize
-	fn from_hex_str(literal: &str) -> Result<Self, ()>;
+	fn try_from_hex_str(literal: &str) -> Option<Self>;
 
 	///  Self > f64
 	fn to_f64(&self) -> f64;
 	/// f64 -> Self
-	fn f64_to_float(v: f64) -> Self;
+	fn from_f64(v: f64) -> Self;
 
 	/// Perform a power operation.
 	fn pow(&self, exponent: &Self) -> Self;
@@ -202,8 +202,8 @@ pub trait EvalexprFloat:
 	/// Greatest common denominator.
 	/// Values are rounded to nearest integer
 	fn gcd(&self, other: &Self) -> Self {
-		let a = self.into_i64();
-		let b = other.into_i64();
+		let a = self.to_i64();
+		let b = other.to_i64();
 		let a = a.unsigned_abs();
 		let b = b.unsigned_abs();
 		Self::from_u64(gcd::gcd(a, b))

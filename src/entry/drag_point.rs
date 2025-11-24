@@ -3,7 +3,7 @@ use egui_plot::PlotResponse;
 use evalexpr::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack};
 
 use crate::draw_buffer::{self, PointInteractionType};
-use crate::entry::{DragPoint, Entry, EntryType, f64_to_float, f64_to_value};
+use crate::entry::{DragPoint, Entry, EntryType, f64_to_value};
 use crate::math::{minimize, solve_secant};
 
 pub struct DragPointResult {
@@ -55,22 +55,22 @@ pub fn point_dragging<T: EvalexprFloat>(
 	let pos = plot_res.transform.value_from_position(screen_pos);
 	match drag_point_type {
 		DragPoint::BothCoordLiterals => {
-			point.x.text = format!("{}", f64_to_float::<T>(pos.x));
-			point.y.text = format!("{}", f64_to_float::<T>(pos.y));
+			point.x.text = format!("{}", T::from_f64(pos.x));
+			point.y.text = format!("{}", T::from_f64(pos.y));
 		},
 		DragPoint::XLiteral => {
-			point.x.text = format!("{}", f64_to_float::<T>(pos.x));
+			point.x.text = format!("{}", T::from_f64(pos.x));
 		},
 		DragPoint::YLiteral => {
-			point.y.text = format!("{}", f64_to_float::<T>(pos.y));
+			point.y.text = format!("{}", T::from_f64(pos.y));
 		},
 		DragPoint::XLiteralYConstant(y_const) => {
-			point.x.text = format!("{}", f64_to_float::<T>(pos.x));
+			point.x.text = format!("{}", T::from_f64(pos.x));
 			let y_node = point.y.node.clone();
 			drag(entries, ctx, y_const, y_node, point_y, pos.y, eps);
 		},
 		DragPoint::YLiteralXConstant(x_const) => {
-			point.y.text = format!("{}", f64_to_float::<T>(pos.y));
+			point.y.text = format!("{}", T::from_f64(pos.y));
 			let x_node = point.x.node.clone();
 			drag(entries, ctx, x_const, x_node, point_x, pos.x, eps);
 		},
@@ -108,7 +108,7 @@ pub fn point_dragging<T: EvalexprFloat>(
 					y_node.eval_float_with_context(&mut stack, ctx).unwrap().to_f64(),
 				)
 			});
-			*value = f64_to_float::<T>(new_value);
+			*value = T::from_f64(new_value);
 		},
 	}
 
@@ -134,7 +134,7 @@ fn drag<T: EvalexprFloat>(
 		return;
 	};
 
-	*value = f64_to_float::<T>(new_value);
+	*value = T::from_f64(new_value);
 }
 fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
 	for entry in entries.iter_mut() {

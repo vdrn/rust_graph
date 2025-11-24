@@ -1,7 +1,4 @@
-use std::sync::LazyLock;
-
 use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, istr, istr_empty};
-use regex::Regex;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -11,11 +8,13 @@ use crate::scope;
 
 pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {
 	let mut equation_type = EquationType::None;
-	fn walk_ast<T: EvalexprFloat>(ast: &mut Node<T>, equation_type: &mut EquationType, mut replace_writes:bool) -> Result<(), String> {
+	fn walk_ast<T: EvalexprFloat>(
+		ast: &mut Node<T>, equation_type: &mut EquationType, mut replace_writes: bool,
+	) -> Result<(), String> {
 		let op = ast.operator_mut();
-    if *op ==  Operator::Assign {
-      replace_writes = true;
-    }
+		if *op == Operator::Assign {
+			replace_writes = true;
+		}
 		match op {
 			Operator::FunctionIdentifier { .. } => {
 				// <=, <, >=, > inside function call params are not threated as equation types, but boolean
@@ -38,11 +37,11 @@ pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, Eq
 				};
 				*op = Operator::Sub;
 			},
-      Operator::VariableIdentifierWrite {identifier} => {
-        if replace_writes {
-          *op = Operator::VariableIdentifierRead { identifier:core::mem::take(identifier) };
-        }
-      }
+			Operator::VariableIdentifierWrite { identifier } => {
+				if replace_writes {
+					*op = Operator::VariableIdentifierRead { identifier: core::mem::take(identifier) };
+				}
+			},
 			_ => {},
 		}
 		for child in ast.children_mut() {
@@ -54,7 +53,6 @@ pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, Eq
 
 	Ok((ast, equation_type))
 }
-
 
 pub fn prepare_entries<T: EvalexprFloat>(
 	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
@@ -451,19 +449,18 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 		EntryType::Function { func, identifier, .. } => {
 			let Some(node) = &func.node else { return Ok(()) };
 			// println!("INLINING FUNC {} {}", entry.name, func.text);
+			// println!("ops  {:?}", node);
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
-			// println!("INLINED FUNC: {:#?}", inlined_node);
+			// println!("INLINED FUNC: {:?}", inlined_node);
 
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-      // if identifier.to_str() == "F"{
-      //   panic!()
-      // }
-
-
+			// if identifier.to_str() == "F"{
+			//   panic!()
+			// }
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());

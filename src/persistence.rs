@@ -45,7 +45,8 @@ impl ExprSer {
 	pub fn into_expr<T: EvalexprFloat>(self, preprocess: bool) -> Expr<T> {
 		let mut equation_type = EquationType::None;
 		let mut ast = evalexpr::build_ast::<T>(&self.text).ok();
-		if preprocess && let Some((new_ast, new_equation_type)) = ast.take().and_then(|ast| preprocess_ast(ast).ok())
+		if preprocess
+			&& let Some((new_ast, new_equation_type)) = ast.take().and_then(|ast| preprocess_ast(ast).ok())
 		{
 			ast = Some(new_ast);
 			equation_type = new_equation_type;
@@ -268,7 +269,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 				},
 				EntryTypeSerialized::Constant { value, step, ty, range_start, range_end } => {
 					EntryType::Constant {
-						value: T::f64_to_float(value),
+						value: T::from_f64(value),
 						step,
 						ty,
 						istr_name: istr(&entry.name),

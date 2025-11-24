@@ -116,12 +116,6 @@ struct State<T: EvalexprFloat> {
 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
 }
 fn init_consts<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
-	macro_rules! add_const {
-		($ident:ident, $uppercase:expr, $lowercase:expr) => {
-			ctx.set_value(istr($lowercase), Value::Float(T::f64_to_float(core::f64::consts::$ident))).unwrap();
-			ctx.set_value(istr($uppercase), Value::Float(T::f64_to_float(core::f64::consts::$ident))).unwrap();
-		};
-	}
 
 	ctx.set_value(istr("e"), f64_to_value(core::f64::consts::E)).unwrap();
 	ctx.set_value(istr("pi"), f64_to_value(core::f64::consts::PI)).unwrap();
@@ -153,8 +147,8 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 	ctx.set_function(
 		istr("normaldist"),
 		evalexpr::RustFunction::new(move |s, _| {
-			let zero = T::f64_to_float(0.0);
-			let one = T::f64_to_float(1.0);
+			let zero = T::from_f64(0.0);
+			let one = T::from_f64(1.0);
 			if s.num_args() == 0 {
 				return Err(EvalexprError::wrong_function_argument_amount_range(0, 1..=3));
 			}
@@ -163,16 +157,16 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 				(x, zero, one)
 			} else {
 				let x = s.get_arg(0).unwrap().as_float()?;
-				let mean: T = s.get_arg(1).unwrap_or(&Value::Float(T::f64_to_float(0.0))).as_float()?;
-				let std_dev: T = s.get_arg(2).unwrap_or(&Value::Float(T::f64_to_float(1.0))).as_float()?;
+				let mean: T = s.get_arg(1).unwrap_or(&Value::Float(T::from_f64(0.0))).as_float()?;
+				let std_dev: T = s.get_arg(2).unwrap_or(&Value::Float(T::from_f64(1.0))).as_float()?;
 				(x, mean, std_dev)
 			};
 
-			let two = T::f64_to_float(2.0);
+			let two = T::from_f64(2.0);
 			let coefficient =
-				T::f64_to_float(1.0) / (std_dev * T::f64_to_float(2.0 * core::f64::consts::PI).sqrt());
+				T::from_f64(1.0) / (std_dev * T::from_f64(2.0 * core::f64::consts::PI).sqrt());
 			let diff: T = x - mean;
-			let exponent = -(diff.pow(&two)) / (T::f64_to_float(2.0) * std_dev.pow(&two));
+			let exponent = -(diff.pow(&two)) / (T::from_f64(2.0) * std_dev.pow(&two));
 			Ok(Value::Float(coefficient * exponent.exp()))
 		}),
 	);
@@ -180,18 +174,37 @@ fn init_functions<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 		istr("get"),
 		evalexpr::RustFunction::new(|s, _| {
 			expect_function_argument_amount(s.num_args(), 2)?;
-			let tuple = s.get_arg(0).unwrap().as_tuple_ref()?;
+
+			let tuple = s.get_arg(0).unwrap();
+
 			let index: T = s.get_arg(1).unwrap().as_float()?;
 
 			let index = index.to_f64() as usize;
+			let value = match tuple {
+				Value::Tuple(t) => t
+					.get(index)
+					.ok_or_else(|| {
+						EvalexprError::CustomMessage(format!(
+							"Index out of bounds: index = {index} but the length was {}",
+							t.len()
+						))
+					})
+					.cloned()?,
+				Value::Float2(f1, f2) => match index {
+					0 => Value::Float(*f1),
+					1 => Value::Float(*f2),
+					_ => {
+						return Err(EvalexprError::CustomMessage(format!(
+							"Index out of bounds: index = {index} but the length was 2"
+						)));
+					},
+				},
+				_ => {
+					return Err(EvalexprError::CustomMessage(format!("Expected a tuple but got {:?}", tuple)));
+				},
+			};
 
-			let value = tuple.get(index).ok_or_else(|| {
-				EvalexprError::CustomMessage(format!(
-					"Index out of bounds: index = {index} but the length was {}",
-					tuple.len()
-				))
-			})?;
-			Ok(value.clone())
+			Ok(value)
 		}),
 	);
 	// };

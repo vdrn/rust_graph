@@ -1,9 +1,7 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{self, Color32};
-use evalexpr::{
-	EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr, istr_empty
-};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
 mod drag_point;
@@ -330,7 +328,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				identifier:   istr_empty(),
 				can_be_drawn: true,
 
-				func:                Expr::from_text(&text),
+				func:                Expr::from_text(text),
 				parametric:          false,
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),
@@ -485,25 +483,25 @@ impl ConstantType {
 	pub fn symbol(&self) -> &'static str {
 		match self {
 			ConstantType::LoopForwardAndBackward { .. } => "🔁",
-			ConstantType::LoopForward { .. } => "🔂",
-			ConstantType::PlayOnce { .. } => "⏯",
-			ConstantType::PlayIndefinitely { .. } => "🔀",
+			ConstantType::LoopForward => "🔂",
+			ConstantType::PlayOnce => "⏯",
+			ConstantType::PlayIndefinitely => "🔀",
 		}
 	}
 	pub fn name(&self) -> &'static str {
 		match self {
 			ConstantType::LoopForwardAndBackward { .. } => "🔁 Loop forward and Backward",
-			ConstantType::LoopForward { .. } => "🔂 Loop forward",
-			ConstantType::PlayOnce { .. } => "⏭ Play once",
-			ConstantType::PlayIndefinitely { .. } => "🔀 Play indefinitely",
+			ConstantType::LoopForward => "🔂 Loop forward",
+			ConstantType::PlayOnce => "⏭ Play once",
+			ConstantType::PlayIndefinitely => "🔀 Play indefinitely",
 		}
 	}
 }
 
 pub static RESERVED_NAMES: [&str; 2] = ["x", "y"];
 
-pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::f64_to_float(x)) }
-pub fn f64_to_float<T: EvalexprFloat>(x: f64) -> T { T::f64_to_float(x) }
+pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::from_f64(x)) }
+// pub fn f64_to_float<T: EvalexprFloat>(x: f64) -> T { T::f64_to_float(x) }
 
 #[derive(Clone, Debug)]
 pub enum DragPoint {

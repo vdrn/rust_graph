@@ -4,7 +4,7 @@ use core::mem;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
-use eframe::egui::{self, Color32, Id, Mesh, RichText, Shape, Stroke};
+use eframe::egui::{self, Color32, Id, RichText, Stroke};
 use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, Points, Polygon, Text};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
@@ -12,9 +12,9 @@ use thread_local::ThreadLocal;
 use crate::draw_buffer::{
 	DrawLine, DrawMesh, DrawPoint, DrawPolygonGroup, DrawText, OtherPointType, PointInteraction, PointInteractionType
 };
-use crate::entry::{Entry, EntryType, EquationType, f64_to_float, f64_to_value};
+use crate::entry::{Entry, EntryType, EquationType, f64_to_value};
 use crate::marching_squares::MeshBuilder;
-use crate::math::{DiscontinuityDetector, zoom_in_x_on_nan_boundary};
+use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary};
 use crate::{ThreadLocalContext, marching_squares, thread_local_get};
 
 pub struct PlotParams {
@@ -121,7 +121,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			for (i, p) in points.iter_mut().enumerate() {
 				match eval_point(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some((x, y))) => {
-						p.val = Some((f64_to_float::<T>(x), f64_to_float::<T>(y)));
+						p.val = Some((T::from_f64(x), T::from_f64(y)));
 						let point_id = id.with(i);
 						let selected = selected_id == Some(id);
 						let radius = if selected { 6.5 } else { 4.5 };
@@ -243,8 +243,8 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				return Ok(());
 			}
-      let stack_len = thread_local_get(tl_context).stack.borrow().len();
-      assert!(stack_len == 0, "stack is not empty: {stack_len}");
+			let stack_len = thread_local_get(tl_context).stack.borrow().len();
+			assert!(stack_len == 0, "stack is not empty: {stack_len}");
 
 			let display_name = if identifier.is_empty() {
 				format!("f({}): {}", func.args_to_string(), func.text.trim())
@@ -285,7 +285,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 					color,
 				});
 			};
-      let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
@@ -300,6 +300,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						},
 						Err(e) => return Err(vec![(entry.id, e.to_string())]),
 					};
+					println!("drawing ");
 					add_line(vec![
 						PlotPoint::new(plot_params.first_x, value.to_f64()),
 						PlotPoint::new(plot_params.last_x, value.to_f64()),
@@ -362,7 +363,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 							if func.args[0].to_str() == "x" {
 								add_line(vec![
 									PlotPoint::new(-value.to_f64(), plot_params.first_y),
-									PlotPoint::new(-value.to_f64(), plot_params.last_x),
+									PlotPoint::new(-value.to_f64(), plot_params.last_y),
 								]);
 							} else {
 								add_line(vec![
@@ -469,8 +470,16 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 				return Ok(());
 			},
 		};
-		pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
-		pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
+		match TY {
+			SimpleFunctionType::X => {
+				pp_buffer.push(PlotPoint::new(plot_params.first_x, value.to_f64()));
+				pp_buffer.push(PlotPoint::new(plot_params.last_x, value.to_f64()));
+			},
+			SimpleFunctionType::Y => {
+				pp_buffer.push(PlotPoint::new(value.to_f64(), plot_params.first_y));
+				pp_buffer.push(PlotPoint::new(value.to_f64(), plot_params.last_y));
+			},
+		}
 	} else {
 		// let mut prev_y = None;
 		let mut discontinuity_detector = DiscontinuityDetector::new(step_size, plot_params.eps);
@@ -567,6 +576,19 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 
 	Ok(())
 }
+
+const P_CURVATURE_FACTOR_SCALE: f64 = 8.0;
+const P_SMALL_DISTANCE_SCALE: f64 = 35.0;
+const P_SMALL_DISTANCE_POW: f64 = 1.0;
+fn calculate_curvature_factor(pangle1: f64, pangle2: f64) -> f64 {
+	let mut angle_diff = (pangle2 - pangle1).abs();
+	if angle_diff > 2.0 {
+		angle_diff = 4.0 - angle_diff;
+	}
+
+	// Convert to curvature factor: 1.0 = straight, increases with curvature
+	1.0 + (angle_diff * P_CURVATURE_FACTOR_SCALE)
+}
 #[allow(clippy::too_many_arguments)]
 fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
@@ -575,86 +597,251 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 ) -> Result<(), Vec<(u64, String)>> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
-	match eval_point(&mut stack, ctx, range_start, range_end) {
-		Ok(Some((start, end))) => {
-			if start > end {
-				return Err(vec![(id, "Range start must be less than range end".to_string())]);
-			}
-			let range = end - start;
-			let step = range / plot_params.resolution as f64;
-			if start + step == end {
-				return Ok(());
-			}
-			let mut discontinuity_detector = DiscontinuityDetector::new(step, plot_params.eps);
-			for i in 0..(plot_params.resolution + 1) {
-				let arg = start + step * i as f64;
-				match func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)]) {
-					Ok(Value::Float(value)) => {
-						if let Some((left, right)) =
-							discontinuity_detector.detect(arg, value.to_f64(), |arg| {
-								func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
-									.and_then(|v| v.as_float())
-									.map(|v| v.to_f64())
-									.ok()
-							}) {
-							// pp_buffer.push(PlotPoint::new(left.0, left.0));
-							// add_line(mem::take(&mut pp_buffer));
-							// pp_buffer.push(PlotPoint::new(right.0, right.0));
-
-							match TY {
-								SimpleFunctionType::X => {
-									pp_buffer.push(PlotPoint::new(left.0, left.1));
-									add_line(mem::take(&mut pp_buffer));
-									pp_buffer.push(PlotPoint::new(right.0, right.1));
-								},
-								SimpleFunctionType::Y => {
-									pp_buffer.push(PlotPoint::new(left.1, left.0));
-									add_line(mem::take(&mut pp_buffer));
-									pp_buffer.push(PlotPoint::new(right.1, right.0));
-								},
-							}
-						} else {
-							if !value.is_nan() {
-								match TY {
-									SimpleFunctionType::X => {
-										pp_buffer.push(PlotPoint::new(arg, value.to_f64()));
-									},
-									SimpleFunctionType::Y => {
-										pp_buffer.push(PlotPoint::new(value.to_f64(), arg));
-									},
-								};
-							}
-						}
-					},
-					Ok(Value::Empty) => {},
-					Ok(Value::Float2(x, y)) => {
-						// TODO: detect discontinuity for ranged thar teturn Float2
-						if y.is_nan() {
-							if !pp_buffer.is_empty() {
-								add_line(mem::take(&mut pp_buffer));
-							}
-						} else {
-							pp_buffer.push(PlotPoint::new(x.to_f64(), y.to_f64()));
-						}
-					},
-					Ok(_) => {
-						// println!("ranged function must return 1 or 2 float values");
-						return Err(vec![(id, "Ranged function must return 1 or 2 float values".to_string())]);
-					},
-					Err(e) => {
-						// println!("error {e}");
-						return Err(vec![(id, e.to_string())]);
-					},
-				}
-			}
-			add_line(pp_buffer);
-		},
+	let (start, end) = match eval_point(&mut stack, ctx, range_start, range_end) {
+		Ok(Some((start, end))) => (start, end),
 		Err(e) => {
 			return Err(vec![(id, e)]);
 		},
-		_ => {},
+		_ => {
+			return Ok(());
+		},
+	};
+	if start > end {
+		return Err(vec![(id, "Range start must be less than range end".to_string())]);
+	}
+	let range = end - start;
+	let step = range / plot_params.resolution as f64;
+	if start + step == end {
+		return Ok(());
 	}
 
+	let plot_width = plot_params.last_x - plot_params.first_x;
+	let plot_height = plot_params.last_y - plot_params.first_y;
+
+	let small_distance_x = (plot_params.eps * 10_000.0).max(plot_width / plot_params.resolution as f64);
+	let small_distance_y = (plot_params.eps * 10_000.0).max(plot_height / plot_params.resolution as f64);
+	let max_segment_x = small_distance_x.powf(P_SMALL_DISTANCE_POW) * P_SMALL_DISTANCE_SCALE;
+	let max_segment_y = small_distance_y.powf(P_SMALL_DISTANCE_POW) * P_SMALL_DISTANCE_SCALE;
+	// println!(
+	// 	"small distance x: {small_distance_x} plot eps * 10_000 {} max segment x {max_segment_x}",
+	// 	plot_params.eps * 10_000.0
+	// );
+
+	#[allow(clippy::integer_division)]
+	let max_subdivisions = (plot_params.resolution / 30).clamp(1, 50);
+
+	// Determine function type from first evaluation
+	let first_value = match func.call(&mut stack, ctx, &[f64_to_value::<T>(start)]) {
+		Ok(v) => v,
+		Err(e) => return Err(vec![(id, e.to_string())]),
+	};
+
+	let is_float2 = matches!(first_value, Value::Float2(_, _));
+
+	let step_eps = if is_float2 {
+		max_segment_y
+	} else if TY == SimpleFunctionType::X {
+		max_segment_x
+	} else {
+		max_segment_y
+	};
+	let mut discontinuity_detector = DiscontinuityDetector::new(step_eps, plot_params.eps);
+
+	let mut eval_point_at = |arg: f64| -> Result<Option<(f64, PlotPoint)>, String> {
+		match func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)]) {
+			Ok(Value::Float(value)) => {
+				if is_float2 {
+					return Err("Function must consistently return Float2".to_string());
+				}
+				if value.is_nan() {
+					Ok(None)
+				} else {
+					let v = value.to_f64();
+					match TY {
+						SimpleFunctionType::X => Ok(Some((v, PlotPoint::new(arg, v)))),
+						SimpleFunctionType::Y => Ok(Some((v, PlotPoint::new(v, arg)))),
+					}
+				}
+			},
+			Ok(Value::Empty) => Ok(None),
+			Ok(Value::Float2(x, y)) => {
+				if !is_float2 {
+					return Err("Function must consistently return Float".to_string());
+				}
+				if y.is_nan() {
+					Ok(None)
+				} else {
+					// Use y value for discontinuity detection
+					Ok(Some((y.to_f64(), PlotPoint::new(x.to_f64(), y.to_f64()))))
+				}
+			},
+			Ok(_) => Err("Ranged function must return 1 or 2 float values".to_string()),
+			Err(e) => Err(e.to_string()),
+		}
+	};
+
+	let mut prev_angle: Option<f64> = None;
+	// Evaluate first point
+	let mut prev_arg = start;
+	let mut prev_point = match eval_point_at(start) {
+		Ok(r) => r.map(|(_, p)| p),
+		Err(e) => return Err(vec![(id, e)]),
+	};
+
+	if let Some(p) = prev_point {
+		pp_buffer.push(p);
+	}
+
+	// let mut num_splits = Vec::with_capacity(plot_params.resolution * 2);
+	// let mut curvature_factors = Vec::with_capacity(plot_params.resolution * 2);
+	for i in 1..=plot_params.resolution {
+		let curr_arg = start + step * i as f64;
+		let curr_result = match eval_point_at(curr_arg) {
+			Ok(r) => r,
+			Err(e) => return Err(vec![(id, e)]),
+		};
+		let mut cur_angle = None;
+
+		match (prev_point, curr_result) {
+			(Some(prev_p), Some((curr_val, curr_p))) => {
+				// Check for discontinuity
+				if !is_float2
+					&& let Some((left, right)) = discontinuity_detector.detect(curr_arg, curr_val, |arg| {
+						eval_point_at(arg).ok().and_then(|v| v.map(|(v, _)| v))
+					}) {
+					if is_float2 {
+						pp_buffer.push(PlotPoint::new(left.1, left.0));
+						add_line(mem::take(&mut pp_buffer));
+						pp_buffer.push(PlotPoint::new(right.1, right.0));
+					} else {
+						match TY {
+							SimpleFunctionType::X => {
+								pp_buffer.push(PlotPoint::new(left.0, left.1));
+								add_line(mem::take(&mut pp_buffer));
+								pp_buffer.push(PlotPoint::new(right.0, right.1));
+							},
+							SimpleFunctionType::Y => {
+								pp_buffer.push(PlotPoint::new(left.1, left.0));
+								add_line(mem::take(&mut pp_buffer));
+								pp_buffer.push(PlotPoint::new(right.1, right.0));
+							},
+						}
+					}
+					prev_arg = curr_arg;
+
+					prev_angle = None;
+					prev_point = curr_result.map(|(_, v)| v);
+					continue;
+				}
+
+				// Check if segment is too long and needs subdivision
+				let dx = curr_p.x - prev_p.x;
+				let dy = curr_p.y - prev_p.y;
+				let a_dx = dx.abs();
+				let a_dy = dy.abs();
+
+				let margin_x = plot_width * 0.5 + a_dx * 2.0;
+				let margin_y = plot_height * 0.5 + a_dy * 2.0;
+				let on_screen = (prev_p.x >= plot_params.first_x - margin_x
+					&& prev_p.x <= plot_params.last_x + margin_x
+					&& prev_p.y >= plot_params.first_y - margin_y
+					&& prev_p.y <= plot_params.last_y + margin_y)
+					|| (curr_p.x >= plot_params.first_x - margin_x
+						&& curr_p.x <= plot_params.last_x + margin_x
+						&& curr_p.y >= plot_params.first_y - margin_y
+						&& curr_p.y <= plot_params.last_y + margin_y);
+
+				cur_angle = Some(pseudoangle(dx, dy));
+				if on_screen {
+					let subdivisions_x =
+						if a_dx > max_segment_x { (a_dx / max_segment_x).ceil() as usize } else { 1 };
+					let subdivisions_y =
+						if a_dy > max_segment_y { (a_dy / max_segment_y).ceil() as usize } else { 1 };
+					let mut subdivisions = subdivisions_x.max(subdivisions_y).min(max_subdivisions);
+
+					// Adjust by curvature
+					if let Some(prev_angle) = prev_angle {
+						let curvature_factor = calculate_curvature_factor(prev_angle, cur_angle.unwrap());
+
+						// 					let segment_length = (dx.powi(2) + dy.powi(2)).sqrt();
+						// 					let length_scale = (max_segment_x.max(max_segment_y) /
+						// segment_length).clamp(0.01, 1.0);
+
+						// 					let adjusted_curvature = curvature_factor * length_scale.sqrt();
+						let adjusted_curvature = curvature_factor;
+						subdivisions =
+							((subdivisions as f64 * adjusted_curvature) as usize).min(max_subdivisions);
+
+						// curvature_factors.push(adjusted_curvature);
+					}
+
+					subdivisions = subdivisions.max(1);
+
+					if subdivisions > 1 {
+						// Need to subdivide this segment
+						let t_step = (curr_arg - prev_arg) / subdivisions as f64;
+						for j in 1..subdivisions {
+							let t = prev_arg + t_step * j as f64;
+							match eval_point_at(t) {
+								Ok(Some((_, p))) => pp_buffer.push(p),
+								Ok(None) => {
+									// NaN in the middle
+									add_line(mem::take(&mut pp_buffer));
+								},
+								Err(e) => return Err(vec![(id, e)]),
+							}
+						}
+					}
+					// num_splits.push(subdivisions);
+				} else {
+					// num_splits.push(1);
+				}
+				pp_buffer.push(curr_p);
+			},
+			(Some(_), None) => {
+				// nan
+				add_line(mem::take(&mut pp_buffer));
+			},
+			(None, Some((_, p))) => {
+				// coming back from NaN
+				pp_buffer.push(p);
+			},
+			(None, None) => {
+				// Still NaN, nothing to do
+			},
+		}
+
+		prev_angle = cur_angle;
+		prev_arg = curr_arg;
+		prev_point = curr_result.map(|(_, p)| p);
+	}
+
+	// if num_splits.len() > 0 {
+	// num_splits.sort_unstable();
+	// let avg_num_splits = num_splits.iter().sum::<usize>() as f64 / num_splits.len() as f64;
+	// let total_num_splits = num_splits.iter().sum::<usize>();
+	// println!(
+	// 	"Average number of splits: {avg_num_splits} median {} max {} total {}",
+	// 	num_splits[num_splits.len() / 2],
+	// 	num_splits.last().unwrap(),
+	// 	total_num_splits
+	// );
+	// }
+
+	// if curvature_factors.len() > 0 {
+	// 	curvature_factors.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+	// 	let avg_curvature_factor =
+	// 		curvature_factors.iter().sum::<f64>() as f64 / curvature_factors.len() as f64;
+	// 	let total_curvature_factor = curvature_factors.iter().sum::<f64>();
+	// 	println!(
+	// 		"Average curvature factor: {avg_curvature_factor} min {} median {} max {} total {}",
+	// 		curvature_factors[0],
+	// 		curvature_factors[curvature_factors.len() / 2],
+	// 		curvature_factors.last().unwrap(),
+	// 		total_curvature_factor
+	// 	);
+	// }
+	add_line(pp_buffer);
 	Ok(())
 }
 #[allow(clippy::too_many_arguments)]

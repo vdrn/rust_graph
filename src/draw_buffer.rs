@@ -282,7 +282,7 @@ pub struct DrawMesh {
   pub color: Color32,
 }
 impl PlotItem for DrawMesh {
-    fn shapes(&self, ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
+    fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
       for vertex in self.mesh.borrow_mut().vertices.iter_mut(){
         vertex.pos = transform.position_from_point(&PlotPoint::new(vertex.pos.x as f64, vertex.pos.y as f64));
 
@@ -297,7 +297,7 @@ impl PlotItem for DrawMesh {
       shapes.push(Shape::mesh(mesh));
     }
 
-    fn initialize(&mut self, x_range: std::ops::RangeInclusive<f64>) {
+    fn initialize(&mut self, _x_range: core::ops::RangeInclusive<f64>) {
     }
 
     fn color(&self) -> Color32 {

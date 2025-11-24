@@ -3,7 +3,12 @@ use smallvec::SmallVec;
 use crate::flat_node::FlatOperator;
 use crate::{EvalexprFloat, FlatNode, HashMapContext};
 
-pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, context: &HashMapContext<F>) {
+/// Returns `true` if any local variables were deduplicated at the end of this function.
+/// This is a signal that you may want to re-run this function, as that may eliminate more
+/// subexpressions.
+pub fn eliminate_subexpressions<F: EvalexprFloat>(
+	node: &mut FlatNode<F>, context: &HashMapContext<F>,
+) -> bool {
 	let mut local_vars: Vec<FlatOperator<F>> = Vec::new();
 
 	remove_one_op_local_vars(node);
@@ -90,6 +95,8 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(node: &mut FlatNode<F>, contex
 		let insert_place = prev_num_local_var_ops as usize;
 		node.ops.splice(insert_place..insert_place, local_vars);
 	}
+
+	deduplicate_local_vars(node)
 }
 /// Inlining functions can produce local variables that are just ReadParam/ReadVar.
 /// Those are pointless, so we replace reads of those local vars with direct ReadParam/ReadVar,
@@ -148,6 +155,62 @@ fn remove_one_op_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) {
 		node.num_local_vars -= 1;
 		node.num_local_var_ops -= 1;
 	}
+}
+
+fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
+	let mut local_var_ranges = get_n_previous_exprs(
+		&node.ops,
+		node.num_local_var_ops.saturating_sub(1) as usize,
+		node.num_local_vars as usize,
+	);
+	local_var_ranges.reverse();
+	// println!("local var ranges: {local_var_ranges:?}");
+
+	let mut deduplicated = false;
+	let mut i = 0;
+	while i < local_var_ranges.len().saturating_sub(1) {
+		let (start, end) = local_var_ranges[i];
+		let mut j = i + 1;
+		while j < local_var_ranges.len() {
+			let (start2, end2) = local_var_ranges[j];
+			if node.ops[start..=end] == node.ops[start2..=end2] {
+				// println!(
+				// 	"deduplicating local vars: source {i} to keep: {start}..={end} local_to_remove {j} range \
+				// 	 {start2}..={end2} all ops : {node:?}"
+				// );
+				for op in node.ops[end2 + 1..].iter_mut() {
+					if let FlatOperator::ReadLocalVar { idx } = op {
+						if *idx == j as u32 {
+							// println!("replacing op_i {} index {j} with {i}", node.num_local_var_ops + op_i
+							// as u32);
+
+							*idx = i as u32;
+						} else if *idx > j as u32 {
+							// println!("reducing op_i {} index {idx} with {}",node.num_local_var_ops + op_i as
+							// u32, *idx - 1);
+							*idx -= 1;
+						}
+					}
+				}
+				node.ops.drain(start2..=end2);
+				node.num_local_vars -= 1;
+				let num_removed_ops = end2 - start2 + 1;
+				node.num_local_var_ops -= num_removed_ops as u32;
+				deduplicated = true;
+				for further_range in local_var_ranges[j..].iter_mut() {
+					*further_range = (further_range.0 - num_removed_ops, further_range.1 - num_removed_ops);
+				}
+				local_var_ranges.remove(j);
+
+				// println!("parent after removing local var source{i} var{j}: {node:?}");
+			} else {
+				j += 1;
+			}
+		}
+		i += 1;
+	}
+
+	deduplicated
 }
 
 fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {

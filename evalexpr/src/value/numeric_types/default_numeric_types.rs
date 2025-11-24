@@ -37,7 +37,7 @@ impl EvalexprFloat for f64 {
 	fn from_u64(int: u64) -> Self { int as Self }
 	fn from_usize(int: usize) -> Self { int as Self }
 
-	fn into_usize(&self) -> EvalexprResult<usize, Self> {
+	fn to_usize(&self) -> EvalexprResult<usize, Self> {
 		if *self >= 0.0 {
 			Ok(*self as usize)
 		} else {
@@ -46,14 +46,14 @@ impl EvalexprFloat for f64 {
 	}
 	fn from_i32(int: i32) -> Self { int as Self }
 
-	fn into_i64(&self) -> i64 { *self as i64 }
+	fn to_i64(&self) -> i64 { *self as i64 }
 
-	fn from_hex_str(literal: &str) -> Result<Self, ()> {
-		i64::from_str_radix(literal, 16).map(|i| i as Self).map_err(|_| ())
+	fn try_from_hex_str(literal: &str) -> Option<Self>{
+		i64::from_str_radix(literal, 16).map(|i| i as Self).ok()
 	}
 
 	fn to_f64(&self) -> f64 { *self }
-	fn f64_to_float(v: f64) -> Self { v }
+	fn from_f64(v: f64) -> Self { v }
 
 	fn pow(&self, exponent: &Self) -> Self { (*self).powf(*exponent) }
 

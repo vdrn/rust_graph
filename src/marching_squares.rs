@@ -2,7 +2,7 @@ use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
 
 use arrayvec::ArrayVec;
-use eframe::egui::{Color32, Mesh, Pos2};
+use eframe::egui::{Color32, Pos2};
 use eframe::epaint::Vertex;
 use egui_plot::{PlotBounds, PlotPoint};
 use rayon::iter::{
@@ -76,7 +76,7 @@ pub struct MarchingSquaresParams {
 
 #[derive(Default)]
 pub struct MarchingSquaresResult {
-	pub y_bounds: (f64, f64),
+	pub _y_bounds: (f64, f64),
 	pub lines:    Vec<Vec<PlotPoint>>,
 	pub mesh:     MeshBuilder,
 }
@@ -392,7 +392,7 @@ pub fn marching_squares<C>(
 			}
 
 			MarchingSquaresResult {
-				y_bounds: (y_start, y_end),
+				_y_bounds: (y_start, y_end),
 
 				lines: polyline_builder.finish(),
 				mesh:  mesh_builder,

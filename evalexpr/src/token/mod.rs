@@ -397,7 +397,7 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					literal: &str, second: Option<PartialToken<F>>, third: Option<PartialToken<F>>,
 				) -> Option<(Token<F>, usize)> {
 					let mut result = None;
-					if let Ok(number) = parse_dec_or_hex::<F>(literal) {
+					if let Some(number) = parse_dec_or_hex::<F>(literal) {
 						result = Some((Token::Int(number), 1));
 					} else if let Ok(number) = literal.parse::<F>() {
 						result = Some((Token::Float(number), 1));
@@ -511,11 +511,11 @@ pub(crate) fn tokenize<NumericTypes: EvalexprFloat>(
 	partial_tokens_to_tokens(&str_to_partial_tokens(string)?)
 }
 
-fn parse_dec_or_hex<NumericTypes: EvalexprFloat>(literal: &str) -> Result<NumericTypes, ()> {
+fn parse_dec_or_hex<NumericTypes: EvalexprFloat>(literal: &str) -> Option<NumericTypes> {
 	if let Some(literal) = literal.strip_prefix("0x") {
-		NumericTypes::from_hex_str(literal)
+		NumericTypes::try_from_hex_str(literal)
 	} else {
-		NumericTypes::from_str(literal).map_err(|_| ())
+		NumericTypes::from_str(literal).ok()
 	}
 }
 

@@ -24,7 +24,10 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
 	if function_inlining::inline_functions(&mut inlined, context)? > 0 {
 		inlined = inline_variables_and_fold(&inlined, context)?;
 	};
-	subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
+	if subexpression_elemination::eliminate_subexpressions(&mut inlined, context) {
+    // run again since we deduplicated local vars. could be a loop maybe
+		subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
+	}
 	Ok(inlined)
 }
 
@@ -255,6 +258,7 @@ pub struct FlatNode<F: EvalexprFloat> {
 }
 
 impl<F: EvalexprFloat> FlatNode<F> {
+	pub(crate) fn ops_len(&self) -> usize { self.ops.len() }
 	/// Returns the constant value of this node it it only contains a single PushConst operator.
 	pub fn as_constant(&self) -> Option<Value<F>> {
 		if self.ops.len() == 1 {
@@ -528,8 +532,9 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// ```
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
-			FlatOperator::ReadVar { identifier }
-			| FlatOperator::WriteVar { identifier } => Some(identifier.to_str()),
+			FlatOperator::ReadVar { identifier } | FlatOperator::WriteVar { identifier } => {
+				Some(identifier.to_str())
+			},
 			_ => None,
 		})
 	}

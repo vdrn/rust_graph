@@ -201,9 +201,9 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 			let [a, b] = extract_two_nodes(node.children)?;
 			compile_to_flat_inner(a, ops)?;
 			if let Some(c) = extract_const_float(&b)? {
-				if c == F::f64_to_float(2.0) {
+				if c == F::from_f64(2.0) {
 					ops.push(FlatOperator::Square);
-				} else if c == F::f64_to_float(3.0) {
+				} else if c == F::from_f64(3.0) {
 					ops.push(FlatOperator::Cube);
 				} else {
 					ops.push(FlatOperator::ExpConst { value: c });

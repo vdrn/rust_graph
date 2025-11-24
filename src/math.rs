@@ -367,3 +367,13 @@ pub fn newton_raphson_minimizer2_tmp<const ITERS: usize>(
 
 	Ok(if best_f < initial_f { Some((best_x, best_y)) } else { None })
 }
+
+  pub fn pseudoangle(x:f64, y:f64) -> f64 {
+    let p = x / (x.abs() + y.abs()); // -1 .. 1 increasing with x
+    // if dy < 0.0 {
+    //   3.0 + p //  2 .. 4 increasing with x
+    // } else {
+    //   1.0 - p //  0 .. 2 decreasing with x
+    // }
+    -y.signum() * (p + 1.0) + 2.0
+  }
