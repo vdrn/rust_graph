@@ -120,6 +120,15 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				(plot_params.last_y - plot_params.first_y) as f32,
 			) * 0.002;
 			let points_len = points.len();
+			let mut fill_mesh = if style.fill
+				&& points_len > 2
+				&& let Some(plot_trans) = &plot_params.prev_plot_transform
+			{
+				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+				Some((FillMesh::new(fill_color), plot_trans))
+			} else {
+				None
+			};
 			for (i, p) in points.iter_mut().enumerate() {
 				match eval_point(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some((x, y))) => {
@@ -129,6 +138,14 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						let radius = if selected { 6.5 } else { 4.5 };
 						let radius_outer = if selected { 12.5 } else { 7.5 };
 
+						if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
+							let screen_point = gpu_position_from_point(
+								plot_trans,
+								plot_params.invert_axes,
+								&PlotPoint::new(x, y),
+							);
+							fill_mesh.add_vertex(screen_point.x, screen_point.y);
+						}
 						if style.show_points || p.drag_point.is_some() {
 							draw_buffer.points.push(DrawPoint::new(
 								sorting_idx,
@@ -219,6 +236,9 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			let width = 1.0;
 
 			if line_buffer.len() > 1 && style.show_lines {
+				if style.connect_first_and_last {
+					line_buffer.push(line_buffer[0]);
+				}
 				let line = Line::new(entry.name.clone(), line_buffer)
 					.color(color)
 					.id(id)
@@ -227,6 +247,12 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				draw_buffer.lines.push(DrawLine::new(sorting_idx, id, width, line));
 				if !arrow_buffer.is_empty() {
 					draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, arrow_buffer));
+				}
+				if let Some((fill_mesh, _)) = fill_mesh {
+					draw_buffer.meshes.push(DrawMesh {
+						sorting_index: sorting_idx,
+						ty:            DrawMeshType::FillMesh(fill_mesh),
+					});
 				}
 				// plot_ui.line(line);
 			}

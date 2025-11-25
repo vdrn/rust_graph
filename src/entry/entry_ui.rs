@@ -172,12 +172,15 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 					ui.separator();
 					ui.checkbox(&mut style.show_lines, "Show Lines");
 					if style.show_lines {
+            ui.checkbox(&mut style.connect_first_and_last, "Connect first and last point");
 						ui.label("Line Style:");
 						ui.checkbox(&mut style.show_arrows, "Show Arrows");
 						line_style_config_ui(&mut style.line_style, ui);
 					} else {
 						style.show_arrows = false;
 					}
+					ui.separator();
+          ui.checkbox(&mut style.fill, "Fill").on_hover_text("Fill the area between the points using the Even-Odd rule.");
 					ui.separator();
 					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
 
@@ -268,7 +271,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
-                ui.checkbox(parametric_fill, "Fill");
+                ui.checkbox(parametric_fill, "Fill").on_hover_text("Fill the inside area the curve by using the Even-Odd rule.");
 							}
 						});
 						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");

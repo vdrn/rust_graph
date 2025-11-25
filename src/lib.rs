@@ -23,6 +23,8 @@ mod math;
 mod persistence;
 mod widgets;
 
+use app_ui::GraphConfig;
+use custom_rendering::CustomRenderer;
 use draw_buffer::DrawBufferRC;
 use entry::{ConstantType, Entry, EntryType, PointEntry};
 use marching_squares::MarchingSquaresCache;
@@ -45,9 +47,6 @@ use eframe::wasm_bindgen::{self, prelude::*};
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
-
-use crate::app_ui::{GraphConfig, GraphPlotBounds};
-use crate::custom_rendering::CustomRenderer;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]

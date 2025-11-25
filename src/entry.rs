@@ -253,6 +253,11 @@ pub struct PointStyle {
 	line_style:   LineStyleConfig,
 	#[serde(default)]
 	label_config: Option<LabelConfig>,
+	#[serde(default)]
+  fill: bool,
+	#[serde(default)]
+  connect_first_and_last: bool,
+
 }
 
 impl Default for PointStyle {
@@ -263,6 +268,8 @@ impl Default for PointStyle {
 			show_arrows:  false,
 			label_config: Some(LabelConfig::default()),
 			line_style:   LineStyleConfig::default(),
+      fill: false,
+      connect_first_and_last: false,
 		}
 	}
 }
