@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use eframe::egui::{self, Grid, Id, Modal};
-use egui_plot::PlotBounds;
 use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
+use crate::app_ui::GraphConfig;
 use crate::entry::{
 	EquationType, Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
 };
@@ -17,9 +17,9 @@ pub fn default_true() -> bool { true }
 
 #[derive(Serialize, Deserialize)]
 pub struct StateSerialized {
-	pub entries:        Vec<EntrySerialized>,
+	pub entries:      Vec<EntrySerialized>,
 	#[serde(default)]
-	pub default_bounds: Option<[f64; 4]>,
+	pub graph_config: GraphConfig,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -80,7 +80,7 @@ pub enum EntryTypeSerialized {
 		#[serde(default = "default_true")]
 		selectable:          bool,
 		#[serde(default)]
-		parametric_fill: bool,
+		parametric_fill:     bool,
 	},
 	Constant {
 		value:       f64,
@@ -121,13 +121,8 @@ pub struct EntryPointSerialized {
 	drag_type: PointDragType,
 }
 
-pub fn entries_to_ser<T: EvalexprFloat>(
-	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
-) -> StateSerialized {
-	let mut state_serialized = StateSerialized {
-		entries:        Vec::with_capacity(entries.len()),
-		default_bounds: plot_bounds.map(|b| [b.min()[0], b.min()[1], b.max()[0], b.max()[1]]),
-	};
+pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: GraphConfig) -> StateSerialized {
+	let mut state_serialized = StateSerialized { entries: Vec::with_capacity(entries.len()), graph_config };
 	for entry in entries {
 		let entry_serialized = EntrySerialized {
 			name:    entry.name.clone(),
@@ -142,7 +137,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					parametric,
 					implicit_resolution,
 					selectable,
-          parametric_fill,
+					parametric_fill,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -152,7 +147,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					style:               style.clone(),
 					selectable:          *selectable,
 					implicit_resolution: *implicit_resolution,
-          parametric_fill: *parametric_fill,
+					parametric_fill:     *parametric_fill,
 				},
 				EntryType::Constant { value, step, ty, istr_name: _, range_start, range_end } => {
 					EntryTypeSerialized::Constant {
@@ -182,7 +177,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					underline: *underline,
 				},
 				EntryType::Folder { entries } => {
-					let ser_entries = entries_to_ser(entries, None);
+					let ser_entries = entries_to_ser(entries, GraphConfig::default());
 					EntryTypeSerialized::Folder { entries: ser_entries.entries }
 				},
 			},
@@ -192,16 +187,16 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 	state_serialized
 }
 pub fn serialize_to_json<T: EvalexprFloat>(
-	writer: impl Write, state: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
+	writer: impl Write, state: &[Entry<T>], graph_config: GraphConfig,
 ) -> std::io::Result<()> {
-	let ser = entries_to_ser(state, plot_bounds);
+	let ser = entries_to_ser(state, graph_config);
 	serde_json::to_writer(writer, &ser)?;
 	Ok(())
 }
 pub fn serialize_to_url<T: EvalexprFloat>(
-	entries: &[Entry<T>], plot_bounds: Option<&PlotBounds>,
+	entries: &[Entry<T>], graph_config:GraphConfig,
 ) -> Result<String, String> {
-	let ser = entries_to_ser(entries, plot_bounds);
+	let ser = entries_to_ser(entries, graph_config);
 	let bincoded =
 		bincode::serde::encode_to_vec(&ser, bincode::config::standard()).map_err(|e| e.to_string())?;
 	let base64_encoded = base64::engine::general_purpose::STANDARD.encode(bincoded);
@@ -211,7 +206,7 @@ pub fn serialize_to_url<T: EvalexprFloat>(
 #[cfg(target_arch = "wasm32")]
 pub fn deserialize_from_url<T: EvalexprFloat>(
 	id_counter: &mut u64,
-) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
+) -> Result<(Vec<Entry<T>>, graph_config::GraphConfig), String> {
 	let href = web_sys::window()
 		.expect("Couldn't get window")
 		.document()
@@ -241,11 +236,9 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn entries_from_ser<T: EvalexprFloat>(
-	ser: StateSerialized, id: &mut u64,
-) -> (Vec<Entry<T>>, Option<PlotBounds>) {
+pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) -> (Vec<Entry<T>>, GraphConfig) {
 	let mut result = Vec::new();
-	let bounds = ser.default_bounds.map(|b| PlotBounds::from_min_max([b[0], b[1]], [b[2], b[3]]));
+	let graph_config = ser.graph_config;
 	for entry in ser.entries {
 		*id += 1;
 		let entry_deserialized = Entry {
@@ -260,14 +253,14 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					range_end,
 					style,
 					implicit_resolution,
-          selectable,
-          parametric_fill
+					selectable,
+					parametric_fill,
 				} => EntryType::Function {
 					parametric: ranged,
-          parametric_fill,
+					parametric_fill,
 					identifier: istr_empty(),
 					func: func.into_expr(true),
-          selectable,
+					selectable,
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,
 
@@ -312,7 +305,10 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					underline,
 				},
 				EntryTypeSerialized::Folder { entries } => {
-					let (entries, _) = entries_from_ser(StateSerialized { entries, default_bounds: None }, id);
+					let (entries, _) = entries_from_ser(
+						StateSerialized { entries, graph_config: GraphConfig::default() },
+						id,
+					);
 					EntryType::Folder { entries }
 				},
 			},
@@ -322,11 +318,11 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 		result.push(entry_deserialized);
 	}
 	*id += 1;
-	(result, bounds)
+	(result, graph_config)
 }
 pub fn deserialize_from_json<T: EvalexprFloat>(
 	reader: &[u8], id_counter: &mut u64,
-) -> Result<(Vec<Entry<T>>, Option<PlotBounds>), String> {
+) -> Result<(Vec<Entry<T>>, GraphConfig), String> {
 	let entries: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
 	Ok(entries_from_ser(entries, id_counter))
 }
@@ -363,7 +359,7 @@ pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _fr
 		ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
 		return;
 	};
-	if let Err(e) = serialize_to_json(&mut file, &state.entries, Some(&ui_state.plot_bounds)) {
+	if let Err(e) = serialize_to_json(&mut file, &state.entries, ui_state.graph_config.clone()) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
@@ -414,10 +410,10 @@ pub fn load_file<T: EvalexprFloat>(
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
 	};
-	let (entries, default_bounds) = deserialize_from_json::<T>(&file, id_counter)
+	let (entries, default_graph_config) = deserialize_from_json::<T>(&file, id_counter)
 		.map_err(|e| format!("Could not deserialize file: {}", e))?;
 	state.entries = entries;
-	state.default_bounds = default_bounds;
+	state.saved_graph_config = default_graph_config;
 
 	state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 	state.clear_cache = true;

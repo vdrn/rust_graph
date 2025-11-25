@@ -1,18 +1,21 @@
+use core::ops::RangeInclusive;
 use std::sync::Mutex;
 
+use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
-	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
+	self, Align, Area, Button, CollapsingHeader, DragValue, Grid, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
 };
 use eframe::epaint::Color32;
-use egui_plot::{HLine, Legend, Plot, PlotImage, PlotPoint, VLine};
+use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, VLine};
 use evalexpr::EvalexprFloat;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
 use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries};
 use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
-use crate::{State, UiState, persistence, scope};
+use crate::{AppConfig, State, UiState, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -280,7 +283,7 @@ pub fn side_panel<T: EvalexprFloat>(
 			if needs_recompilation || state.clear_cache {
 				scope!("prepare_entries");
 				// state.points_cache.clear();
-				match persistence::serialize_to_url(&state.entries, Some(&ui_state.plot_bounds)) {
+				match persistence::serialize_to_url(&state.entries, ui_state.graph_config.clone()) {
 					Ok(output) => {
 						// let mut data_str = String::with_capacity(output.len() + 1);
 						// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
@@ -369,6 +372,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		step_size_y,
 		resolution: ui_state.conf.resolution,
 		prev_plot_transform: ui_state.prev_plot_transform,
+    invert_axes: ui_state.graph_config.invert_axes
 	};
 
 	let main_context = &state.ctx;
@@ -413,23 +417,41 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 	egui::CentralPanel::default().show(ctx, |ui| {
 		let plot_id = ui.make_persistent_id("Plot");
-		let mut plot = Plot::new(plot_id)
-			.id(plot_id)
-			.legend(Legend::default().text_style(TextStyle::Body))
-			.allow_drag(ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse.is_none());
+		let mut plot = Plot::new(plot_id).id(plot_id).legend(Legend::default().text_style(TextStyle::Body));
 
-		let mut bounds = ui_state.plot_bounds;
 		if ui_state.reset_graph {
 			ui_state.reset_graph = false;
-			if let Some(default_bounds) = state.default_bounds {
-				bounds = default_bounds;
-			} else {
-				plot = plot.center_x_axis(true).center_y_axis(true).data_aspect(1.0);
-			}
+			ui_state.graph_config = state.saved_graph_config.clone();
 		}
+
+		let available_size = ui.available_size();
+		let view_aspect = available_size.x as f64 / available_size.y as f64;
+		let calcd_bounds = ui_state.graph_config.graph_plot_bounds.calc_plot_bounds(view_aspect);
+
+		let can_drag = (ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse.is_none());
+		let mut allow_drag = ui_state.graph_config.allow_scroll;
+		allow_drag[0] &= can_drag;
+		allow_drag[1] &= can_drag;
+
 		plot = plot
-			.default_x_bounds(bounds.min()[0], bounds.max()[0])
-			.default_y_bounds(bounds.min()[1], bounds.max()[1]);
+			.show_axes(ui_state.graph_config.show_axes)
+			.invert_x(ui_state.graph_config.invert_axes[0])
+			.invert_y(ui_state.graph_config.invert_axes[1])
+			.show_grid(ui_state.graph_config.show_grid)
+			.allow_drag(allow_drag)
+			.allow_zoom(ui_state.graph_config.allow_zoom)
+			.allow_scroll(ui_state.graph_config.allow_scroll)
+			.x_axis_label(ui_state.graph_config.x_axis_label.clone())
+			.y_axis_label(ui_state.graph_config.y_axis_label.clone())
+			.clamp_grid(ui_state.graph_config.clamp_grid)
+			.grid_spacing(ui_state.graph_config.grid_spacing.0..=ui_state.graph_config.grid_spacing.1);
+		// .show_x(ui_state.graph_config.show_mouse_coords[0])
+		// .show_y(ui_state.graph_config.show_mouse_coords[1]);
+
+		plot = plot
+			.default_x_bounds(calcd_bounds.min()[0], calcd_bounds.max()[0])
+			.default_y_bounds(calcd_bounds.min()[1], calcd_bounds.max()[1]);
+
 		if ui_state.showing_custom_label || p_draw_buffer.closest_point_to_mouse.is_some() {
 			// plot = plot.label_formatter(|_, _| String::new());
 			plot = plot.show_x(false);
@@ -526,9 +548,21 @@ pub fn graph_panel<T: EvalexprFloat>(
 			}
 		});
 
+		let parent_rect = plot_res.transform.frame();
+		let screen_pos = parent_rect.min + egui::vec2(5.0, 5.0);
+		Area::new(Id::new("Graph Config")).fixed_pos(screen_pos).show(ui.ctx(), |ui| {
+			MenuButton::new("⚙")
+				.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+				.ui(ui, |ui| {
+					ui_state.graph_config.ui(ui, &mut ui_state.conf);
+				});
+		});
+
 		if plot_res.response.double_clicked() {
 			ui_state.reset_graph = true;
 		}
+
+		ui_state.graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect);
 
 		if ui_state.plot_bounds != *plot_res.transform.bounds() {
 			ui.ctx().request_repaint();
@@ -693,4 +727,166 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 	.on_hover_text(if can_add_folder { "Add new Entry" } else { "Add new Folder Entry" });
 
 	needs_recompilation
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GraphPlotBounds {
+	pub center:      [f64; 2],
+	pub h_size:      f64,
+	pub data_aspect: f64,
+}
+impl Default for GraphPlotBounds {
+	fn default() -> Self { Self { center: [0.0, 0.0], h_size: 4.0, data_aspect: 1.0 } }
+}
+impl GraphPlotBounds {
+	fn calc_plot_bounds(&self, view_aspect: f64) -> PlotBounds {
+		let v_size = self.h_size / self.data_aspect / view_aspect;
+		let min_bounds = [self.center[0] - self.h_size * 0.5, self.center[1] - v_size * 0.5];
+		let max_bounds = [self.center[0] + self.h_size * 0.5, self.center[1] + v_size * 0.5];
+		PlotBounds::from_min_max(min_bounds, max_bounds)
+	}
+
+	pub fn update(&mut self, plot_transform: &PlotTransform, view_aspect: f64) {
+		let graph_bounds = plot_transform.bounds();
+		self.center[0] = graph_bounds.center().x;
+		self.center[1] = graph_bounds.center().y;
+		self.h_size = graph_bounds.width();
+		// let frame = plot_transform.frame();
+		// let view_aspect = frame.size().x as f64 / frame.size().y as f64;
+		// println!(
+		// 	"view aspect {view_aspect} cur_data_aspect {} graph_aspect {}",
+		// 	self.data_aspect,
+		// 	graph_bounds.width() / graph_bounds.height()
+		// );
+		self.data_aspect = (graph_bounds.width() / graph_bounds.height()) / view_aspect;
+	}
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GraphConfig {
+	pub graph_plot_bounds: GraphPlotBounds,
+	pub allow_zoom:        [bool; 2],
+	pub allow_scroll:      [bool; 2],
+	// pub show_mouse_coords: [bool; 2],
+	pub show_axes:         [bool; 2],
+	pub invert_axes:       [bool; 2],
+	pub show_grid:         [bool; 2],
+	pub x_axis_label:      String,
+	pub y_axis_label:      String,
+	pub clamp_grid:        bool,
+	pub grid_spacing:      (f32, f32),
+}
+impl Default for GraphConfig {
+	fn default() -> Self {
+		Self {
+			graph_plot_bounds: GraphPlotBounds::default(),
+			allow_zoom:        [true, true],
+			allow_scroll:      [true, true],
+			show_axes:         [true, true],
+			show_grid:         [true, true],
+			x_axis_label:      String::new(),
+			y_axis_label:      String::new(),
+			clamp_grid:        false, // show_mouse_coords: [true, true],
+			grid_spacing:      (8.0, 300.0),
+			invert_axes:       [false, false],
+		}
+	}
+}
+impl GraphConfig {
+	fn ui(&mut self, ui: &mut egui::Ui, config: &mut AppConfig) {
+		Grid::new("graph_config").num_columns(2).striped(true).show(ui, |ui| {
+			ui.label("Allow Zoom");
+			ui.horizontal(|ui| {
+				ui.checkbox(&mut self.allow_zoom[0], "X");
+				ui.checkbox(&mut self.allow_zoom[1], "Y");
+			});
+			ui.end_row();
+
+			ui.label("Allow Scroll");
+			ui.horizontal(|ui| {
+				ui.checkbox(&mut self.allow_scroll[0], "X");
+				ui.checkbox(&mut self.allow_scroll[1], "Y");
+			});
+			ui.end_row();
+
+			ui.label("Show Axes");
+			ui.horizontal(|ui| {
+				ui.checkbox(&mut self.show_axes[0], "X");
+				ui.checkbox(&mut self.show_axes[1], "Y");
+			});
+			ui.end_row();
+
+			ui.label("Invert Axes");
+			ui.horizontal(|ui| {
+				ui.checkbox(&mut self.invert_axes[0], "X");
+				ui.checkbox(&mut self.invert_axes[1], "Y");
+			});
+
+			ui.end_row();
+			ui.label("X Axis Label");
+			ui.text_edit_singleline(&mut self.x_axis_label);
+			ui.end_row();
+
+			ui.label("Y Axis Label");
+			ui.text_edit_singleline(&mut self.y_axis_label);
+			ui.end_row();
+
+			ui.label("Show Grid");
+			ui.horizontal(|ui| {
+				ui.checkbox(&mut self.show_grid[0], "X");
+				ui.checkbox(&mut self.show_grid[1], "Y");
+			});
+			ui.end_row();
+
+			ui.label("Clamp Grid");
+			ui.checkbox(&mut self.clamp_grid, "Clamp Grid")
+				.on_hover_text("Only show grid where we have values");
+			ui.end_row();
+
+			ui.label("Grid Spacing");
+			ui.horizontal(|ui| {
+				const TOOLTIP: &str = "Set when the grid starts showing.
+When grid lines are closer than the given minimum, they will be hidden.
+When they get further apart they will fade in, until the reaches the given maximum,
+at which point they are fully opaque.";
+				ui.add(
+					DragValue::new(&mut self.grid_spacing.0).range(1.0..=self.grid_spacing.1).prefix("Min: "),
+				)
+				.on_hover_text(TOOLTIP);
+				ui.add(
+					DragValue::new(&mut self.grid_spacing.1)
+						.range(self.grid_spacing.0..=1000.0)
+						.prefix("Max: "),
+				)
+				.on_hover_text(TOOLTIP);
+			});
+			ui.end_row();
+
+			// ui.label("Show Mouse Coordinatess");
+			// ui.checkbox(&mut self.show_mouse_coords[0], "X");
+			// ui.checkbox(&mut self.show_mouse_coords[1], "Y");
+			// ui.end_row();
+		});
+		ui.separator();
+		ui.horizontal(|ui| {
+			if ui.button("Make Default").clicked() {
+				let bounds = config.default_graph_config.graph_plot_bounds.clone();
+				config.default_graph_config = self.clone();
+				config.default_graph_config.graph_plot_bounds = bounds;
+			}
+			if ui.button("Load default").clicked() {
+				let bounds = self.graph_plot_bounds.clone();
+				*self = config.default_graph_config.clone();
+				self.graph_plot_bounds = bounds;
+			}
+			if ui.button("Reset").clicked() {
+				let bounds = self.graph_plot_bounds.clone();
+				*self = Default::default();
+				self.graph_plot_bounds = bounds;
+			}
+			if ui.button("Close").clicked() {
+				ui.close();
+			}
+		});
+	}
 }

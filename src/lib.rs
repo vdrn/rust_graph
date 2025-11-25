@@ -46,28 +46,25 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use crate::app_ui::{GraphConfig, GraphPlotBounds};
 use crate::custom_rendering::CustomRenderer;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn wasm_main() -> () {
+	use eframe::egui_wgpu::wgpu::Backends;
+	use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
 	use eframe::wasm_bindgen::JsCast as _;
-use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
-use eframe::egui_wgpu::wgpu::Backends;
 
 	let mut web_options = eframe::WebOptions::default();
 
-  web_options.wgpu_options= 
-		WgpuConfiguration {
-			wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
-				instance_descriptor: wgpu::InstanceDescriptor {
-					backends: Backends::GL,
-					..Default::default()
-				},
-				..Default::default()
-			}),
+	web_options.wgpu_options = WgpuConfiguration {
+		wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
+			instance_descriptor: wgpu::InstanceDescriptor { backends: Backends::GL, ..Default::default() },
 			..Default::default()
-		};
+		}),
+		..Default::default()
+	};
 
 	console_error_panic_hook::set_once();
 
@@ -122,10 +119,8 @@ impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
 struct State<T: EvalexprFloat> {
 	entries:              Vec<Entry<T>>,
 	ctx:                  evalexpr::HashMapContext<T>,
-	default_bounds:       Option<PlotBounds>,
-	// context_stash: &'static Mutex<Vec<evalexpr::HashMapContext<T>>>,
+	saved_graph_config:   GraphConfig,
 	name:                 String,
-	// points_cache: PointsCache,
 	clear_cache:          bool,
 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
 }
@@ -137,18 +132,27 @@ struct AppConfig {
 	resolution: usize,
 	fullscreen: bool,
 
-	ui_scale: f32,
+	ui_scale:             f32,
+	default_graph_config: GraphConfig,
 }
 impl Default for AppConfig {
 	fn default() -> Self {
-		Self { fullscreen: true, dark_mode: true, use_f32: false, resolution: 500, ui_scale: 1.5 }
+		Self {
+			fullscreen:           true,
+			dark_mode:            true,
+			use_f32:              false,
+			resolution:           500,
+			ui_scale:             1.5,
+			default_graph_config: GraphConfig::default(),
+		}
 	}
 }
 
 struct UiState {
-	conf:        AppConfig,
-	next_id:     u64,
-	plot_bounds: PlotBounds,
+	conf:         AppConfig,
+	next_id:      u64,
+	plot_bounds:  PlotBounds,
+	graph_config: GraphConfig,
 
 	// data_aspect: f32,
 	reset_graph: bool,
@@ -211,8 +215,6 @@ impl Application {
 
 		let mut entries_s = Vec::new();
 		let mut entries_d = Vec::new();
-		let mut default_bounds_s = None;
-		let mut default_bounds_d = None;
 
 		// TODO
 		let mut serialized_states = BTreeMap::default();
@@ -224,6 +226,8 @@ impl Application {
 			.and_then(|s| s.get_string(CONF_KEY).and_then(|d| serde_json::from_str(&d).ok()))
 			.unwrap_or_default();
 
+		let mut default_graph_config_s = conf.default_graph_config.clone();
+		let mut default_graph_config_d = conf.default_graph_config.clone();
 		if !conf.fullscreen {
 			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 		}
@@ -243,7 +247,7 @@ impl Application {
         match persistence::deserialize_from_url::<F32NumericTypes>(&mut next_id) {
           Ok((data, bounds))=>{
             entries_s = data;
-            default_bounds_s = bounds;
+            default_graph_config_s = bounds;
 
           },
           Err(e)=>{
@@ -253,7 +257,7 @@ impl Application {
         match persistence::deserialize_from_url::<DefaultNumericTypes>(&mut next_id) {
           Ok((data,bounds))=>{
             entries_d = data;
-            default_bounds_d = bounds;
+            default_graph_config_d = bounds;
           },
           Err(e)=>{
             serialization_error = Some(e);
@@ -286,14 +290,14 @@ impl Application {
 				entries:              entries_s,
 				ctx:                  ctx_s,
 				name:                 String::new(),
-				default_bounds:       default_bounds_s,
+				saved_graph_config:   default_graph_config_s.clone(),
 				// points_cache: PointsCache::default(),
 				clear_cache:          true,
 				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			state_f64: State {
 				entries:              entries_d,
-				default_bounds:       default_bounds_d,
+				saved_graph_config:   default_graph_config_d,
 				ctx:                  ctx_d,
 				name:                 String::new(),
 				// points_cache: PointsCache::default(),
@@ -311,6 +315,7 @@ impl Application {
 				serialized_states,
 				next_id,
 				plot_bounds: PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]),
+				graph_config: default_graph_config_s,
 				reset_graph: false,
 
 				cur_dir,
@@ -358,14 +363,14 @@ impl App for Application {
 				if persistence::serialize_to_json(
 					&mut output,
 					&self.state_f32.entries,
-					Some(&self.ui.plot_bounds),
+					self.ui.graph_config.clone(),
 				)
 				.is_ok()
 				{
-					let (entries, default_bounds) =
+					let (entries, default_graph_config) =
 						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
 					self.state_f64.entries = entries;
-					self.state_f64.default_bounds = default_bounds;
+					self.state_f64.saved_graph_config = default_graph_config;
 					self.state_f64.clear_cache = true;
 					self.state_f64.name = self.state_f32.name.clone();
 				}
@@ -374,14 +379,14 @@ impl App for Application {
 				if persistence::serialize_to_json(
 					&mut output,
 					&self.state_f64.entries,
-					Some(&self.ui.plot_bounds),
+					self.ui.graph_config.clone(),
 				)
 				.is_ok()
 				{
-					let (entries, default_bounds) =
+					let (entries, default_graph_config) =
 						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
 					self.state_f32.entries = entries;
-					self.state_f32.default_bounds = default_bounds;
+					self.state_f32.saved_graph_config = default_graph_config;
 					self.state_f32.clear_cache = true;
 					self.state_f32.name = self.state_f64.name.clone();
 				}
@@ -396,8 +401,6 @@ impl App for Application {
 		storage.set_string(DATA_KEY, serde_json::to_string(&self.ui.serialized_states).unwrap());
 		storage.set_string(CONF_KEY, serde_json::to_string(&self.ui.conf).unwrap());
 	}
-
-
 
 	fn auto_save_interval(&self) -> core::time::Duration { core::time::Duration::from_secs(5) }
 

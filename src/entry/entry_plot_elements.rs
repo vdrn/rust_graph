@@ -27,6 +27,7 @@ pub struct PlotParams {
 	pub step_size_y:         f64,
 	pub resolution:          usize,
 	pub prev_plot_transform: Option<egui_plot::PlotTransform>,
+	pub invert_axes:         [bool; 2],
 }
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::panic_in_result_fn)]
@@ -282,7 +283,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.meshes.push(DrawMesh {
 					sorting_index: sorting_idx,
-					ty: DrawMeshType::EguiPlotMesh(EguiPlotMesh {
+					ty:            DrawMeshType::EguiPlotMesh(EguiPlotMesh {
 						bounds: mesh.bounds,
 						mesh: RefCell::new(mesh),
 						color,
@@ -328,7 +329,9 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									}
 									if let Some((fm, plot_trans)) = &mut fill_mesh {
 										for point in line.iter() {
-											let screen_point = gpu_position_from_point(plot_trans, point);
+											let screen_point = gpu_position_from_point(
+												plot_trans, plot_params.invert_axes, point,
+											);
 											fm.add_vertex(screen_point.x, screen_point.y);
 										}
 
@@ -336,7 +339,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 											let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 											draw_buffer.meshes.push(DrawMesh {
 												sorting_index: sorting_idx,
-												ty: DrawMeshType::FillMesh(mem::take(fm)),
+												ty:            DrawMeshType::FillMesh(mem::take(fm)),
 											});
 											*fm = FillMesh::new(fill_color);
 										}
@@ -373,7 +376,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 									draw_buffer.meshes.push(DrawMesh {
 										sorting_index: sorting_idx,
-										ty: DrawMeshType::FillMesh(fm),
+										ty:            DrawMeshType::FillMesh(fm),
 									});
 								}
 							} else {
@@ -1006,21 +1009,17 @@ fn draw_implicit<T: EvalexprFloat>(
 	Ok(())
 }
 
-pub fn gpu_position_from_point(plot_trans: &PlotTransform, point: &PlotPoint) -> Pos2 {
+pub fn gpu_position_from_point(plot_trans: &PlotTransform, invert_axes: [bool; 2], point: &PlotPoint) -> Pos2 {
 	let x = remap(
 		point.x,
 		plot_trans.bounds().min()[0]..=plot_trans.bounds().max()[0],
-		// if plot_trans.inverted_axis()[0] { h_size_x..=-h_size_x } else { -h_size_x..=h_size_x
-		// },
-		-1.0..=1.0,
+		if invert_axes[0] { 1.0..=-1.0 } else { -1.0..=1.0 },
 	) as f32;
 
 	let y = remap(
 		point.y,
 		plot_trans.bounds().min()[1]..=plot_trans.bounds().max()[1],
-		// if plot_trans.inverted_axis()[1] { v_size_y..=-v_size_y } else { -v_size_y..=v_size_y
-		// },
-		-1.0..=1.0,
+		if invert_axes[1] { 1.0..=-1.0 } else { -1.0..=1.0 },
 	) as f32;
 	pos2(x, y)
 }
