@@ -140,13 +140,14 @@ pub enum FunctionType {
 pub enum EntryType<T: EvalexprFloat> {
 	Function {
 		can_be_drawn: bool,
-    selectable:   bool,
+		selectable:   bool,
 		identifier:   IStr,
 		func:         Expr<T>,
 		style:        LineStyleConfig,
 		ty:           FunctionType,
 
 		parametric:          bool,
+		parametric_fill:     bool,
 		/// used when parametric is `true`
 		range_start:         Expr<T>,
 		/// used when parametric is `true`
@@ -307,12 +308,12 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Points { .. } => "◊",
 			EntryType::Label { .. } => "📃",
 			EntryType::Folder { .. } => {
-        if self.active {
-          "📂"
-        } else {
-          "📁"
-        }
-      }
+				if self.active {
+					"📂"
+				} else {
+					"📁"
+				}
+			},
 		}
 	}
 	pub fn symbol_with_name(&self) -> &'static str {
@@ -342,11 +343,12 @@ impl<T: EvalexprFloat> Entry<T> {
 			name: String::new(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
-        selectable:   true,
+				selectable:   true,
 				can_be_drawn: true,
 
 				func:                Expr::from_text(text),
 				parametric:          false,
+				parametric_fill:     false,
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),
 				ty:                  FunctionType::Expression,

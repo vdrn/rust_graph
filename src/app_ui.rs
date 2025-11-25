@@ -4,12 +4,12 @@ use eframe::egui::{
 	self, Align, Button, CollapsingHeader, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
 };
 use eframe::epaint::Color32;
-use egui_plot::{HLine, Legend, Plot, PlotPoint, VLine};
+use egui_plot::{HLine, Legend, Plot, PlotImage, PlotPoint, VLine};
 use evalexpr::EvalexprFloat;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::builtins::{init_builtins, show_builtin_information};
-use crate::draw_buffer::{PointInteraction, PointInteractionType, process_draw_buffers};
+use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
 use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries};
 use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::{State, UiState, persistence, scope};
@@ -334,7 +334,9 @@ pub fn side_panel<T: EvalexprFloat>(
 	});
 	ui_state.eval_errors.clear();
 }
-pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context) {
+pub fn graph_panel<T: EvalexprFloat>(
+	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame,
+) {
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
 	let first_y = ui_state.plot_bounds.min()[1];
@@ -366,6 +368,7 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 		step_size,
 		step_size_y,
 		resolution: ui_state.conf.resolution,
+		prev_plot_transform: ui_state.prev_plot_transform,
 	};
 
 	let main_context = &state.ctx;
@@ -393,12 +396,15 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 		}
 	});
 
-	let mouse_pos_in_graph = ui_state.plot_mouese_pos.map(|(pos, trans)| {
-		let p = trans.value_from_position(pos);
-		(p.x, p.y)
-	});
+	let mouse_pos_in_graph =
+		if let (Some(pos), Some(trans)) = (ui_state.plot_mouese_pos, ui_state.prev_plot_transform) {
+			let p = trans.value_from_position(pos);
+			Some((p.x, p.y))
+		} else {
+			None
+		};
 
-	let p_draw_buffer = process_draw_buffers(
+	let mut p_draw_buffer = process_draw_buffers(
 		ui_state.draw_buffers.as_mut(),
 		ui_state.selected_plot_line,
 		mouse_pos_in_graph,
@@ -435,14 +441,58 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 		// plot.center_y_axis
 		let mut hovered_point: Option<(bool, PointInteraction)> = None;
 
+		if let (Some(custom_renderer), Some(prev_plot_transform)) =
+			(&mut ui_state.custom_renderer, ui_state.prev_plot_transform)
+		{
+			// TODO: move this to process_draw_buffers
+			let render_state = eframe.wgpu_render_state().unwrap();
+			let draw_frame = prev_plot_transform.frame();
+
+			let size = draw_frame.size();
+			for mesh in p_draw_buffer.draw_meshes.iter_mut() {
+				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
+					if fill_mesh.vertices.len() > 2 {
+						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
+							render_state, &fill_mesh.vertices, fill_mesh.color, size.x, size.y,
+						));
+					}
+				}
+			}
+		}
+		if let Some(custom_renderer) = &mut ui_state.custom_renderer {
+			custom_renderer.reset_textures();
+		}
+
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
 			for mesh in p_draw_buffer.draw_meshes {
-				plot_ui.add(mesh);
+				match mesh.ty {
+					DrawMeshType::EguiPlotMesh(mesh) => {
+						plot_ui.add(mesh);
+					},
+					DrawMeshType::FillMesh(fill_mesh) => {
+						if let Some(texture_id) = fill_mesh.texture_id {
+							let bounds = ui_state.plot_bounds;
+							let center = bounds.center();
+							let size_x = bounds.width();
+							let size_y = bounds.height();
+
+							plot_ui.image(PlotImage::new(
+								"",
+								texture_id,
+								center,
+								[size_x as f32, size_y as f32],
+							));
+						}
+					},
+				}
 				// plot_ui.mesh(mesh.mesh);
 			}
+			// if let Some(tex_id) = tex_id {
+			// 	plot_ui.image(PlotImage::new("bla", tex_id, PlotPoint::new(0.0, 0.0), [2.0, 2.0]));
+			// }
 			for draw_poly_group in p_draw_buffer.draw_polygons {
 				for poly in draw_poly_group.polygons {
 					plot_ui.polygon(poly);
@@ -452,7 +502,8 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 				plot_ui.line(draw_line.line);
 			}
 			for draw_point in p_draw_buffer.draw_points {
-				if let Some((mouse_pos, transform)) = ui_state.plot_mouese_pos {
+				if let Some(mouse_pos) = ui_state.plot_mouese_pos {
+					let transform = ui_state.prev_plot_transform.as_ref().unwrap();
 					let sel = &draw_point.interaction;
 					let is_draggable = matches!(sel.ty, PointInteractionType::Draggable { .. });
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
@@ -479,8 +530,12 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			ui_state.reset_graph = true;
 		}
 
-		ui_state.plot_bounds = *plot_res.transform.bounds();
-		ui_state.plot_mouese_pos = plot_res.response.hover_pos().map(|p| (p, plot_res.transform));
+		if ui_state.plot_bounds != *plot_res.transform.bounds() {
+			ui.ctx().request_repaint();
+			ui_state.plot_bounds = *plot_res.transform.bounds();
+		}
+		ui_state.plot_mouese_pos = plot_res.response.hover_pos();
+		ui_state.prev_plot_transform = Some(plot_res.transform);
 
 		if let Some(drag_result) = point_dragging(
 			&mut state.entries,

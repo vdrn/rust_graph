@@ -1,11 +1,12 @@
 use core::cell::RefCell;
 use std::sync::Mutex;
 
-use eframe::egui::{Color32, Id, Mesh, Shape};
+use eframe::egui::{self, Color32, Id, Mesh, Shape};
 use egui_plot::{Line, PlotGeometry, PlotItem, PlotPoint, Points};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
 
+use crate::custom_rendering::TriangleFanVertex;
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
@@ -285,13 +286,37 @@ pub fn process_draw_buffers(
 }
 
 pub struct DrawMesh {
+	pub sorting_index: u32,
+	pub ty:            DrawMeshType,
+}
+#[derive(Default)]
+pub struct FillMesh {
+	pub(crate) vertices:   Vec<TriangleFanVertex>,
+	pub(crate) texture_id: Option<egui::TextureId>,
+	pub(crate) color:      Color32,
+}
+impl FillMesh {
+	pub fn new(color: Color32) -> Self { Self { vertices: Vec::new(), texture_id: None, color } }
+	pub fn add_vertex(&mut self, x: f32, y: f32) {
+		// if self.vertices.is_empty() {
+		// 	// first vertex will be fan center
+		// 	self.vertices.push(TriangleFanVertex::new(x, y));
+		// }
+		self.vertices.push(TriangleFanVertex::new(x, y));
+	}
+}
+
+pub enum DrawMeshType {
+	EguiPlotMesh(EguiPlotMesh),
+	FillMesh(FillMesh),
+}
+pub struct EguiPlotMesh {
 	pub bounds:         egui_plot::PlotBounds,
 	pub plot_item_base: egui_plot::PlotItemBase,
-	pub sorting_index:  u32,
 	pub mesh:           RefCell<MeshBuilder>,
 	pub color:          Color32,
 }
-impl PlotItem for DrawMesh {
+impl PlotItem for EguiPlotMesh {
 	fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
 		for vertex in self.mesh.borrow_mut().vertices.iter_mut() {
 			vertex.pos =

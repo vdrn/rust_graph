@@ -4,13 +4,13 @@ use core::mem;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
-use eframe::egui::{self, Color32, Id, RichText, Stroke};
-use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, Points, Polygon, Text};
+use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
+use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, PlotTransform, Points, Polygon, Text};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawLine, DrawMesh, DrawPoint, DrawPolygonGroup, DrawText, OtherPointType, PointInteraction, PointInteractionType
+	DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, FillMesh, OtherPointType, PointInteraction, PointInteractionType
 };
 use crate::entry::{Entry, EntryType, EquationType, f64_to_value};
 use crate::marching_squares::MeshBuilder;
@@ -18,14 +18,15 @@ use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary}
 use crate::{ThreadLocalContext, marching_squares, thread_local_get};
 
 pub struct PlotParams {
-	pub eps:         f64,
-	pub first_x:     f64,
-	pub last_x:      f64,
-	pub first_y:     f64,
-	pub last_y:      f64,
-	pub step_size:   f64,
-	pub step_size_y: f64,
-	pub resolution:  usize,
+	pub eps:                 f64,
+	pub first_x:             f64,
+	pub last_x:              f64,
+	pub first_y:             f64,
+	pub last_y:              f64,
+	pub step_size:           f64,
+	pub step_size_y:         f64,
+	pub resolution:          usize,
+	pub prev_plot_transform: Option<egui_plot::PlotTransform>,
 }
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::panic_in_result_fn)]
@@ -234,11 +235,12 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			can_be_drawn,
 			identifier,
 			parametric,
+			parametric_fill,
 			range_start,
 			range_end,
 			style,
 			implicit_resolution,
-      selectable,
+			selectable,
 			..
 		} => {
 			if !*can_be_drawn {
@@ -267,24 +269,25 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 					width,
 					Line::new(&display_name, PlotPoints::Owned(line))
 						.id(id)
-            .allow_hover(*selectable)
+						.allow_hover(*selectable)
 						.width(width)
 						.style(style.egui_line_style())
 						.color(color),
 				));
 			};
-			let mut add_mesh = |mesh: MeshBuilder| {
+			let mut add_egui_plot_mesh = |mesh: MeshBuilder| {
 				if mesh.is_empty() {
 					return;
 				}
 				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.meshes.push(DrawMesh {
-					bounds: mesh.bounds,
 					sorting_index: sorting_idx,
-
-					mesh: RefCell::new(mesh),
-					plot_item_base: PlotItemBase::new(display_name.clone()),
-					color,
+					ty: DrawMeshType::EguiPlotMesh(EguiPlotMesh {
+						bounds: mesh.bounds,
+						mesh: RefCell::new(mesh),
+						color,
+						plot_item_base: PlotItemBase::new(display_name.clone()),
+					}),
 				});
 			};
 			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
@@ -311,6 +314,37 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 					match func.equation_type {
 						EquationType::None => {
 							if *parametric {
+								let mut fill_mesh = if *parametric_fill
+									&& let Some(plot_trans) = plot_params.prev_plot_transform
+								{
+									Some((FillMesh::new(fill_color), plot_trans))
+								} else {
+									None
+								};
+
+								let mut add_parametric_line = |line: Vec<PlotPoint>, break_fill_mesh: bool| {
+									if line.is_empty() && !break_fill_mesh {
+										return;
+									}
+									if let Some((fm, plot_trans)) = &mut fill_mesh {
+										for point in line.iter() {
+											let screen_point = gpu_position_from_point(plot_trans, point);
+											fm.add_vertex(screen_point.x, screen_point.y);
+										}
+
+										if break_fill_mesh {
+											let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
+											draw_buffer.meshes.push(DrawMesh {
+												sorting_index: sorting_idx,
+												ty: DrawMeshType::FillMesh(mem::take(fm)),
+											});
+											*fm = FillMesh::new(fill_color);
+										}
+									}
+
+									add_line(line);
+								};
+
 								if func.args[0].to_str() == "y" {
 									draw_parametric_function::<T, { SimpleFunctionType::Y }>(
 										tl_context,
@@ -320,7 +354,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 										expr_func,
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
-										&mut add_line,
+										&mut add_parametric_line,
 									)?;
 								} else {
 									draw_parametric_function::<T, { SimpleFunctionType::X }>(
@@ -331,8 +365,16 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 										expr_func,
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
-										&mut add_line,
+										&mut add_parametric_line,
 									)?;
+								}
+
+								if let Some((fm, _)) = fill_mesh {
+									let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
+									draw_buffer.meshes.push(DrawMesh {
+										sorting_index: sorting_idx,
+										ty: DrawMeshType::FillMesh(fm),
+									});
 								}
 							} else {
 								if func.args[0].to_str() == "y" {
@@ -384,7 +426,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									fill_color,
 									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
 									&mut add_line,
-									&mut add_mesh,
+									&mut add_egui_plot_mesh,
 								)?;
 							} else {
 								draw_implicit(
@@ -396,7 +438,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									fill_color,
 									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
 									&mut add_line,
-									&mut add_mesh,
+									&mut add_egui_plot_mesh,
 								)?;
 							}
 						},
@@ -415,7 +457,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									expr_func.call(cc, ctx, &[f64_to_value::<T>(x), f64_to_value::<T>(y)])
 								},
 								&mut add_line,
-								&mut add_mesh,
+								&mut add_egui_plot_mesh,
 							)?;
 						}
 					}
@@ -485,12 +527,12 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		// let mut prev_y = None;
 		let mut discontinuity_detector = DiscontinuityDetector::new(step_size, plot_params.eps);
 
-		let graph_size = match TY {
-			SimpleFunctionType::X => plot_params.last_y - plot_params.first_y,
-			SimpleFunctionType::Y => plot_params.last_x - plot_params.first_x,
-		};
-		let mut prev_angle: Option<f64> = None;
-		let mut prev_point: Option<PlotPoint> = None;
+		// let graph_size = match TY {
+		// 	SimpleFunctionType::X => plot_params.last_y - plot_params.first_y,
+		// 	SimpleFunctionType::Y => plot_params.last_x - plot_params.first_x,
+		// };
+		// let mut prev_angle: Option<f64> = None;
+		// let mut prev_point: Option<PlotPoint> = None;
 		while sampling_arg <= last_sampling_arg {
 			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_arg)]) {
 				Ok(Value::Float(val)) => {
@@ -552,8 +594,8 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					if let Some(latest_point) = latest_point {
 						// TODO:This is commented out because we cannot just skip the points,
 						// as the egui_plot hovering functionality does not work without dense
-            // poitns on lines.
-            // We need to implement our hovering for this optimization.
+						// poitns on lines.
+						// We need to implement our hovering for this optimization.
 						//
 						// if let Some(prev_point) = prev_point {
 						// 	let dx = latest_point.x - prev_point.x;
@@ -627,7 +669,7 @@ fn calculate_curvature_factor(pangle1: f64, pangle2: f64) -> f64 {
 fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, range_start: Option<&FlatNode<T>>, range_end: Option<&FlatNode<T>>,
-	mut add_line: impl FnMut(Vec<PlotPoint>),
+	mut add_line: impl FnMut(Vec<PlotPoint>, bool),
 ) -> Result<(), Vec<(u64, String)>> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
@@ -745,18 +787,18 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					}) {
 					if is_float2 {
 						pp_buffer.push(PlotPoint::new(left.1, left.0));
-						add_line(mem::take(&mut pp_buffer));
+						add_line(mem::take(&mut pp_buffer), true);
 						pp_buffer.push(PlotPoint::new(right.1, right.0));
 					} else {
 						match TY {
 							SimpleFunctionType::X => {
 								pp_buffer.push(PlotPoint::new(left.0, left.1));
-								add_line(mem::take(&mut pp_buffer));
+								add_line(mem::take(&mut pp_buffer), true);
 								pp_buffer.push(PlotPoint::new(right.0, right.1));
 							},
 							SimpleFunctionType::Y => {
 								pp_buffer.push(PlotPoint::new(left.1, left.0));
-								add_line(mem::take(&mut pp_buffer));
+								add_line(mem::take(&mut pp_buffer), true);
 								pp_buffer.push(PlotPoint::new(right.1, right.0));
 							},
 						}
@@ -820,7 +862,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 								Ok(Some((_, p))) => pp_buffer.push(p),
 								Ok(None) => {
 									// NaN in the middle
-									add_line(mem::take(&mut pp_buffer));
+									add_line(mem::take(&mut pp_buffer), true);
 								},
 								Err(e) => return Err(vec![(id, e)]),
 							}
@@ -834,7 +876,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			},
 			(Some(_), None) => {
 				// nan
-				add_line(mem::take(&mut pp_buffer));
+				add_line(mem::take(&mut pp_buffer), true);
 			},
 			(None, Some((_, p))) => {
 				// coming back from NaN
@@ -875,7 +917,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// 		total_curvature_factor
 	// 	);
 	// }
-	add_line(pp_buffer);
+	add_line(pp_buffer, false);
 	Ok(())
 }
 #[allow(clippy::too_many_arguments)]
@@ -962,4 +1004,23 @@ fn draw_implicit<T: EvalexprFloat>(
 	}
 
 	Ok(())
+}
+
+pub fn gpu_position_from_point(plot_trans: &PlotTransform, point: &PlotPoint) -> Pos2 {
+	let x = remap(
+		point.x,
+		plot_trans.bounds().min()[0]..=plot_trans.bounds().max()[0],
+		// if plot_trans.inverted_axis()[0] { h_size_x..=-h_size_x } else { -h_size_x..=h_size_x
+		// },
+		-1.0..=1.0,
+	) as f32;
+
+	let y = remap(
+		point.y,
+		plot_trans.bounds().min()[1]..=plot_trans.bounds().max()[1],
+		// if plot_trans.inverted_axis()[1] { v_size_y..=-v_size_y } else { -v_size_y..=v_size_y
+		// },
+		-1.0..=1.0,
+	) as f32;
+	pos2(x, y)
 }

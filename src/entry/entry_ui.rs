@@ -211,7 +211,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			// handled in outer scope
 		},
-		EntryType::Function { func, parametric, range_start, range_end, implicit_resolution, .. } => {
+		EntryType::Function { func, parametric,parametric_fill, range_start, range_end, implicit_resolution, .. } => {
 			ui.vertical(|ui| {
 				match expr_ui(func, ui, "sin(x)", None, clear_cache, true) {
 					Ok(changed) => {
@@ -268,6 +268,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
+                ui.checkbox(parametric_fill, "Fill");
 							}
 						});
 						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");

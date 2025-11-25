@@ -7,7 +7,7 @@ use std::env;
 
 use eframe::egui::{self, Id, Visuals};
 use eframe::{App, CreationContext};
-use egui_plot::{PlotBounds, PlotTransform};
+use egui_plot::PlotBounds;
 use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, Stack};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use thread_local::ThreadLocal;
 
 mod app_ui;
 mod builtins;
+mod custom_rendering;
 mod draw_buffer;
 mod entry;
 mod marching_squares;
@@ -45,12 +46,28 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use crate::custom_rendering::CustomRenderer;
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn wasm_main() -> () {
 	use eframe::wasm_bindgen::JsCast as _;
+use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+use eframe::egui_wgpu::wgpu::Backends;
 
-	let web_options = eframe::WebOptions::default();
+	let mut web_options = eframe::WebOptions::default();
+
+  web_options.wgpu_options= 
+		WgpuConfiguration {
+			wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
+				instance_descriptor: wgpu::InstanceDescriptor {
+					backends: Backends::GL,
+					..Default::default()
+				},
+				..Default::default()
+			}),
+			..Default::default()
+		};
 
 	console_error_panic_hook::set_once();
 
@@ -132,6 +149,7 @@ struct UiState {
 	conf:        AppConfig,
 	next_id:     u64,
 	plot_bounds: PlotBounds,
+
 	// data_aspect: f32,
 	reset_graph: bool,
 
@@ -146,7 +164,7 @@ struct UiState {
 
 	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<draw_buffer::PointInteraction>,
-	plot_mouese_pos:      Option<(egui::Pos2, PlotTransform)>,
+	plot_mouese_pos:      Option<egui::Pos2>,
 	showing_custom_label: bool,
 
 	f32_epsilon:          f64,
@@ -161,6 +179,9 @@ struct UiState {
 
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	full_frame_scope: Option<puffin::ProfilerScope>,
+
+	custom_renderer:     Option<CustomRenderer>,
+	prev_plot_transform: Option<egui_plot::PlotTransform>,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -280,6 +301,7 @@ impl Application {
 				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
+				custom_renderer: CustomRenderer::new(cc),
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 				full_frame_scope: None,
 				// animating: Arc::new(AtomicBool::new(true)),
@@ -307,6 +329,7 @@ impl Application {
 				permalink_string: String::new(),
 				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),
+				prev_plot_transform: None,
 				showing_help: false,
 			},
 		}
@@ -324,10 +347,10 @@ impl App for Application {
 		let use_f32 = self.ui.conf.use_f32;
 		if use_f32 {
 			app_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx);
+			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
 		} else {
 			app_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx);
+			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
 		}
 		if use_f32 != self.ui.conf.use_f32 {
 			if use_f32 {
@@ -374,7 +397,7 @@ impl App for Application {
 		storage.set_string(CONF_KEY, serde_json::to_string(&self.ui.conf).unwrap());
 	}
 
-	fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {}
+
 
 	fn auto_save_interval(&self) -> core::time::Duration { core::time::Duration::from_secs(5) }
 

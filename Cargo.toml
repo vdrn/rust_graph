@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = []
+default = [ ]
 
 [profile.dev]
 opt-level = 1
@@ -34,7 +34,15 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
-eframe = { version = "0.33",features=["persistence"] }
+eframe = { version = "0.33",default-features=false, features=[
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "web_screen_reader",
+    "x11",
+"persistence", "wgpu" ] }
+wgpu = { version = "*", features = [ "webgpu", "webgl"] }
+bytemuck = "1"
 cfg-if = "1"
 egui_plot="0.34"
 # enum-map="2.7"
