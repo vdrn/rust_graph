@@ -140,6 +140,7 @@ pub enum FunctionType {
 pub enum EntryType<T: EvalexprFloat> {
 	Function {
 		can_be_drawn: bool,
+    selectable:   bool,
 		identifier:   IStr,
 		func:         Expr<T>,
 		style:        LineStyleConfig,
@@ -305,16 +306,31 @@ impl<T: EvalexprFloat> Entry<T> {
 			},
 			EntryType::Points { .. } => "◊",
 			EntryType::Label { .. } => "📃",
-			EntryType::Folder { .. } => "📂",
+			EntryType::Folder { .. } => {
+        if self.active {
+          "📂"
+        } else {
+          "📁"
+        }
+      }
 		}
 	}
-	pub fn type_name(&self) -> &'static str {
+	pub fn symbol_with_name(&self) -> &'static str {
 		match self.ty {
 			EntryType::Function { .. } => "λ   Function",
 			EntryType::Constant { .. } => "⏵ Constant",
 			EntryType::Points { .. } => "◊ Points",
 			EntryType::Label { .. } => "📃 Label",
 			EntryType::Folder { .. } => "📂 Folder",
+		}
+	}
+	pub fn name(&self) -> &'static str {
+		match self.ty {
+			EntryType::Function { .. } => "Function",
+			EntryType::Constant { .. } => "Constant",
+			EntryType::Points { .. } => "Points",
+			EntryType::Label { .. } => "Label",
+			EntryType::Folder { .. } => "Folder",
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
@@ -326,6 +342,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			name: String::new(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
+        selectable:   true,
 				can_be_drawn: true,
 
 				func:                Expr::from_text(text),

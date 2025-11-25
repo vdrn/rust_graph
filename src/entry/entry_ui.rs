@@ -11,13 +11,15 @@ use evalexpr::{EvalexprFloat, HashMapContext};
 
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES, 
+	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES
 };
+use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
 	pub animating:           bool,
 	pub remove:              bool,
+	pub duplicate:           bool,
 	pub error:               Option<String>,
 	pub parsed:              bool,
 }
@@ -28,6 +30,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 		needs_recompilation: false,
 		animating:           false,
 		remove:              false,
+		duplicate:           false,
 		parsed:              false,
 
 		error: None,
@@ -48,6 +51,22 @@ pub fn entry_ui<T: EvalexprFloat>(
 					.fill(fill_col)
 					.corner_radius(10),
 			)
+			.on_hover_text(match &entry.ty {
+				EntryType::Constant { .. } => {
+					if entry.active {
+						"Pause"
+					} else {
+						"Play"
+					}
+				},
+				_ => {
+					if entry.active {
+						"Hide in Graph"
+					} else {
+						"Show in Graph"
+					}
+				},
+			})
 			.clicked()
 		{
 			entry.active = !entry.active;
@@ -73,12 +92,19 @@ pub fn entry_ui<T: EvalexprFloat>(
 	ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::RightToLeft), |ui| {
 		// controls
 		ui.horizontal(|ui| {
-			entry_style(ui, entry);
-
-			if ui.button("X").clicked() {
-				result.remove = true;
-				result.needs_recompilation = true;
-			}
+			ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
+				if remove_entry_btn(ui, entry.name()) {
+					result.remove = true;
+					result.needs_recompilation = true;
+				}
+				if duplicate_entry_btn(ui, entry.name()) {
+					result.duplicate = true;
+					result.needs_recompilation = true;
+				}
+			});
+			ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
+				entry_style(ui, entry);
+			});
 		});
 		// entry edit
 		ui.horizontal(|ui| {
@@ -93,81 +119,89 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 	let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
 		.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
 	style_button.button = style_button.button.fill(entry.color());
-	style_button.ui(ui, |ui| {
-		let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
-		color_button.button = color_button.button.fill(entry.color());
+	style_button
+		.ui(ui, |ui| {
+			let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
+			color_button.button = color_button.button.fill(entry.color());
 
-		color_button.ui(ui, |ui| {
-			for i in 0..COLORS.len() {
-				if ui.button(RichText::new("     ").background_color(COLORS[i])).clicked() {
-					entry.color = i;
-				}
-			}
-		});
-		match &mut entry.ty {
-			EntryType::Function { style, .. } => {
-				ui.separator();
-
-				line_style_config_ui(style, ui);
-				ui.separator();
-				egui::Sides::new().show(
-					ui,
-					|_ui| {},
-					|ui| {
-						if ui.button("Close").clicked() {
-							ui.close();
-						}
-						if ui.button("Reset").clicked() {
-							*style = Default::default();
-							ui.close();
-						}
-					},
-				);
-			},
-			EntryType::Points { style, .. } => {
-				ui.separator();
-				let mut show_label = style.label_config.is_some();
-				if ui.checkbox(&mut show_label, "Show label").changed() {
-					if show_label {
-						style.label_config = Some(LabelConfig::default());
-					} else {
-						style.label_config = None;
+			color_button.ui(ui, |ui| {
+				for i in 0..COLORS.len() {
+					if ui
+						.button(RichText::new("     ").background_color(COLORS[i]))
+						.on_hover_text("Change Color")
+						.clicked()
+					{
+						entry.color = i;
 					}
 				}
-				if let Some(label_config) = &mut style.label_config {
-					label_config_ui(label_config, ui);
-				}
-				ui.separator();
-				ui.checkbox(&mut style.show_lines, "Show Lines");
-				if style.show_lines {
-					ui.label("Line Style:");
-					ui.checkbox(&mut style.show_arrows, "Show Arrows");
-					line_style_config_ui(&mut style.line_style, ui);
-				} else {
-					style.show_arrows = false;
-				}
-				ui.separator();
-				ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
+			});
+			match &mut entry.ty {
+				EntryType::Function { style,selectable, .. } => {
+          ui.checkbox(selectable, "Selectable");
+					ui.separator();
 
-				egui::Sides::new().show(
-					ui,
-					|_ui| {},
-					|ui| {
-						if ui.button("Close").clicked() {
-							ui.close();
+					line_style_config_ui(style, ui);
+					ui.separator();
+					egui::Sides::new().show(
+						ui,
+						|_ui| {},
+						|ui| {
+							if ui.button("Close").clicked() {
+								ui.close();
+							}
+							if ui.button("Reset").clicked() {
+								*style = Default::default();
+								ui.close();
+							}
+						},
+					);
+				},
+				EntryType::Points { style, .. } => {
+					ui.separator();
+					let mut show_label = style.label_config.is_some();
+					if ui.checkbox(&mut show_label, "Show label").changed() {
+						if show_label {
+							style.label_config = Some(LabelConfig::default());
+						} else {
+							style.label_config = None;
 						}
-						if ui.button("Reset").clicked() {
-							*style = Default::default();
-							ui.close();
-						}
-					},
-				);
-			},
-			EntryType::Constant { .. } => {},
-			EntryType::Label { .. } => {},
-			EntryType::Folder { .. } => {},
-		}
-	});
+					}
+					if let Some(label_config) = &mut style.label_config {
+						label_config_ui(label_config, ui);
+					}
+					ui.separator();
+					ui.checkbox(&mut style.show_lines, "Show Lines");
+					if style.show_lines {
+						ui.label("Line Style:");
+						ui.checkbox(&mut style.show_arrows, "Show Arrows");
+						line_style_config_ui(&mut style.line_style, ui);
+					} else {
+						style.show_arrows = false;
+					}
+					ui.separator();
+					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
+
+					egui::Sides::new().show(
+						ui,
+						|_ui| {},
+						|ui| {
+							if ui.button("Close").clicked() {
+								ui.close();
+							}
+							if ui.button("Reset").clicked() {
+								*style = Default::default();
+								ui.close();
+							}
+						},
+					);
+				},
+				EntryType::Constant { .. } => {},
+				EntryType::Label { .. } => {},
+				EntryType::Folder { .. } => {},
+			}
+		})
+		.0
+		.on_hover_text("Edit Apprearance");
 }
 fn entry_type_ui<T: EvalexprFloat>(
 	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
@@ -197,7 +231,15 @@ fn entry_type_ui<T: EvalexprFloat>(
 								.ui(ui);
 
 							ui.label("=");
-							if Button::new(if func.display_rational { "Q" } else { "F" }).ui(ui).clicked() {
+							if Button::new(if func.display_rational { "Q" } else { "F" })
+								.ui(ui)
+								.on_hover_text(if func.display_rational {
+									"Display as Float"
+								} else {
+									"Display as Rational"
+								})
+								.clicked()
+							{
 								func.display_rational = !func.display_rational;
 							}
 						});
@@ -365,13 +407,15 @@ fn entry_type_ui<T: EvalexprFloat>(
 									PointDragType::Y.name(),
 								)
 								.changed();
-						});
+						})
+						.response
+						.on_hover_text("Choose dragging behavior.");
 						if drag_type_changed {
 							result.parsed = true;
 							result.needs_recompilation = true;
 						}
 
-						if ui.button("❌").clicked() {
+						if ui.button("❌").on_hover_text("Remove Point").clicked() {
 							remove_point = Some(pi);
 						}
 					});
@@ -419,7 +463,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					}
 					v = v.clamp(start, end);
 
-					if slider_full_width(ui, &mut v, range, *step) {
+					if full_width_slider(ui, &mut v, range, *step, T::EPSILON) {
 						entry.active = false;
 					}
 
@@ -448,7 +492,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 							*ty = ConstantType::PlayIndefinitely;
 							result.animating = true;
 						}
-					});
+					})
+					.response
+					.on_hover_text("Choose the constant animation type.");
 
 					match ty {
 						ConstantType::LoopForwardAndBackward { .. }
@@ -471,7 +517,29 @@ fn entry_type_ui<T: EvalexprFloat>(
 						},
 					}
 
-					DragValue::new(step).prefix("Step:").speed(0.00001).ui(ui);
+					let steps_step = *step * 0.1;
+					let prev_step = *step;
+					let step_range = T::EPSILON * 100.0..=10.0;
+					let response = DragValue::new(step)
+						.prefix("Step:")
+						.speed(steps_step)
+						.range(step_range.clone())
+						.ui(ui);
+					if response.dragged() {
+						let max_change = steps_step * 2.0;
+						let shift = ui.input(|i| i.modifiers.shift_only());
+
+						let speed = steps_step.min(0.4);
+						let speed = if shift { speed * 0.1 } else { speed };
+
+						let mdelta = response.drag_delta();
+						let delta_points = mdelta.x - mdelta.y; // Increase to the right and up
+						let delta_value = delta_points as f64 * speed;
+						if delta_value != 0.0 {
+							*step = prev_step + delta_value.clamp(-max_change, max_change);
+							*step = step.clamp(*step_range.start(), *step_range.end());
+						}
+					}
 
 					if !prev_active && entry.active {
 						if value.to_f64() >= end {
@@ -744,25 +812,4 @@ fn line_style_config_ui(config: &mut LineStyleConfig, ui: &mut egui::Ui) {
 			ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Length"));
 		},
 	}
-}
-
-fn slider_full_width<Num: egui::emath::Numeric>(
-	ui: &mut egui::Ui, value: &mut Num, range: core::ops::RangeInclusive<Num>, step: f64,
-) -> bool {
-	let mut changed = false;
-	// ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::RightToLeft), |ui| {
-	if DragValue::new(value).speed(step * 0.5).ui(ui).changed() {
-		changed = true;
-	}
-	let default_slider_width = ui.style().spacing.slider_width;
-	ui.style_mut().spacing.slider_width = ui.available_width();
-	if ui
-		.add(Slider::new(value, range).step_by(step).clamping(egui::SliderClamping::Never).show_value(false))
-		.dragged()
-	{
-		changed = true;
-	}
-	ui.style_mut().spacing.slider_width = default_slider_width;
-	// });
-	changed
 }

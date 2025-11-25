@@ -447,7 +447,11 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 ) -> Result<(), (u64, String)> {
 	match &mut entry.ty {
 		EntryType::Function { func, identifier, .. } => {
-			let Some(node) = &func.node else { return Ok(()) };
+			func.expr_function = None;
+
+			let Some(node) = &func.node else {
+				return Ok(());
+			};
 			// println!("INLINING FUNC {} {}", entry.name, func.text);
 			// println!("ops  {:?}", node);
 			let inlined_node =

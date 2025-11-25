@@ -8,11 +8,11 @@ use egui_plot::{HLine, Legend, Plot, PlotPoint, VLine};
 use evalexpr::EvalexprFloat;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
+use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{PointInteraction, PointInteractionType, process_draw_buffers};
 use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries};
-use crate::{
-	BOOLEAN_OPERATORS, BUILTIN_CONSTS, BUILTIN_FUNCTIONS, OPERATORS, State, UiState, init_consts, init_functions, persistence, scope
-};
+use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
+use crate::{State, UiState, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -42,7 +42,11 @@ pub fn side_panel<T: EvalexprFloat>(
 			ui.add_space(10.0);
 			ui.horizontal_top(|ui| {
 				ui.heading("Rust Graph");
-				if ui.button(if ui_state.conf.dark_mode { "🌙" } else { "☀" }).clicked() {
+				if ui
+					.button(if ui_state.conf.dark_mode { "🌙" } else { "☀" })
+					.on_hover_text("Toggle Dark Mode")
+					.clicked()
+				{
 					ui_state.conf.dark_mode = !ui_state.conf.dark_mode;
 				}
 			});
@@ -52,11 +56,11 @@ pub fn side_panel<T: EvalexprFloat>(
 			let mut needs_recompilation = false;
 
 			ui.horizontal_top(|ui| {
-				if add_new_entry_btn(ui, &mut ui_state.next_id, &mut state.entries, true) {
+				if add_new_entry_btn(ui, "New entry", &mut ui_state.next_id, &mut state.entries, true) {
 					needs_recompilation = true;
 				}
 
-				if ui.button("❌ Clear all").clicked() {
+				if ui.button("❌ Remove all").on_hover_text("Remove all entries").clicked() {
 					state.entries.clear();
 					state.clear_cache = true;
 				}
@@ -84,22 +88,24 @@ pub fn side_panel<T: EvalexprFloat>(
 			}
 
 			let mut remove = None;
+			let mut duplicate = None;
 			let mut animating = false;
 			// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
 				entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+					let symbol = entry.symbol();
 					if let EntryType::Folder { entries } = &mut entry.ty {
 						ui.vertical(|ui| {
 							ui.horizontal(|ui| {
 								handle.ui(ui, |ui| {
-									ui.label("||");
+									ui.label("||").on_hover_text("Drag to reorder entries");
 								});
-								let folder_symbol = if entry.active { "📂" } else { "📁" };
 								if ui
 									.add(
-										Button::new(RichText::new(folder_symbol).strong().monospace())
+										Button::new(RichText::new(symbol).strong().monospace())
 											.corner_radius(10),
 									)
+									.on_hover_text(if entry.active { "Close folder" } else { "Open Folder" })
 									.clicked()
 								{
 									entry.active = !entry.active;
@@ -107,11 +113,14 @@ pub fn side_panel<T: EvalexprFloat>(
 
 								ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
 									if entries.is_empty() {
-										if ui.button("X").clicked() {
+										if remove_entry_btn(ui, "Folder") {
 											remove = Some(entry.id);
 										}
 									}
-									if add_new_entry_btn(ui, &mut ui_state.next_id, entries, false) {
+									if duplicate_entry_btn(ui, "Folder") {
+										duplicate = Some(entry.id);
+									}
+									if add_new_entry_btn(ui, "", &mut ui_state.next_id, entries, false) {
 										needs_recompilation = true;
 									}
 									ui.add(
@@ -123,52 +132,67 @@ pub fn side_panel<T: EvalexprFloat>(
 									.changed();
 								});
 							});
-							if entry.active {
-								let mut remove_from_folder = None;
+							if !entry.active {
+								return;
+							}
+							let mut remove_from_folder = None;
+							let mut duplicate_in_folder = None;
 
-								egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
-									entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
-										ui.horizontal(|ui| {
-											handle.ui(ui, |ui| {
-												ui.label("    |");
-											});
-											ui.horizontal(|ui| {
-												let fe_result =
-													entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
-												if fe_result.remove {
-													remove_from_folder = Some(entry.id);
-												}
-												animating |= fe_result.animating;
-												needs_recompilation |= fe_result.needs_recompilation;
-												if let Some(error) = fe_result.error {
-													ui_state.parsing_errors.insert(entry.id, error);
-												} else if fe_result.parsed {
-													ui_state.parsing_errors.remove(&entry.id);
-												}
-											});
+							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
+								entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+									ui.horizontal(|ui| {
+										handle.ui(ui, |ui| {
+											ui.label("    |").on_hover_text("Drag to reorder entries");
 										});
-										display_entry_errors(ui, ui_state, entry.id);
+										ui.horizontal(|ui| {
+											let fe_result =
+												entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
+											if fe_result.remove {
+												remove_from_folder = Some(entry.id);
+											}
+											if fe_result.duplicate {
+												duplicate_in_folder = Some(entry.id);
+											}
+											animating |= fe_result.animating;
+											needs_recompilation |= fe_result.needs_recompilation;
+											if let Some(error) = fe_result.error {
+												ui_state.parsing_errors.insert(entry.id, error);
+											} else if fe_result.parsed {
+												ui_state.parsing_errors.remove(&entry.id);
+											}
+										});
 									});
+									display_entry_errors(ui, ui_state, entry.id);
 								});
-								if let Some(id) = remove_from_folder {
-									if let Some(index) = entries.iter().position(|e| e.id == id) {
-										entries.remove(index);
-									}
+							});
+							if add_new_entry_btn(ui, "New Folder Entry", &mut ui_state.next_id, entries, false)
+							{
+								needs_recompilation = true;
+							}
+							if let Some(id) = remove_from_folder {
+								if let Some(index) = entries.iter().position(|e| e.id == id) {
+									entries.remove(index);
 								}
+							} else if let Some(id) = duplicate_in_folder {
+								duplicate_entry(id, &mut ui_state.next_id, entries);
 							}
 						});
 					} else {
 						ui.horizontal(|ui| {
 							handle.ui(ui, |ui| {
-								ui.label("||");
+								ui.label("||").on_hover_text("Drag to reorder entries");
 							});
 							ui.horizontal(|ui| {
 								let result = entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
 								if result.remove {
 									remove = Some(entry.id);
 								}
+								if result.duplicate {
+									duplicate = Some(entry.id);
+								}
 								animating |= result.animating;
 								needs_recompilation |= result.needs_recompilation;
+
 								if let Some(error) = result.error {
 									ui_state.parsing_errors.insert(entry.id, error);
 								} else if result.parsed {
@@ -180,12 +204,18 @@ pub fn side_panel<T: EvalexprFloat>(
 					display_entry_errors(ui, ui_state, entry.id);
 				});
 			});
+			if add_new_entry_btn(ui, "New Entry", &mut ui_state.next_id, &mut state.entries, true) {
+				needs_recompilation = true;
+			}
 
 			if let Some(id) = remove {
 				if let Some(index) = state.entries.iter().position(|e| e.id == id) {
 					state.entries.remove(index);
 				}
+			} else if let Some(id) = duplicate {
+				duplicate_entry(id, &mut ui_state.next_id, &mut state.entries);
 			}
+			ui.separator();
 
 			#[cfg(not(target_arch = "wasm32"))]
 			ui.hyperlink_to("View Online", {
@@ -223,42 +253,7 @@ pub fn side_panel<T: EvalexprFloat>(
 				if ui_state.showing_help {
 					Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
 						ScrollArea::vertical().show(ui, |ui| {
-							ui.columns_const::<3, _>(|columns| {
-								columns[0].heading("Operators");
-								for &(name, value) in OPERATORS {
-									columns[0].horizontal_wrapped(|ui| {
-										ui.label(RichText::new(name).monospace().strong());
-										ui.label(value);
-									});
-								}
-								columns[1].heading("Boolean Operators");
-								for &(name, value) in BOOLEAN_OPERATORS {
-									columns[1].horizontal_wrapped(|ui| {
-										ui.label(RichText::new(name).monospace().strong());
-										ui.label(value);
-									});
-								}
-								columns[2].heading("Builtin Constants");
-								for &(name, value) in BUILTIN_CONSTS {
-									columns[2].horizontal_wrapped(|ui| {
-										ui.label(RichText::new(name).monospace().strong());
-										ui.label(value);
-									});
-								}
-							});
-
-							ui.separator();
-							ui.heading("Builtin Functions");
-							for &(name, value) in BUILTIN_FUNCTIONS {
-								if name.is_empty() {
-									ui.separator();
-								} else {
-									ui.horizontal_wrapped(|ui| {
-										ui.label(RichText::new(name).monospace().strong());
-										ui.label(value);
-									});
-								}
-							}
+							show_builtin_information(ui);
 						});
 					});
 				}
@@ -301,8 +296,7 @@ pub fn side_panel<T: EvalexprFloat>(
 				}
 
 				state.ctx.clear();
-				init_functions::<T>(&mut state.ctx);
-				init_consts::<T>(&mut state.ctx);
+				init_builtins::<T>(&mut state.ctx);
 
 				// state.context_stash.lock().unwrap().clear();
 
@@ -421,9 +415,10 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 		let mut bounds = ui_state.plot_bounds;
 		if ui_state.reset_graph {
 			ui_state.reset_graph = false;
-			plot = plot.data_aspect(1.0).center_x_axis(true).center_y_axis(true).reset();
 			if let Some(default_bounds) = state.default_bounds {
 				bounds = default_bounds;
+			} else {
+				plot = plot.center_x_axis(true).center_y_axis(true).data_aspect(1.0);
 			}
 		}
 		plot = plot
@@ -499,7 +494,7 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			ui_state.showing_custom_label = true;
 			let screen_x = plot_res.transform.position_from_point_x(drag_result.x);
 			let screen_y = plot_res.transform.position_from_point_y(drag_result.y);
-			show_popup_label(
+			popup_label(
 				ui,
 				Id::new("drag_point_popup"),
 				format!(
@@ -516,7 +511,7 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			let screen_x = plot_res.transform.position_from_point_x(closest_point.0);
 			let screen_y = plot_res.transform.position_from_point_y(closest_point.1);
 			ui_state.showing_custom_label = true;
-			show_popup_label(
+			popup_label(
 				ui,
 				Id::new("point_on_fn"),
 				format!(
@@ -534,7 +529,7 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 			let screen_x = plot_res.transform.position_from_point_x(hovered_point.x);
 			let screen_y = plot_res.transform.position_from_point_y(hovered_point.y);
 			ui_state.showing_custom_label = true;
-			show_popup_label(
+			popup_label(
 				ui,
 				Id::new("point_popup"),
 				format!(
@@ -578,54 +573,69 @@ pub fn graph_panel<T: EvalexprFloat>(state: &mut State<T>, ui_state: &mut UiStat
 	});
 }
 
+fn prepare_copied_entry<T: EvalexprFloat>(entry: &mut Entry<T>, next_id: &mut u64) {
+	if !entry.name.is_empty() {
+		entry.name = format!("{}_c", entry.name);
+	}
+	*next_id += 1;
+	entry.id = *next_id;
+	if let EntryType::Folder { entries } = &mut entry.ty {
+		for e in entries {
+			prepare_copied_entry(e, next_id);
+		}
+	}
+}
+fn duplicate_entry<T: EvalexprFloat>(entry_id: u64, next_id: &mut u64, entries: &mut Vec<Entry<T>>) {
+	let Some(entry_i) = entries.iter().position(|e| e.id == entry_id) else {
+		return;
+	};
+	let entry = &entries[entry_i];
+	let mut new_entry = entry.clone();
+	prepare_copied_entry(&mut new_entry, next_id);
+	entries.insert(entry_i + 1, new_entry);
+}
 fn add_new_entry_btn<T: EvalexprFloat>(
-	ui: &mut egui::Ui, next_id: &mut u64, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
+	ui: &mut egui::Ui, text: &str, next_id: &mut u64, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
 ) -> bool {
 	let mut needs_recompilation = false;
 
 	if entries.len() >= 1000 {
 		return false;
 	}
-	ui.menu_button("➕ Add", |ui| {
+	ui.menu_button(format!("➕ {text}"), |ui| {
 		let new_function = Entry::new_function(*next_id, "");
-		if ui.button(new_function.type_name()).clicked() {
+		if ui.button(new_function.symbol_with_name()).clicked() {
 			entries.push(new_function);
 			*next_id += 1;
 			needs_recompilation = true;
 		}
 		let new_constant = Entry::new_constant(*next_id);
-		if ui.button(new_constant.type_name()).clicked() {
+		if ui.button(new_constant.symbol_with_name()).clicked() {
 			entries.push(new_constant);
 			*next_id += 1;
 			needs_recompilation = true;
 		}
 		let new_points = Entry::new_points(*next_id);
-		if ui.button(new_points.type_name()).clicked() {
+		if ui.button(new_points.symbol_with_name()).clicked() {
 			entries.push(new_points);
 			*next_id += 1;
 			needs_recompilation = true;
 		}
 		let new_label = Entry::new_label(*next_id);
-		if ui.button(new_label.type_name()).clicked() {
+		if ui.button(new_label.symbol_with_name()).clicked() {
 			entries.push(new_label);
 			*next_id += 1;
 		}
 		if can_add_folder {
 			let new_folder = Entry::new_folder(*next_id);
-			if ui.button(new_folder.type_name()).clicked() {
+			if ui.button(new_folder.symbol_with_name()).clicked() {
 				entries.push(new_folder);
 				*next_id += 1;
 			}
 		}
-	});
+	})
+	.response
+	.on_hover_text(if can_add_folder { "Add new Entry" } else { "Add new Folder Entry" });
 
 	needs_recompilation
-}
-
-fn show_popup_label(ui: &egui::Ui, id: Id, label: String, pos: [f32; 2]) {
-	egui::Area::new(id).fixed_pos([pos[0] + 5.0, pos[1] + 5.0]).interactable(false).show(ui.ctx(), |ui| {
-		egui::Frame::popup(ui.style()).show(ui, |ui| {
-			ui.horizontal(|ui| ui.label(label));
-		});
-	});
 }

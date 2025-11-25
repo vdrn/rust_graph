@@ -77,6 +77,8 @@ pub enum EntryTypeSerialized {
 		style:               LineStyleConfig,
 		#[serde(default)]
 		implicit_resolution: usize,
+		#[serde(default = "default_true")]
+		selectable:          bool,
 	},
 	Constant {
 		value:       f64,
@@ -137,6 +139,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					style,
 					parametric,
 					implicit_resolution,
+					selectable,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -144,6 +147,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(
 					range_start:         ExprSer::from_expr(range_start),
 					range_end:           ExprSer::from_expr(range_end),
 					style:               style.clone(),
+					selectable:          *selectable,
 					implicit_resolution: *implicit_resolution,
 				},
 				EntryType::Constant { value, step, ty, istr_name: _, range_start, range_end } => {
@@ -252,10 +256,12 @@ pub fn entries_from_ser<T: EvalexprFloat>(
 					range_end,
 					style,
 					implicit_resolution,
+          selectable
 				} => EntryType::Function {
 					parametric: ranged,
 					identifier: istr_empty(),
 					func: func.into_expr(true),
+          selectable,
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,
 					can_be_drawn: true,

@@ -238,6 +238,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			range_end,
 			style,
 			implicit_resolution,
+      selectable,
 			..
 		} => {
 			if !*can_be_drawn {
@@ -266,6 +267,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 					width,
 					Line::new(&display_name, PlotPoints::Owned(line))
 						.id(id)
+            .allow_hover(*selectable)
 						.width(width)
 						.style(style.egui_line_style())
 						.color(color),
@@ -300,7 +302,6 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						},
 						Err(e) => return Err(vec![(entry.id, e.to_string())]),
 					};
-					println!("drawing ");
 					add_line(vec![
 						PlotPoint::new(plot_params.first_x, value.to_f64()),
 						PlotPoint::new(plot_params.last_x, value.to_f64()),
@@ -484,6 +485,12 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		// let mut prev_y = None;
 		let mut discontinuity_detector = DiscontinuityDetector::new(step_size, plot_params.eps);
 
+		let graph_size = match TY {
+			SimpleFunctionType::X => plot_params.last_y - plot_params.first_y,
+			SimpleFunctionType::Y => plot_params.last_x - plot_params.first_x,
+		};
+		let mut prev_angle: Option<f64> = None;
+		let mut prev_point: Option<PlotPoint> = None;
 		while sampling_arg <= last_sampling_arg {
 			match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_arg)]) {
 				Ok(Value::Float(val)) => {
@@ -513,7 +520,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 						(sampling_arg, val)
 					};
 
-					if !on_nan_boundary
+					let latest_point = if !on_nan_boundary
 						&& let Some((left, right)) = discontinuity_detector.detect(cur_arg, cur_val, |arg| {
 							func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)])
 								.and_then(|v| v.as_float())
@@ -524,25 +531,51 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 							SimpleFunctionType::X => {
 								pp_buffer.push(PlotPoint::new(left.0, left.1));
 								add_line(mem::take(&mut pp_buffer));
-								pp_buffer.push(PlotPoint::new(right.0, right.1));
+								Some(PlotPoint::new(right.0, right.1))
 							},
 							SimpleFunctionType::Y => {
 								pp_buffer.push(PlotPoint::new(left.1, left.0));
 								add_line(mem::take(&mut pp_buffer));
-								pp_buffer.push(PlotPoint::new(right.1, right.0));
+								Some(PlotPoint::new(right.1, right.0))
 							},
 						}
 					} else {
 						if !cur_val.is_nan() {
-							match TY {
-								SimpleFunctionType::X => {
-									pp_buffer.push(PlotPoint::new(cur_arg, cur_val));
-								},
-								SimpleFunctionType::Y => {
-									pp_buffer.push(PlotPoint::new(cur_val, cur_arg));
-								},
-							};
+							Some(match TY {
+								SimpleFunctionType::X => PlotPoint::new(cur_arg, cur_val),
+								SimpleFunctionType::Y => PlotPoint::new(cur_val, cur_arg),
+							})
+						} else {
+							None
 						}
+					};
+					if let Some(latest_point) = latest_point {
+						// TODO:This is commented out because we cannot just skip the points,
+						// as the egui_plot hovering functionality does not work without dense
+            // poitns on lines.
+            // We need to implement our hovering for this optimization.
+						//
+						// if let Some(prev_point) = prev_point {
+						// 	let dx = latest_point.x - prev_point.x;
+						// 	let dy = latest_point.y - prev_point.y;
+						// 	let pangle = pseudoangle(dx, dy);
+						// 	if let Some(prev_angle) = prev_angle
+						// 		&& pp_buffer.len() > 1
+						// 	{
+						// 		let angle_diff = (pangle - prev_angle).abs();
+						// 		if angle_diff < 0.00001 * graph_size {
+						// 			*pp_buffer.last_mut().unwrap() = latest_point;
+						// 			// pp_buffer.push(latest_point);
+						// 		} else {
+						// 			pp_buffer.push(latest_point);
+						// 		}
+						// 	} else {
+						// 		pp_buffer.push(latest_point);
+						// 	}
+						// 	prev_angle = Some(pangle);
+						// }
+						// prev_point = Some(latest_point);
+						pp_buffer.push(latest_point);
 					}
 
 					prev_sampling_point = Some((sampling_arg, val));
@@ -572,6 +605,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		}
 	}
 
+	// println!("fn {} num points", pp_buffer.len());
 	add_line(pp_buffer);
 
 	Ok(())

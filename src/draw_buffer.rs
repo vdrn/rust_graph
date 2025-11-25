@@ -2,7 +2,7 @@ use core::cell::RefCell;
 use std::sync::Mutex;
 
 use eframe::egui::{Color32, Id, Mesh, Shape};
-use egui_plot::{PlotGeometry, PlotItem, PlotPoint, Points};
+use egui_plot::{Line, PlotGeometry, PlotItem, PlotPoint, Points};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
 
@@ -83,11 +83,11 @@ pub fn process_draw_buffers(
 					let cur = (point.x, point.y);
 					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
 					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-					if let (Some(prev_0), Some(prev_1)) = (prev[0], prev[1]) {
-						// Find closest point to mouse
+					// Find closest point to mouse
+					if let Some(prev_1) = prev[1] {
 						if show_closest_point_to_mouse && let Some(mouse_pos_in_graph) = mouse_pos_in_graph {
 							let mouse_on_seg = closest_point_on_segment(
-								(prev_0.0, prev_0.1),
+								(cur.0, cur.1),
 								(prev_1.0, prev_1.1),
 								mouse_pos_in_graph,
 							);
@@ -101,81 +101,87 @@ pub fn process_draw_buffers(
 							}
 						}
 
-						if prev_0.1.signum() != prev_1.1.signum() {
-							// intersection with x axis
-							let sum = prev_0.1.abs() + prev_1.1.abs();
-							let x = if sum == 0.0 {
-								(prev_0.0 + prev_1.0) * 0.5
-							} else {
-								let t = prev_0.1.abs() / sum;
-								prev_0.0 + t * (prev_1.0 - prev_0.0)
-							};
-							draw_buffer.points.push(DrawPoint::new(
-								fline.sorting_index,
-								pi as u32,
-								PointInteraction {
-									x,
-									y: 0.0,
-									radius: fline.width,
-									ty: PointInteractionType::Other(OtherPointType::IntersectionWithXAxis),
-								},
-								Points::new("", [x, 0.0]).color(Color32::GRAY).radius(fline.width),
-							));
-						}
+						if let Some(prev_0) = prev[0] {
+							if prev_0.1.signum() != prev_1.1.signum() {
+								// intersection with x axis
+								let sum = prev_0.1.abs() + prev_1.1.abs();
+								let x = if sum == 0.0 {
+									(prev_0.0 + prev_1.0) * 0.5
+								} else {
+									let t = prev_0.1.abs() / sum;
+									prev_0.0 + t * (prev_1.0 - prev_0.0)
+								};
+								draw_buffer.points.push(DrawPoint::new(
+									fline.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x,
+										y: 0.0,
+										radius: fline.width,
+										ty: PointInteractionType::Other(OtherPointType::IntersectionWithXAxis),
+									},
+									Points::new("", [x, 0.0]).color(Color32::GRAY).radius(fline.width),
+								));
+							}
 
-						if prev_0.0.signum() != prev_1.0.signum() {
-							// intersection with y axis
-							let sum = prev_0.0.abs() + prev_1.0.abs();
-							let y = if sum == 0.0 {
-								(prev_0.1 + prev_1.1) * 0.5
-							} else {
-								let t = prev_0.0.abs() / sum;
-								prev_0.1 + t * (prev_1.1 - prev_0.1)
-							};
-							draw_buffer.points.push(DrawPoint::new(
-								fline.sorting_index,
-								pi as u32,
-								PointInteraction {
-									x: 0.0,
-									y,
-									radius: fline.width,
-									ty: PointInteractionType::Other(OtherPointType::IntersectionWithYAxis),
-								},
-								Points::new("", [0.0, y]).color(Color32::GRAY).radius(fline.width),
-							));
-						}
+							if prev_0.0.signum() != prev_1.0.signum() {
+								// intersection with y axis
+								let sum = prev_0.0.abs() + prev_1.0.abs();
+								let y = if sum == 0.0 {
+									(prev_0.1 + prev_1.1) * 0.5
+								} else {
+									let t = prev_0.0.abs() / sum;
+									prev_0.1 + t * (prev_1.1 - prev_0.1)
+								};
+								draw_buffer.points.push(DrawPoint::new(
+									fline.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x: 0.0,
+										y,
+										radius: fline.width,
+										ty: PointInteractionType::Other(OtherPointType::IntersectionWithYAxis),
+									},
+									Points::new("", [0.0, y]).color(Color32::GRAY).radius(fline.width),
+								));
+							}
 
-						if less_then(prev_0.1, prev_1.1, plot_params.eps)
-							&& greater_then(prev_1.1, cur.1, plot_params.eps)
-						{
-							// local maximum
-							draw_buffer.points.push(DrawPoint::new(
-								fline.sorting_index,
-								pi as u32,
-								PointInteraction {
-									x:      prev_1.0,
-									y:      prev_1.1,
-									radius: fline.width,
-									ty:     PointInteractionType::Other(OtherPointType::Maxima),
-								},
-								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
-							));
-						}
-						if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-							&& less_then(prev_1.1, cur.1, plot_params.eps)
-						{
-							// local minimum
-							draw_buffer.points.push(DrawPoint::new(
-								fline.sorting_index,
-								pi as u32,
-								PointInteraction {
-									x:      prev_1.0,
-									y:      prev_1.1,
-									radius: fline.width,
-									ty:     PointInteractionType::Other(OtherPointType::Minima),
-								},
-								Points::new("", [prev_1.0, prev_1.1]).color(Color32::GRAY).radius(fline.width),
-							));
+							if less_then(prev_0.1, prev_1.1, plot_params.eps)
+								&& greater_then(prev_1.1, cur.1, plot_params.eps)
+							{
+								// local maximum
+								draw_buffer.points.push(DrawPoint::new(
+									fline.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x:      prev_1.0,
+										y:      prev_1.1,
+										radius: fline.width,
+										ty:     PointInteractionType::Other(OtherPointType::Maxima),
+									},
+									Points::new("", [prev_1.0, prev_1.1])
+										.color(Color32::GRAY)
+										.radius(fline.width),
+								));
+							}
+							if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+								&& less_then(prev_1.1, cur.1, plot_params.eps)
+							{
+								// local minimum
+								draw_buffer.points.push(DrawPoint::new(
+									fline.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x:      prev_1.0,
+										y:      prev_1.1,
+										radius: fline.width,
+										ty:     PointInteractionType::Other(OtherPointType::Minima),
+									},
+									Points::new("", [prev_1.0, prev_1.1])
+										.color(Color32::GRAY)
+										.radius(fline.width),
+								));
+							}
 						}
 					}
 
@@ -195,10 +201,14 @@ pub fn process_draw_buffers(
 					}
 				}
 			} else {
+				if !<Line as PlotItem>::allow_hover(&fline.line) {
+					return;
+				}
 				// find intersections
 				let mut pi = 0;
 				for selected_line_i in selected_lines.iter() {
 					let selected_line = &draw_lines[*selected_line_i as usize];
+
 					let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
 						continue;
 					};
@@ -275,50 +285,35 @@ pub fn process_draw_buffers(
 }
 
 pub struct DrawMesh {
-  pub bounds:egui_plot::PlotBounds,
-  pub plot_item_base: egui_plot::PlotItemBase,
-	pub sorting_index: u32,
-	pub mesh:          RefCell<MeshBuilder>,
-  pub color: Color32,
+	pub bounds:         egui_plot::PlotBounds,
+	pub plot_item_base: egui_plot::PlotItemBase,
+	pub sorting_index:  u32,
+	pub mesh:           RefCell<MeshBuilder>,
+	pub color:          Color32,
 }
 impl PlotItem for DrawMesh {
-    fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
-      for vertex in self.mesh.borrow_mut().vertices.iter_mut(){
-        vertex.pos = transform.position_from_point(&PlotPoint::new(vertex.pos.x as f64, vertex.pos.y as f64));
+	fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
+		for vertex in self.mesh.borrow_mut().vertices.iter_mut() {
+			vertex.pos =
+				transform.position_from_point(&PlotPoint::new(vertex.pos.x as f64, vertex.pos.y as f64));
+		}
+		let mesh = core::mem::take(&mut *self.mesh.borrow_mut());
+		let mesh = Mesh { vertices: mesh.vertices, indices: mesh.indices, ..Default::default() };
 
-      }
-      let mesh = core::mem::take(&mut *self.mesh.borrow_mut());
-      let mesh = Mesh{
-        vertices: mesh.vertices,
-        indices: mesh.indices,
-        ..Default::default()
-      };
+		shapes.push(Shape::mesh(mesh));
+	}
 
-      shapes.push(Shape::mesh(mesh));
-    }
+	fn initialize(&mut self, _x_range: core::ops::RangeInclusive<f64>) {}
 
-    fn initialize(&mut self, _x_range: core::ops::RangeInclusive<f64>) {
-    }
+	fn color(&self) -> Color32 { self.color }
 
-    fn color(&self) -> Color32 {
-      self.color
-    }
+	fn geometry(&self) -> PlotGeometry<'_> { PlotGeometry::None }
 
-    fn geometry(&self) -> PlotGeometry<'_> {
-      PlotGeometry::None
-    }
+	fn bounds(&self) -> egui_plot::PlotBounds { self.bounds }
 
-    fn bounds(&self) -> egui_plot::PlotBounds {
-      self.bounds
-    }
+	fn base(&self) -> &egui_plot::PlotItemBase { &self.plot_item_base }
 
-    fn base(&self) -> &egui_plot::PlotItemBase {
-      &self.plot_item_base
-    }
-
-    fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase {
-      &mut self.plot_item_base
-    }
+	fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase { &mut self.plot_item_base }
 }
 pub struct DrawLine {
 	pub sorting_index: u32,
