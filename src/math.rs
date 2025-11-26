@@ -38,6 +38,9 @@ pub struct DiscontinuityDetector {
 	eps:             f64,
 }
 impl DiscontinuityDetector {
+	pub fn new_with_initial(step_size: f64, eps: f64, initial_value: (f64, f64)) -> Self {
+		Self { prev_value: Some(initial_value), prev_abs_change: 0.0, eps: (step_size * 0.01).max(eps) }
+	}
 	pub fn new(step_size: f64, eps: f64) -> Self {
 		Self { prev_value: None, prev_abs_change: 0.0, eps: (step_size * 0.01).max(eps) }
 	}

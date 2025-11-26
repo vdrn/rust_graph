@@ -229,7 +229,6 @@ fn entry_type_ui<T: EvalexprFloat>(
 		EntryType::Function {
 			func,
 			parametric,
-			parametric_fill,
 			range_start,
 			range_end,
 			implicit_resolution,

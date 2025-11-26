@@ -427,7 +427,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let view_aspect = available_size.x as f64 / available_size.y as f64;
 		let calcd_bounds = ui_state.graph_config.graph_plot_bounds.calc_plot_bounds(view_aspect);
 
-		let can_drag = (ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse.is_none());
+		let can_drag = ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse.is_none();
 		let mut allow_drag = ui_state.graph_config.allow_scroll;
 		allow_drag[0] &= can_drag;
 		allow_drag[1] &= can_drag;
@@ -474,7 +474,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
 					if fill_mesh.vertices.len() > 2 {
 						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
-							render_state, &fill_mesh.vertices, fill_mesh.color,fill_mesh.fill_rule, size.x, size.y,
+							render_state, &fill_mesh.vertices,&fill_mesh.indices, fill_mesh.color,fill_mesh.fill_rule, size.x, size.y,
 						));
 					}
 				}

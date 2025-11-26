@@ -291,22 +291,33 @@ pub struct DrawMesh {
 }
 #[derive(Default)]
 pub struct FillMesh {
-	pub(crate) vertices:   Vec<TriangleFanVertex>,
-	pub(crate) texture_id: Option<egui::TextureId>,
-	pub(crate) color:      Color32,
-	pub(crate) fill_rule:  FillRule,
+	pub(crate) indices:             Vec<u32>,
+	pub(crate) vertices:            Vec<TriangleFanVertex>,
+	pub(crate) current_root_vertex: usize,
+	pub(crate) texture_id:          Option<egui::TextureId>,
+	pub(crate) color:               Color32,
+	pub(crate) fill_rule:           FillRule,
 }
 impl FillMesh {
 	pub fn new(color: Color32, fill_rule: FillRule) -> Self {
-		Self { fill_rule, vertices: Vec::new(), texture_id: None, color }
+		Self {
+			fill_rule,
+			vertices: Vec::new(),
+			indices: Vec::new(),
+			texture_id: None,
+			color,
+			current_root_vertex: 0,
+		}
 	}
 	pub fn add_vertex(&mut self, x: f32, y: f32) {
-		// if self.vertices.is_empty() {
-		// 	// first vertex will be fan center
-		// 	self.vertices.push(TriangleFanVertex::new(x, y));
-		// }
 		self.vertices.push(TriangleFanVertex::new(x, y));
+		if self.current_root_vertex + 2 < self.vertices.len() {
+			self.indices.push(self.current_root_vertex as u32);
+			self.indices.push(self.vertices.len() as u32 - 2);
+			self.indices.push(self.vertices.len() as u32 - 1);
+		}
 	}
+	pub fn reset_root_vertex(&mut self) { self.current_root_vertex = self.vertices.len(); }
 }
 
 pub enum DrawMeshType {

@@ -266,7 +266,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			range_start,
 			range_end,
 			style,
-      fill_rule,
+			fill_rule,
 			implicit_resolution,
 			selectable,
 			..
@@ -345,7 +345,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 								let mut fill_mesh = if *parametric_fill
 									&& let Some(plot_trans) = plot_params.prev_plot_transform
 								{
-									Some((FillMesh::new(fill_color,*fill_rule), plot_trans))
+									Some((FillMesh::new(fill_color, *fill_rule), plot_trans))
 								} else {
 									None
 								};
@@ -363,12 +363,13 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 										}
 
 										if break_fill_mesh {
-											let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-											draw_buffer.meshes.push(DrawMesh {
-												sorting_index: sorting_idx,
-												ty:            DrawMeshType::FillMesh(mem::take(fm)),
-											});
-											*fm = FillMesh::new(fill_color, *fill_rule);
+											fm.reset_root_vertex();
+											// let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
+											// draw_buffer.meshes.push(DrawMesh {
+											// 	sorting_index: sorting_idx,
+											// 	ty:            DrawMeshType::FillMesh(mem::take(fm)),
+											// });
+											// *fm = FillMesh::new(fill_color, *fill_rule);
 										}
 									}
 
@@ -751,7 +752,6 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	} else {
 		max_segment_y
 	};
-	let mut discontinuity_detector = DiscontinuityDetector::new(step_eps, plot_params.eps);
 
 	let mut eval_point_at = |arg: f64| -> Result<Option<(f64, PlotPoint)>, String> {
 		match func.call(&mut stack, ctx, &[f64_to_value::<T>(arg)]) {
@@ -764,8 +764,8 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 				} else {
 					let v = value.to_f64();
 					match TY {
-						SimpleFunctionType::X => Ok(Some((v, PlotPoint::new(arg, v)))),
-						SimpleFunctionType::Y => Ok(Some((v, PlotPoint::new(v, arg)))),
+						SimpleFunctionType::X => Ok(Some((arg, PlotPoint::new(arg, v)))),
+						SimpleFunctionType::Y => Ok(Some((arg, PlotPoint::new(v, arg)))),
 					}
 				}
 			},
@@ -778,7 +778,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					Ok(None)
 				} else {
 					// Use y value for discontinuity detection
-					Ok(Some((y.to_f64(), PlotPoint::new(x.to_f64(), y.to_f64()))))
+					Ok(Some((arg, PlotPoint::new(x.to_f64(), y.to_f64()))))
 				}
 			},
 			Ok(_) => Err("Ranged function must return 1 or 2 float values".to_string()),
@@ -789,14 +789,45 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let mut prev_angle: Option<f64> = None;
 	// Evaluate first point
 	let mut prev_arg = start;
+	let mut discontinuity_detector = None;
+	let mut discontinuity_detector2 = None;
 	let mut prev_point = match eval_point_at(start) {
-		Ok(r) => r.map(|(_, p)| p),
+		Ok(Some((arg, p))) => {
+			pp_buffer.push(p);
+			if is_float2 {
+				discontinuity_detector =
+					Some(DiscontinuityDetector::new_with_initial(step_eps, plot_params.eps, (arg, p.y)));
+				discontinuity_detector2 =
+					Some(DiscontinuityDetector::new_with_initial(step_eps, plot_params.eps, (arg, p.x)));
+			} else {
+				match TY {
+					SimpleFunctionType::X => {
+						discontinuity_detector = Some(DiscontinuityDetector::new_with_initial(
+							step_eps,
+							plot_params.eps,
+							(p.x, p.y),
+						));
+					},
+					SimpleFunctionType::Y => {
+						discontinuity_detector = Some(DiscontinuityDetector::new_with_initial(
+							step_eps,
+							plot_params.eps,
+							(p.y, p.x),
+						));
+					},
+				}
+			}
+
+			Some(p)
+		},
+		Ok(None) => None,
 		Err(e) => return Err(vec![(id, e)]),
 	};
 
-	if let Some(p) = prev_point {
-		pp_buffer.push(p);
-	}
+	let mut discontinuity_detector =
+		discontinuity_detector.unwrap_or_else(|| DiscontinuityDetector::new(step_eps, plot_params.eps));
+	let mut discontinuity_detector2 =
+		discontinuity_detector2.unwrap_or_else(|| DiscontinuityDetector::new(step_eps, plot_params.eps));
 
 	// let mut num_splits = Vec::with_capacity(plot_params.resolution * 2);
 	// let mut curvature_factors = Vec::with_capacity(plot_params.resolution * 2);
@@ -808,38 +839,59 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		};
 		let mut cur_angle = None;
 
-		match (prev_point, curr_result) {
-			(Some(prev_p), Some((curr_val, curr_p))) => {
-				// Check for discontinuity
-				if !is_float2
-					&& let Some((left, right)) = discontinuity_detector.detect(curr_arg, curr_val, |arg| {
-						eval_point_at(arg).ok().and_then(|v| v.map(|(v, _)| v))
+		if let Some((curr_arg, curr_p)) = curr_result {
+			// Check for discontinuity
+			if is_float2 {
+					// TODO: this is BOTH wrong and bad.
+					// We detect the discontinuity, but the _left and _right bisection results are meaningless
+					// points (either (arg, y) or (arg,x), while we need (x,y))
+					// We either need to have custom disconinuity detector for Float2 case,
+					// or at least dont do useless bisection inside `detect(..)`
+				if let Some((_left, _right)) = discontinuity_detector
+					.detect(curr_arg, curr_p.y, |arg| eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y)))
+					.or_else(|| {
+						discontinuity_detector2.detect(curr_arg, curr_p.x, |arg| {
+							eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
+						})
 					}) {
-					if is_float2 {
-						pp_buffer.push(PlotPoint::new(left.1, left.0));
-						add_line(mem::take(&mut pp_buffer), true);
-						pp_buffer.push(PlotPoint::new(right.1, right.0));
-					} else {
-						match TY {
-							SimpleFunctionType::X => {
-								pp_buffer.push(PlotPoint::new(left.0, left.1));
-								add_line(mem::take(&mut pp_buffer), true);
-								pp_buffer.push(PlotPoint::new(right.0, right.1));
-							},
-							SimpleFunctionType::Y => {
-								pp_buffer.push(PlotPoint::new(left.1, left.0));
-								add_line(mem::take(&mut pp_buffer), true);
-								pp_buffer.push(PlotPoint::new(right.1, right.0));
-							},
-						}
-					}
-					prev_arg = curr_arg;
+					add_line(mem::take(&mut pp_buffer), true);
+					pp_buffer.push(curr_p);
 
+					prev_arg = curr_arg;
 					prev_angle = None;
 					prev_point = curr_result.map(|(_, v)| v);
 					continue;
 				}
-
+			} else {
+				if let Some((left, right)) = match TY {
+					SimpleFunctionType::X => discontinuity_detector.detect(curr_p.x, curr_p.y, |arg| {
+						eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y))
+					}),
+					SimpleFunctionType::Y => discontinuity_detector.detect(curr_p.y, curr_p.x, |arg| {
+						eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
+					}),
+				} {
+					match TY {
+						SimpleFunctionType::X => {
+							pp_buffer.push(PlotPoint::new(left.0, left.1));
+							add_line(mem::take(&mut pp_buffer), true);
+							pp_buffer.push(PlotPoint::new(right.0, right.1));
+						},
+						SimpleFunctionType::Y => {
+							pp_buffer.push(PlotPoint::new(left.1, left.0));
+							add_line(mem::take(&mut pp_buffer), true);
+							pp_buffer.push(PlotPoint::new(right.1, right.0));
+						},
+					}
+				}
+				prev_arg = curr_arg;
+				prev_angle = None;
+				prev_point = curr_result.map(|(_, v)| v);
+				continue;
+			}
+		}
+		match (prev_point, curr_result) {
+			(Some(prev_p), Some((_, curr_p))) => {
 				// Check if segment is too long and needs subdivision
 				let dx = curr_p.x - prev_p.x;
 				let dy = curr_p.y - prev_p.y;

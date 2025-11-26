@@ -142,7 +142,7 @@ impl CustomRenderer {
 		});
 		let non_zero_stencil_pipeline = device.create_render_pipeline(&stencil_pipeline_descriptor);
 
-		let mut color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
+		let color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
 			label:         Some("color_pipeline"),
 			layout:        Some(&pipeline_layout),
 			vertex:        wgpu::VertexState {
@@ -225,7 +225,6 @@ impl CustomRenderer {
 			index_buffer,
 			vertex_buffer_capacity: 1024,
 			index_buffer_capacity: 1024,
-			indices: Vec::with_capacity(1024 * 3),
 		});
 
 		Some(Self { texture_pool: Vec::new(), current_texture_index: 0, stencil_texture: None })
@@ -233,8 +232,9 @@ impl CustomRenderer {
 
 	pub fn reset_textures(&mut self) { self.current_texture_index = 0; }
 
+	#[allow(clippy::too_many_arguments)]
 	pub fn paint_curve_fill(
-		&mut self, render_state: &egui_wgpu::RenderState, vertices: &[TriangleFanVertex],
+		&mut self, render_state: &egui_wgpu::RenderState, vertices: &[TriangleFanVertex], indices: &[u32],
 		color: egui::Color32, fill_rule: FillRule, size_x: f32, size_y: f32,
 	) -> egui::TextureId {
 		let width = size_x as u32;
@@ -253,6 +253,7 @@ impl CustomRenderer {
 			texture_resource,
 			self.stencil_texture.as_ref().unwrap(),
 			vertices,
+			indices,
 			color,
 			fill_rule,
 		);
@@ -328,8 +329,8 @@ impl CustomRenderer {
 
 	fn render_to_texture(
 		render_state: &egui_wgpu::RenderState, texture_resource: &TextureResource,
-		stencil_texture: &StencilTexture, vertices: &[TriangleFanVertex], color: egui::Color32,
-		fill_rule: FillRule,
+		stencil_texture: &StencilTexture, vertices: &[TriangleFanVertex], indices: &[u32],
+		color: egui::Color32, fill_rule: FillRule,
 	) {
 		let device = &render_state.device;
 		let queue = &render_state.queue;
@@ -363,21 +364,8 @@ impl CustomRenderer {
 		}
 		queue.write_buffer(&resources.vertex_buffer, 0, vertex_data);
 
-		let num_triangles = vertices.len() - 2;
-		let num_indices = num_triangles * 3;
-		let prev_num_indices = resources.indices.len();
-		if prev_num_indices < num_indices {
-			#[allow(clippy::integer_division)]
-			let current_triangles = resources.indices.len() / 3;
-			for i in current_triangles..num_triangles {
-				resources.indices.push(0u32);
-				resources.indices.push((i + 1) as u32);
-				resources.indices.push((i + 2) as u32);
-			}
-		}
-		assert!(resources.indices.len() >= num_indices);
 
-		let index_data = bytemuck::cast_slice(&resources.indices[0..num_indices]);
+		let index_data = bytemuck::cast_slice(indices);
 		if index_data.len() > resources.index_buffer_capacity {
 			// must resize index buffer
 			let new_capacity = index_data.len().next_power_of_two();
@@ -390,10 +378,7 @@ impl CustomRenderer {
 			resources.index_buffer_capacity = new_capacity;
 		}
 
-		if prev_num_indices < num_indices {
-			// must update the index buffer with new indices
-			queue.write_buffer(&resources.index_buffer, 0, index_data);
-		}
+		queue.write_buffer(&resources.index_buffer, 0, index_data);
 
 		drop(renderer);
 
@@ -432,7 +417,7 @@ impl CustomRenderer {
 			stencil_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
 			stencil_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 			stencil_pass.set_stencil_reference(0);
-			stencil_pass.draw_indexed(0..(num_indices as u32), 0, 0..1);
+			stencil_pass.draw_indexed(0..(indices.len() as u32), 0, 0..1);
 		}
 
 		// PASS 2: draw quad with stencil test
@@ -483,7 +468,6 @@ struct FanRenderResources {
 	index_buffer:              wgpu::Buffer,
 	vertex_buffer_capacity:    usize,
 	index_buffer_capacity:     usize,
-	indices:                   Vec<u32>,
 }
 
 #[cfg(target_arch = "wasm32")]
