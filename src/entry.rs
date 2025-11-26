@@ -4,10 +4,13 @@ use eframe::egui::{self, Color32};
 use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
+use crate::custom_rendering::FillRule;
+
 mod drag_point;
 mod entry_plot_elements;
 mod entry_processing;
 mod entry_ui;
+
 
 pub use drag_point::point_dragging;
 pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
@@ -148,6 +151,7 @@ pub enum EntryType<T: EvalexprFloat> {
 
 		parametric:          bool,
 		parametric_fill:     bool,
+    fill_rule:            FillRule,
 		/// used when parametric is `true`
 		range_start:         Expr<T>,
 		/// used when parametric is `true`
@@ -254,22 +258,24 @@ pub struct PointStyle {
 	#[serde(default)]
 	label_config: Option<LabelConfig>,
 	#[serde(default)]
-  fill: bool,
+	fill:         bool,
 	#[serde(default)]
-  connect_first_and_last: bool,
-
+	fill_rule:    FillRule,
+	#[serde(default)]
+	connect_first_and_last: bool,
 }
 
 impl Default for PointStyle {
 	fn default() -> Self {
 		Self {
-			show_lines:   true,
-			show_points:  true,
-			show_arrows:  false,
-			label_config: Some(LabelConfig::default()),
-			line_style:   LineStyleConfig::default(),
-      fill: false,
-      connect_first_and_last: false,
+			show_lines:             true,
+			show_points:            true,
+			show_arrows:            false,
+			label_config:           Some(LabelConfig::default()),
+			line_style:             LineStyleConfig::default(),
+			fill:                   false,
+			connect_first_and_last: false,
+      fill_rule: FillRule::default(),
 		}
 	}
 }
@@ -359,6 +365,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),
 				ty:                  FunctionType::Expression,
+        fill_rule:            FillRule::default(),
 				style:               LineStyleConfig::default(),
 				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},

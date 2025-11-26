@@ -8,6 +8,7 @@ use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
 use crate::app_ui::GraphConfig;
+use crate::custom_rendering::FillRule;
 use crate::entry::{
 	EquationType, Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
 };
@@ -81,6 +82,8 @@ pub enum EntryTypeSerialized {
 		selectable:          bool,
 		#[serde(default)]
 		parametric_fill:     bool,
+		#[serde(default)]
+		fill_rule:           FillRule,
 	},
 	Constant {
 		value:       f64,
@@ -138,6 +141,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					implicit_resolution,
 					selectable,
 					parametric_fill,
+          fill_rule,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -146,6 +150,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					range_end:           ExprSer::from_expr(range_end),
 					style:               style.clone(),
 					selectable:          *selectable,
+          fill_rule:           *fill_rule,
 					implicit_resolution: *implicit_resolution,
 					parametric_fill:     *parametric_fill,
 				},
@@ -194,7 +199,7 @@ pub fn serialize_to_json<T: EvalexprFloat>(
 	Ok(())
 }
 pub fn serialize_to_url<T: EvalexprFloat>(
-	entries: &[Entry<T>], graph_config:GraphConfig,
+	entries: &[Entry<T>], graph_config: GraphConfig,
 ) -> Result<String, String> {
 	let ser = entries_to_ser(entries, graph_config);
 	let bincoded =
@@ -254,10 +259,12 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					style,
 					implicit_resolution,
 					selectable,
+          fill_rule,
 					parametric_fill,
 				} => EntryType::Function {
 					parametric: ranged,
 					parametric_fill,
+          fill_rule,
 					identifier: istr_empty(),
 					func: func.into_expr(true),
 					selectable,

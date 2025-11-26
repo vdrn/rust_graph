@@ -125,7 +125,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				&& let Some(plot_trans) = &plot_params.prev_plot_transform
 			{
 				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
-				Some((FillMesh::new(fill_color), plot_trans))
+				Some((FillMesh::new(fill_color, style.fill_rule), plot_trans))
 			} else {
 				None
 			};
@@ -266,6 +266,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			range_start,
 			range_end,
 			style,
+      fill_rule,
 			implicit_resolution,
 			selectable,
 			..
@@ -344,7 +345,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 								let mut fill_mesh = if *parametric_fill
 									&& let Some(plot_trans) = plot_params.prev_plot_transform
 								{
-									Some((FillMesh::new(fill_color), plot_trans))
+									Some((FillMesh::new(fill_color,*fill_rule), plot_trans))
 								} else {
 									None
 								};
@@ -367,7 +368,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 												sorting_index: sorting_idx,
 												ty:            DrawMeshType::FillMesh(mem::take(fm)),
 											});
-											*fm = FillMesh::new(fill_color);
+											*fm = FillMesh::new(fill_color, *fill_rule);
 										}
 									}
 

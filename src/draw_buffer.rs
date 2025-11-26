@@ -6,7 +6,7 @@ use egui_plot::{Line, PlotGeometry, PlotItem, PlotPoint, Points};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
 
-use crate::custom_rendering::TriangleFanVertex;
+use crate::custom_rendering::{FillRule, TriangleFanVertex};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
@@ -294,9 +294,12 @@ pub struct FillMesh {
 	pub(crate) vertices:   Vec<TriangleFanVertex>,
 	pub(crate) texture_id: Option<egui::TextureId>,
 	pub(crate) color:      Color32,
+	pub(crate) fill_rule:  FillRule,
 }
 impl FillMesh {
-	pub fn new(color: Color32) -> Self { Self { vertices: Vec::new(), texture_id: None, color } }
+	pub fn new(color: Color32, fill_rule: FillRule) -> Self {
+		Self { fill_rule, vertices: Vec::new(), texture_id: None, color }
+	}
 	pub fn add_vertex(&mut self, x: f32, y: f32) {
 		// if self.vertices.is_empty() {
 		// 	// first vertex will be fan center

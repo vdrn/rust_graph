@@ -9,6 +9,7 @@ use eframe::egui::{
 
 use evalexpr::{EvalexprFloat, HashMapContext};
 
+use crate::custom_rendering::FillRule;
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
 	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES
@@ -136,12 +137,19 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 				}
 			});
 			match &mut entry.ty {
-				EntryType::Function { style,selectable, .. } => {
-          ui.checkbox(selectable, "Selectable");
+				EntryType::Function { style, parametric, parametric_fill, fill_rule, selectable, .. } => {
+					ui.checkbox(selectable, "Selectable");
 					ui.separator();
 
 					line_style_config_ui(style, ui);
 					ui.separator();
+					if *parametric {
+						ui.checkbox(parametric_fill, "Fill").on_hover_text("Fill the inside area the curve.");
+						if *parametric_fill {
+							fill_rule_btn_ui(ui, fill_rule);
+						}
+					}
+
 					egui::Sides::new().show(
 						ui,
 						|_ui| {},
@@ -172,7 +180,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 					ui.separator();
 					ui.checkbox(&mut style.show_lines, "Show Lines");
 					if style.show_lines {
-            ui.checkbox(&mut style.connect_first_and_last, "Connect first and last point");
+						ui.checkbox(&mut style.connect_first_and_last, "Connect first and last point");
 						ui.label("Line Style:");
 						ui.checkbox(&mut style.show_arrows, "Show Arrows");
 						line_style_config_ui(&mut style.line_style, ui);
@@ -180,7 +188,11 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 						style.show_arrows = false;
 					}
 					ui.separator();
-          ui.checkbox(&mut style.fill, "Fill").on_hover_text("Fill the area between the points using the Even-Odd rule.");
+					ui.checkbox(&mut style.fill, "Fill").on_hover_text("Fill the area between the points.");
+					if style.fill {
+						fill_rule_btn_ui(ui, &mut style.fill_rule);
+					}
+
 					ui.separator();
 					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
 
@@ -214,7 +226,15 @@ fn entry_type_ui<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			// handled in outer scope
 		},
-		EntryType::Function { func, parametric,parametric_fill, range_start, range_end, implicit_resolution, .. } => {
+		EntryType::Function {
+			func,
+			parametric,
+			parametric_fill,
+			range_start,
+			range_end,
+			implicit_resolution,
+			..
+		} => {
 			ui.vertical(|ui| {
 				match expr_ui(func, ui, "sin(x)", None, clear_cache, true) {
 					Ok(changed) => {
@@ -271,7 +291,6 @@ fn entry_type_ui<T: EvalexprFloat>(
 										result.error = Some(format!("Parsing error: {e}"));
 									},
 								}
-                ui.checkbox(parametric_fill, "Fill").on_hover_text("Fill the inside area the curve by using the Even-Odd rule.");
 							}
 						});
 						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
@@ -816,4 +835,16 @@ fn line_style_config_ui(config: &mut LineStyleConfig, ui: &mut egui::Ui) {
 			ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Length"));
 		},
 	}
+}
+fn fill_rule_btn_ui(ui: &mut egui::Ui, fill_rule: &mut FillRule) {
+	let txt = if *fill_rule == FillRule::EvenOdd { "Even-Odd" } else { "Non-Zero" };
+	ui.horizontal(|ui| {
+		ui.label("Fill Rule:");
+		ui.menu_button(txt, |ui| {
+			ui.horizontal(|ui| {
+				ui.selectable_value(fill_rule, FillRule::EvenOdd, "Even-Odd");
+				ui.selectable_value(fill_rule, FillRule::NonZero, "Non-Zero");
+			});
+		});
+	});
 }

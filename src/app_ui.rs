@@ -474,7 +474,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
 					if fill_mesh.vertices.len() > 2 {
 						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
-							render_state, &fill_mesh.vertices, fill_mesh.color, size.x, size.y,
+							render_state, &fill_mesh.vertices, fill_mesh.color,fill_mesh.fill_rule, size.x, size.y,
 						));
 					}
 				}

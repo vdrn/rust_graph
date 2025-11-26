@@ -3,6 +3,14 @@ use core::num::NonZeroU64;
 use eframe::egui;
 use eframe::egui_wgpu::wgpu::util::DeviceExt as _;
 use eframe::egui_wgpu::{self, wgpu};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Default, PartialEq, Clone, Copy, Debug)]
+pub enum FillRule {
+	#[default]
+	EvenOdd,
+	NonZero,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -63,8 +71,7 @@ impl CustomRenderer {
 			bind_group_layouts:   &[&bind_group_layout],
 			push_constant_ranges: &[],
 		});
-
-		let stencil_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+		let mut stencil_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
 			label:         Some("stencil_pipeline"),
 			layout:        Some(&pipeline_layout),
 			vertex:        wgpu::VertexState {
@@ -108,9 +115,34 @@ impl CustomRenderer {
 			multisample:   wgpu::MultisampleState::default(),
 			multiview:     None,
 			cache:         None,
-		});
+		};
+		let even_odd_stencil_pipeline = device.create_render_pipeline(&stencil_pipeline_descriptor);
 
-		let color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+		stencil_pipeline_descriptor.depth_stencil = Some(wgpu::DepthStencilState {
+			format:              wgpu::TextureFormat::Stencil8,
+			depth_write_enabled: false,
+			depth_compare:       wgpu::CompareFunction::Always,
+			stencil:             wgpu::StencilState {
+				front:      wgpu::StencilFaceState {
+					compare:       wgpu::CompareFunction::Always,
+					fail_op:       wgpu::StencilOperation::Keep,
+					depth_fail_op: wgpu::StencilOperation::Keep,
+					pass_op:       wgpu::StencilOperation::IncrementWrap,
+				},
+				back:       wgpu::StencilFaceState {
+					compare:       wgpu::CompareFunction::Always,
+					fail_op:       wgpu::StencilOperation::Keep,
+					depth_fail_op: wgpu::StencilOperation::Keep,
+					pass_op:       wgpu::StencilOperation::DecrementWrap,
+				},
+				read_mask:  0xff,
+				write_mask: 0xff,
+			},
+			bias:                wgpu::DepthBiasState::default(),
+		});
+		let non_zero_stencil_pipeline = device.create_render_pipeline(&stencil_pipeline_descriptor);
+
+		let mut color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
 			label:         Some("color_pipeline"),
 			layout:        Some(&pipeline_layout),
 			vertex:        wgpu::VertexState {
@@ -155,7 +187,8 @@ impl CustomRenderer {
 			multisample:   wgpu::MultisampleState::default(),
 			multiview:     None,
 			cache:         None,
-		});
+		};
+		let color_pipeline = device.create_render_pipeline(&color_pipeline_descriptor);
 
 		let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
 			label:    Some("uniform_buffer"),
@@ -183,7 +216,8 @@ impl CustomRenderer {
 		});
 
 		wgpu_render_state.renderer.write().callback_resources.insert(FanRenderResources {
-			stencil_pipeline,
+			even_odd_stencil_pipeline,
+			non_zero_stencil_pipeline,
 			color_pipeline,
 			bind_group,
 			uniform_buffer,
@@ -201,7 +235,7 @@ impl CustomRenderer {
 
 	pub fn paint_curve_fill(
 		&mut self, render_state: &egui_wgpu::RenderState, vertices: &[TriangleFanVertex],
-		color: egui::Color32, size_x: f32, size_y: f32,
+		color: egui::Color32, fill_rule: FillRule, size_x: f32, size_y: f32,
 	) -> egui::TextureId {
 		let width = size_x as u32;
 		let height = size_y as u32;
@@ -220,6 +254,7 @@ impl CustomRenderer {
 			self.stencil_texture.as_ref().unwrap(),
 			vertices,
 			color,
+			fill_rule,
 		);
 
 		self.current_texture_index += 1;
@@ -294,6 +329,7 @@ impl CustomRenderer {
 	fn render_to_texture(
 		render_state: &egui_wgpu::RenderState, texture_resource: &TextureResource,
 		stencil_texture: &StencilTexture, vertices: &[TriangleFanVertex], color: egui::Color32,
+		fill_rule: FillRule,
 	) {
 		let device = &render_state.device;
 		let queue = &render_state.queue;
@@ -355,7 +391,7 @@ impl CustomRenderer {
 		}
 
 		if prev_num_indices < num_indices {
-      // must update the index buffer with new indices
+			// must update the index buffer with new indices
 			queue.write_buffer(&resources.index_buffer, 0, index_data);
 		}
 
@@ -384,7 +420,14 @@ impl CustomRenderer {
 			let renderer = render_state.renderer.read();
 			let resources: &FanRenderResources = renderer.callback_resources.get().unwrap();
 
-			stencil_pass.set_pipeline(&resources.stencil_pipeline);
+			match fill_rule {
+				FillRule::EvenOdd => {
+					stencil_pass.set_pipeline(&resources.even_odd_stencil_pipeline);
+				},
+				FillRule::NonZero => {
+					stencil_pass.set_pipeline(&resources.non_zero_stencil_pipeline);
+				},
+			}
 			stencil_pass.set_bind_group(0, &resources.bind_group, &[]);
 			stencil_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
 			stencil_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -431,15 +474,16 @@ impl CustomRenderer {
 }
 
 struct FanRenderResources {
-	stencil_pipeline:       wgpu::RenderPipeline,
-	color_pipeline:         wgpu::RenderPipeline,
-	bind_group:             wgpu::BindGroup,
-	uniform_buffer:         wgpu::Buffer,
-	vertex_buffer:          wgpu::Buffer,
-	index_buffer:           wgpu::Buffer,
-	vertex_buffer_capacity: usize,
-	index_buffer_capacity:  usize,
-	indices:                Vec<u32>,
+	even_odd_stencil_pipeline: wgpu::RenderPipeline,
+	non_zero_stencil_pipeline: wgpu::RenderPipeline,
+	color_pipeline:            wgpu::RenderPipeline,
+	bind_group:                wgpu::BindGroup,
+	uniform_buffer:            wgpu::Buffer,
+	vertex_buffer:             wgpu::Buffer,
+	index_buffer:              wgpu::Buffer,
+	vertex_buffer_capacity:    usize,
+	index_buffer_capacity:     usize,
+	indices:                   Vec<u32>,
 }
 
 #[cfg(target_arch = "wasm32")]
