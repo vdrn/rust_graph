@@ -842,11 +842,11 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		if let Some((curr_arg, curr_p)) = curr_result {
 			// Check for discontinuity
 			if is_float2 {
-					// TODO: this is BOTH wrong and bad.
-					// We detect the discontinuity, but the _left and _right bisection results are meaningless
-					// points (either (arg, y) or (arg,x), while we need (x,y))
-					// We either need to have custom disconinuity detector for Float2 case,
-					// or at least dont do useless bisection inside `detect(..)`
+				// TODO: this is BOTH wrong and bad.
+				// We detect the discontinuity, but the _left and _right bisection results are meaningless
+				// points (either (arg, y) or (arg,x), while we need (x,y))
+				// We either need to have custom disconinuity detector for Float2 case,
+				// or at least dont do useless bisection inside `detect(..)`
 				if let Some((_left, _right)) = discontinuity_detector
 					.detect(curr_arg, curr_p.y, |arg| eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y)))
 					.or_else(|| {

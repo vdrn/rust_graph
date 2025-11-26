@@ -576,7 +576,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			&plot_res,
 			&mut ui_state.dragging_point_i,
 			hovered_point.as_ref(),
-			plot_params.eps,
+			&plot_params
 		) {
 			state.clear_cache = true;
 			ui_state.showing_custom_label = true;
@@ -665,8 +665,8 @@ fn prepare_copied_entry<T: EvalexprFloat>(entry: &mut Entry<T>, next_id: &mut u6
 	if !entry.name.is_empty() {
 		entry.name = format!("{}_c", entry.name);
 	}
-	*next_id += 1;
 	entry.id = *next_id;
+	*next_id += 1;
 	if let EntryType::Folder { entries } = &mut entry.ty {
 		for e in entries {
 			prepare_copied_entry(e, next_id);
