@@ -199,7 +199,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 			Const { .. } => 200,
 			VariableIdentifierWrite { .. } | VariableIdentifierRead { .. } => 200,
 			FunctionIdentifier { .. } => 190,
-			DotAccess { .. } => 140,
+			DotAccess { .. } => 220,
 		}
 	}
 
@@ -442,6 +442,7 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
             || (self.operator().precedence() == node.operator().precedence() && !self.operator().is_left_to_right() && !node.operator().is_left_to_right())
 		{
 			if self.operator().is_leaf() {
+      // println!("insertback  appeand to leaf 0");
 				Err(EvalexprError::AppendedToLeafNode)
 			} else if self.has_enough_children() {
 				// Unwrap cannot fail because is_leaf being false and has_enough_children being true implies
@@ -464,6 +465,8 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 				} else {
 					// println!("Rotating");
 					if node.operator().is_leaf() {
+      // println!("insertback  appeand to leaf 1");
+
 						return Err(EvalexprError::AppendedToLeafNode);
 					}
 
@@ -588,11 +591,16 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
+		// println!(
+		//     "Inserting postfix root {:?} postfix op {:?}, after_rbrace = {after_rbrace}",
+        // root, postfix_op,
+		// );
 	// find rightmost position based on precedence
 	if root.operator() == &Operator::RootNode {
 		if let Some(child) = root.children.last_mut() {
 			insert_postfix_operator(child, postfix_op, after_rbrace)
 		} else {
+      // println!("postfix appeand to leaf 0");
 			Err(EvalexprError::AppendedToLeafNode)
 		}
 	} else if root.operator().is_sequence() && after_rbrace {
@@ -619,6 +627,7 @@ fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 				insert_postfix_operator(last_child, postfix_op, false)
 			}
 		} else {
+      // println!("postfix appeand to leaf 1");
 			Err(EvalexprError::AppendedToLeafNode)
 		}
 	} else {

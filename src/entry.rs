@@ -11,7 +11,6 @@ mod entry_plot_elements;
 mod entry_processing;
 mod entry_ui;
 
-
 pub use drag_point::point_dragging;
 pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
 pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprocess_ast};
@@ -151,7 +150,7 @@ pub enum EntryType<T: EvalexprFloat> {
 
 		parametric:          bool,
 		parametric_fill:     bool,
-    fill_rule:            FillRule,
+		fill_rule:           FillRule,
 		/// used when parametric is `true`
 		range_start:         Expr<T>,
 		/// used when parametric is `true`
@@ -169,8 +168,9 @@ pub enum EntryType<T: EvalexprFloat> {
 		range_end:   Expr<T>,
 	},
 	Points {
-		points: Vec<PointEntry<T>>,
-		style:  PointStyle,
+		identifier: IStr,
+		points:     Vec<PointEntry<T>>,
+		style:      PointStyle,
 	},
 	Label {
 		x:         Expr<T>,
@@ -250,17 +250,17 @@ pub struct LabelConfig {
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PointStyle {
-	show_lines:   bool,
+	show_lines:             bool,
 	#[serde(default)]
-	show_arrows:  bool,
-	show_points:  bool,
-	line_style:   LineStyleConfig,
+	show_arrows:            bool,
+	show_points:            bool,
+	line_style:             LineStyleConfig,
 	#[serde(default)]
-	label_config: Option<LabelConfig>,
+	label_config:           Option<LabelConfig>,
 	#[serde(default)]
-	fill:         bool,
+	fill:                   bool,
 	#[serde(default)]
-	fill_rule:    FillRule,
+	fill_rule:              FillRule,
 	#[serde(default)]
 	connect_first_and_last: bool,
 }
@@ -275,7 +275,7 @@ impl Default for PointStyle {
 			line_style:             LineStyleConfig::default(),
 			fill:                   false,
 			connect_first_and_last: false,
-      fill_rule: FillRule::default(),
+			fill_rule:              FillRule::default(),
 		}
 	}
 }
@@ -365,7 +365,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),
 				ty:                  FunctionType::Expression,
-        fill_rule:            FillRule::default(),
+				fill_rule:           FillRule::default(),
 				style:               LineStyleConfig::default(),
 				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},
@@ -393,7 +393,11 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
-			ty: EntryType::Points { points: vec![PointEntry::default()], style: PointStyle::default() },
+			ty: EntryType::Points {
+				identifier: istr_empty(),
+				points:     vec![PointEntry::default()],
+				style:      PointStyle::default(),
+			},
 		}
 	}
 	pub fn new_label(id: u64) -> Self {

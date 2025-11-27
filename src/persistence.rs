@@ -141,7 +141,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					implicit_resolution,
 					selectable,
 					parametric_fill,
-          fill_rule,
+					fill_rule,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -150,7 +150,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					range_end:           ExprSer::from_expr(range_end),
 					style:               style.clone(),
 					selectable:          *selectable,
-          fill_rule:           *fill_rule,
+					fill_rule:           *fill_rule,
 					implicit_resolution: *implicit_resolution,
 					parametric_fill:     *parametric_fill,
 				},
@@ -163,7 +163,7 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 						range_end:   ExprSer::from_expr(range_end),
 					}
 				},
-				EntryType::Points { points, style } => {
+				EntryType::Points { points, style, identifier: _ } => {
 					let mut points_serialized = Vec::new();
 					for point in points {
 						let point_serialized = EntryPointSerialized {
@@ -259,12 +259,12 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					style,
 					implicit_resolution,
 					selectable,
-          fill_rule,
+					fill_rule,
 					parametric_fill,
 				} => EntryType::Function {
 					parametric: ranged,
 					parametric_fill,
-          fill_rule,
+					fill_rule,
 					identifier: istr_empty(),
 					func: func.into_expr(true),
 					selectable,
@@ -303,7 +303,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 						};
 						points_deserialized.push(point_deserialized);
 					}
-					EntryType::Points { points: points_deserialized, style }
+					EntryType::Points { points: points_deserialized, style, identifier: istr_empty() }
 				},
 				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {
 					x: text_x.into_expr(false),

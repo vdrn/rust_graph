@@ -217,7 +217,7 @@ impl<NumericTypes: EvalexprFloat> Token<NumericTypes> {
 			Token::Boolean(_) => true,
 			Token::String(_) => true,
 
-			Token::DotAccess(_) => false,
+			Token::DotAccess(_) => true,
 		}
 	}
 

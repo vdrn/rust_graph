@@ -615,6 +615,8 @@ pub fn istr(string: &str) -> IStr { istr::IStr::new(string) }
 /// Empty interned string
 pub fn istr_empty() -> IStr { istr::IStr::empty() }
 
+pub use thin_vec::ThinVec;
+
 // mod compiled_node;
 mod context;
 pub mod error;

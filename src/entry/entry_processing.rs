@@ -1,8 +1,11 @@
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, istr, istr_empty};
+use evalexpr::{
+	EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, Stack, ThinVec, istr, istr_empty
+};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::builtins::is_builtin;
+use crate::entry::entry_plot_elements::eval_point2;
 use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType};
 use crate::scope;
 
@@ -80,7 +83,13 @@ fn prepare_entry<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			//handled in outer scope
 		},
-		EntryType::Points { points, .. } => {
+		EntryType::Points { points, identifier, .. } => {
+			*identifier = istr(entry.name.as_str().trim());
+
+			if let Some(builtin_type) = is_builtin(*identifier) {
+				*identifier = istr_empty();
+				return Err(format!("Cannot use builtin {} as name: {}", builtin_type, identifier));
+			}
 			for point in points {
 				let (Some(x), Some(y)) = (&point.x.node, &point.y.node) else {
 					point.drag_point = None;
@@ -144,7 +153,6 @@ fn prepare_entry<T: EvalexprFloat>(
 					},
 					PointDragType::X => {
 						if x_state.is_literal {
-							println!("DP LIETRAL");
 							point.drag_point = Some(DragPoint::XLiteral);
 						} else if let Some(x_const) = x_state.constants.first() {
 							if x_state.num_identifiers_and_special_ops == 1 {
@@ -238,12 +246,6 @@ fn prepare_entry<T: EvalexprFloat>(
 				}
 				if let Some(builtin_type) = is_builtin(*identifier) {
 					let err = format!("Cannot use builtin {} as name: {}", builtin_type, identifier);
-					*identifier = istr_empty();
-					return Err(err);
-				}
-
-				if ctx.has_value(*identifier) {
-					let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
 					*identifier = istr_empty();
 					return Err(err);
 				}
@@ -345,11 +347,33 @@ pub fn optimize_entries<T: EvalexprFloat>(
 	for i in 0..functions.len() {
 		if functions[i].depends_on.is_some() {
 			let mut depends_on = smallvec![];
-			if let Some(node) = get_function_node(root_entries, functions[i].root_idx, functions[i].idx) {
-				for ident in node.iter_identifiers() {
-					if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
-						depends_on.push(d.identifier);
-					}
+			if let Some(node) = get_entry(root_entries, functions[i].root_idx, functions[i].idx) {
+				match &node.ty {
+					EntryType::Function { func, .. } => {
+						if let Some(node) = func.node.as_ref() {
+							for ident in node.iter_identifiers() {
+								if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
+									depends_on.push(d.identifier);
+								}
+							}
+						}
+					},
+					EntryType::Points { points, .. } => {
+						for c_node in points
+							.iter()
+							.flat_map(|p| [p.x.node.as_ref(), p.y.node.as_ref()].into_iter())
+							.flatten()
+						{
+							for ident in c_node.iter_identifiers() {
+								if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
+									depends_on.push(d.identifier);
+								}
+							}
+						}
+					},
+					_ => {
+						unreachable!()
+					},
 				}
 			}
 			functions[i].depends_on = Some(depends_on);
@@ -395,7 +419,7 @@ pub fn optimize_entries<T: EvalexprFloat>(
 			// In practice this only means its dependencies will not be inlined.
 			// We choose the one with least number of dependencies.
 			// NOTE: we might need to rethink this
-			functions.sort_unstable_by_key(|e| e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0));
+			functions.sort_unstable_by_key(|e| (e.prio, e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0)));
 			println!("Cycle detected. Force compiling first function: {functions:?}. ");
 			functions[0].depends_on = None;
 		}
@@ -408,6 +432,7 @@ struct GraphEntry {
 	root_idx:   Option<usize>,
 	idx:        usize,
 	depends_on: Option<SmallVec<[IStr; 6]>>,
+	prio:       u32,
 }
 fn add_entries<T: EvalexprFloat>(root_idx: Option<usize>, entries: &[Entry<T>], graph: &mut Vec<GraphEntry>) {
 	use smallvec::smallvec;
@@ -415,18 +440,22 @@ fn add_entries<T: EvalexprFloat>(root_idx: Option<usize>, entries: &[Entry<T>], 
 		match &entry.ty {
 			EntryType::Function { func, identifier, .. } => {
 				let depends_on = if func.node.is_some() { Some(smallvec![]) } else { None };
-				graph.push(GraphEntry { identifier: *identifier, root_idx, idx: i, depends_on });
+				graph.push(GraphEntry { identifier: *identifier, root_idx, idx: i, depends_on, prio: 0 });
 			},
 			EntryType::Folder { entries } => {
 				add_entries(Some(i), entries, graph);
+			},
+			EntryType::Points { identifier, .. } => {
+				let depends_on = Some(smallvec![]);
+				graph.push(GraphEntry { identifier: *identifier, root_idx, idx: i, depends_on, prio: 1 });
 			},
 			_ => {},
 		}
 	}
 }
-fn get_function_node<T: EvalexprFloat>(
+fn get_entry<T: EvalexprFloat>(
 	root_entries: &[Entry<T>], root_idx: Option<usize>, idx: usize,
-) -> Option<&FlatNode<T>> {
+) -> Option<&Entry<T>> {
 	let entry = if let Some(root_idx) = root_idx {
 		let EntryType::Folder { entries } = &root_entries[root_idx].ty else {
 			unreachable!();
@@ -436,7 +465,8 @@ fn get_function_node<T: EvalexprFloat>(
 		&root_entries[idx]
 	};
 	match &entry.ty {
-		EntryType::Function { func, .. } => func.node.as_ref(),
+		EntryType::Function { .. } => Some(&entry),
+		EntryType::Points { .. } => Some(&entry),
 		// EntryType::Integral { func, .. } => func.node.as_ref(),
 		_ => None,
 	}
@@ -448,6 +478,12 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 	match &mut entry.ty {
 		EntryType::Function { func, identifier, .. } => {
 			func.expr_function = None;
+
+			if ctx.has_value(*identifier) {
+				let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
+				*identifier = istr_empty();
+				return Err((entry.id, err));
+			}
 
 			let Some(node) = &func.node else {
 				return Ok(());
@@ -462,7 +498,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-			// println!("EXPR FUNC: {:?}", expr_function);
+			println!("EXPR FUNC {}: {} {:#?}",entry.name, func.text, expr_function);
 			// if identifier.to_str() == "F"{
 			//   panic!()
 			// }
@@ -479,6 +515,44 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let expr_function = ExpressionFunction::new(node, &[istr("x"), istr("y")], &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
 			size.expr_function = Some(expr_function);
+		},
+		EntryType::Points { identifier, points, .. } => {
+			let mut stack = Stack::<T>::with_capacity(0);
+			for (i, p) in points.iter_mut().enumerate() {
+				match eval_point2(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
+					Ok(Some(v)) => {
+						p.val = Some(v);
+					},
+					Ok(None) => {
+						p.val = None;
+					},
+					Err(e) => {
+						return Err((entry.id, e));
+					},
+				}
+			}
+			if identifier.to_str() != "" {
+				if ctx.has_value(*identifier) {
+					let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
+					*identifier = istr_empty();
+					return Err((entry.id, err));
+				}
+				if points.len() == 1 {
+					if let Some(va) = points[0].val {
+						ctx.set_value(*identifier, evalexpr::Value::<T>::Float2(va.0, va.1)).unwrap();
+					}
+				} else if points.len() > 1 {
+					let mut tuple = ThinVec::with_capacity(points.len());
+					for p in points {
+						if let Some(va) = p.val {
+							tuple.push(evalexpr::Value::<T>::Float2(va.0, va.1));
+						} else {
+							tuple.push(evalexpr::Value::<T>::Empty);
+						}
+					}
+					ctx.set_value(*identifier, evalexpr::Value::<T>::Tuple(tuple)).unwrap();
+				}
+			}
 		},
 		_ => {},
 	}

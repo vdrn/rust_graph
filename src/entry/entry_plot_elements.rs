@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
 use core::mem;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
@@ -32,7 +32,7 @@ pub struct PlotParams {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::panic_in_result_fn)]
 pub fn entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &mut Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
+	entry: &Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	draw_buffer: &ThreadLocal<crate::DrawBufferRC>, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) -> Result<(), Vec<(u64, String)>> {
@@ -46,10 +46,10 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 	// println!("step_size: {deriv_step_x}");
 
 	let draw_buffer_c = thread_local_get(draw_buffer);
-	match &mut entry.ty {
+	match &entry.ty {
 		EntryType::Folder { entries } => {
 			let mut errors = std::sync::Mutex::new(Vec::new());
-			entries.par_iter_mut().enumerate().for_each(|(ei, entry)| {
+			entries.par_iter().enumerate().for_each(|(ei, entry)| {
 				let eid = Id::new(entry.id);
 				if let Err(e) = entry_create_plot_elements(
 					entry,
@@ -101,8 +101,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				_ => {},
 			}
 		},
-		EntryType::Points { points, style } => {
-			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+		EntryType::Points { points, style,.. } => {
 			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 			// main_context
 			// 	.write()
@@ -129,106 +128,101 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			} else {
 				None
 			};
-			for (i, p) in points.iter_mut().enumerate() {
-				match eval_point(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
-					Ok(Some((x, y))) => {
-						p.val = Some((T::from_f64(x), T::from_f64(y)));
-						let point_id = id.with(i);
-						let selected = selected_id == Some(id);
-						let radius = if selected { 6.5 } else { 4.5 };
-						let radius_outer = if selected { 12.5 } else { 7.5 };
+			for (i, p) in points.iter().enumerate() {
+				if let Some((x, y)) = p.val {
+          let x = x.to_f64();
+          let y = y.to_f64();
+					let point_id = id.with(i);
+					let selected = selected_id == Some(id);
+					let radius = if selected { 6.5 } else { 4.5 };
+					let radius_outer = if selected { 12.5 } else { 7.5 };
 
-						if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
-							let screen_point = gpu_position_from_point(
-								plot_trans,
-								plot_params.invert_axes,
-								&PlotPoint::new(x, y),
-							);
-							fill_mesh.add_vertex(screen_point.x, screen_point.y);
-						}
-						if style.show_points || p.drag_point.is_some() {
+					if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
+						let screen_point = gpu_position_from_point(
+							plot_trans,
+							plot_params.invert_axes,
+							&PlotPoint::new(x, y),
+						);
+						fill_mesh.add_vertex(screen_point.x, screen_point.y);
+					}
+					if style.show_points || p.drag_point.is_some() {
+						draw_buffer.points.push(DrawPoint::new(
+							sorting_idx,
+							i as u32,
+							PointInteraction {
+								x,
+								y,
+								radius,
+								ty: PointInteractionType::Other(OtherPointType::Point),
+							},
+							Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
+						));
+						if p.drag_point.is_some() {
+							let selectable_point = PointInteraction {
+								ty: PointInteractionType::Draggable { i: (id, i as u32) },
+								x,
+								y,
+								radius: radius_outer,
+							};
 							draw_buffer.points.push(DrawPoint::new(
 								sorting_idx,
 								i as u32,
-								PointInteraction {
-									x,
-									y,
-									radius,
-									ty: PointInteractionType::Other(OtherPointType::Point),
-								},
-								Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
+								selectable_point,
+								Points::new(entry.name.clone(), [x, y])
+									.id(point_id)
+									.color(color_outer)
+									.radius(radius_outer),
 							));
-							if p.drag_point.is_some() {
-								let selectable_point = PointInteraction {
-									ty: PointInteractionType::Draggable { i: (id, i as u32) },
-									x,
-									y,
-									radius: radius_outer,
-								};
-								draw_buffer.points.push(DrawPoint::new(
-									sorting_idx,
-									i as u32,
-									selectable_point,
-									Points::new(entry.name.clone(), [x, y])
-										.id(point_id)
-										.color(color_outer)
-										.radius(radius_outer),
-								));
-							}
 						}
-						if let Some(label_config) = &style.label_config
-							&& i == points_len - 1
-							&& !entry.name.trim().is_empty()
+					}
+					if let Some(label_config) = &style.label_config
+						&& i == points_len - 1
+						&& !entry.name.trim().is_empty()
+					{
+						let size = label_config.size.size();
+						let mut label = RichText::new(entry.name.clone()).size(size);
+						if label_config.italic {
+							label = label.italics();
+						}
+
+						let dir = label_config.pos.dir();
+						let text = Text::new(
+							entry.name.clone(),
+							PlotPoint {
+								x: x + (dir.x * size * arrow_scale.x) as f64,
+								y: y + (dir.y * size * arrow_scale.y) as f64,
+							},
+							label,
+						)
+						.color(color);
+
+						draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+					}
+
+					if style.show_lines {
+						line_buffer.push([x, y]);
+						let cur_point = egui::Vec2::new(x as f32, y as f32);
+						if style.show_arrows
+							&& let Some(pp) = prev_point
 						{
-							let size = label_config.size.size();
-							let mut label = RichText::new(entry.name.clone()).size(size);
-							if label_config.italic {
-								label = label.italics();
-							}
+							let dir = (pp - cur_point).normalized();
+							let arrow_len = arrow_scale * radius_outer;
+							let base = cur_point + dir * arrow_len.length();
+							let a = base + dir.rot90() * arrow_len * 0.5;
+							let b = base - dir.rot90() * arrow_len * 0.5;
 
-							let dir = label_config.pos.dir();
-							let text = Text::new(
-								entry.name.clone(),
-								PlotPoint {
-									x: x + (dir.x * size * arrow_scale.x) as f64,
-									y: y + (dir.y * size * arrow_scale.y) as f64,
-								},
-								label,
-							)
-							.color(color);
-
-							draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+							arrow_buffer.push(
+								Polygon::new(
+									"",
+									vec![[x, y], [a.x as f64, a.y as f64], [b.x as f64, b.y as f64]],
+								)
+								.fill_color(color)
+								.allow_hover(false)
+								.stroke(Stroke::new(0.0, color)),
+							);
 						}
-
-						if style.show_lines {
-							line_buffer.push([x, y]);
-							let cur_point = egui::Vec2::new(x as f32, y as f32);
-							if style.show_arrows
-								&& let Some(pp) = prev_point
-							{
-								let dir = (pp - cur_point).normalized();
-								let arrow_len = arrow_scale * radius_outer;
-								let base = cur_point + dir * arrow_len.length();
-								let a = base + dir.rot90() * arrow_len * 0.5;
-								let b = base - dir.rot90() * arrow_len * 0.5;
-
-								arrow_buffer.push(
-									Polygon::new(
-										"",
-										vec![[x, y], [a.x as f64, a.y as f64], [b.x as f64, b.y as f64]],
-									)
-									.fill_color(color)
-									.allow_hover(false)
-									.stroke(Stroke::new(0.0, color)),
-								);
-							}
-							prev_point = Some(cur_point);
-						}
-					},
-					Err(e) => {
-						return Err(vec![(entry.id, e)]);
-					},
-					_ => {},
+						prev_point = Some(cur_point);
+					}
 				}
 			}
 
@@ -499,7 +493,18 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 	Ok(())
 }
 
-fn eval_point<T: EvalexprFloat>(
+pub fn eval_point2<T: EvalexprFloat>(
+	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, px: Option<&FlatNode<T>>,
+	py: Option<&FlatNode<T>>,
+) -> Result<Option<(T, T)>, String> {
+	let (Some(x), Some(y)) = (px, py) else {
+		return Ok(None);
+	};
+	let x = x.eval_float_with_context(stack, ctx).map_err(|e| e.to_string())?;
+	let y = y.eval_float_with_context(stack, ctx).map_err(|e| e.to_string())?;
+	Ok(Some((x, y)))
+}
+pub fn eval_point<T: EvalexprFloat>(
 	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, px: Option<&FlatNode<T>>,
 	py: Option<&FlatNode<T>>,
 ) -> Result<Option<(f64, f64)>, String> {
