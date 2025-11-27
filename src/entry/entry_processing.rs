@@ -465,8 +465,8 @@ fn get_entry<T: EvalexprFloat>(
 		&root_entries[idx]
 	};
 	match &entry.ty {
-		EntryType::Function { .. } => Some(&entry),
-		EntryType::Points { .. } => Some(&entry),
+		EntryType::Function { .. } => Some(entry),
+		EntryType::Points { .. } => Some(entry),
 		// EntryType::Integral { func, .. } => func.node.as_ref(),
 		_ => None,
 	}
@@ -488,17 +488,20 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
-			// println!("INLINING FUNC {} {}", entry.name, func.text);
-			// println!("ops  {:?}", node);
+      // if identifier.to_str() == "F"{
+			// println!("INLINING FUNC {} IDENT {} {}", entry.name,identifier, func.text);
+			 // println!("ops  {:?}", node);
+      // }
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
-			// println!("INLINED FUNC: {:?}", inlined_node);
-
+      // if identifier.to_str() == "F"{
+			// println!("INLINED FUNC: {:#?}", inlined_node);
+      //   }
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-			println!("EXPR FUNC {}: {} {:#?}",entry.name, func.text, expr_function);
+			// println!("EXPR FUNC {}: {} LEN {} {:#?}",entry.name, func.text,expr_function.ops_len(), expr_function);
 			// if identifier.to_str() == "F"{
 			//   panic!()
 			// }

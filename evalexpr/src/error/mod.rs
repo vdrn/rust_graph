@@ -24,6 +24,13 @@ mod display;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
+  /// The tuple lengths do not match
+  TuplesMismatchedLengths{
+    /// The length of the left tuple
+    left: u32,
+    /// The length of the right tuple
+    right: u32,
+  },
 	/// The index is out of bounds
 	InvalidIndex {
 		/// The index that was out of bounds
@@ -146,7 +153,7 @@ pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	/// An operator is used with a wrong combination of types.
 	WrongTypeCombination {
 		/// The operator that whose evaluation caused the error.
-		operator: Operator<NumericTypes>,
+		operator: &'static str,
 		/// Type that were Expected
 		expected: Vec<ValueType>,
 		/// The types that were used in the operator causing it to fail.
@@ -288,7 +295,7 @@ impl<NumericTypes: EvalexprFloat> EvalexprError<NumericTypes> {
 
 	/// Constructs `EvalexprError::WrongTypeCombination{operator, actual}`.
 	pub fn wrong_type_combination(
-		operator: Operator<NumericTypes>, actual: Vec<ValueType>, expected: Vec<ValueType>,
+		operator: &'static str, actual: Vec<ValueType>, expected: Vec<ValueType>,
 	) -> Self {
 		EvalexprError::WrongTypeCombination { operator, expected, actual }
 	}

@@ -487,6 +487,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					if full_width_slider(ui, &mut v, range, *step, T::EPSILON) {
 						entry.active = false;
+            result.animating = true;
 					}
 
 					if original_value.to_f64() != v {

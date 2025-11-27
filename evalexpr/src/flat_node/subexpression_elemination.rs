@@ -1,7 +1,7 @@
 use smallvec::SmallVec;
 
 use crate::flat_node::FlatOperator;
-use crate::{EvalexprFloat, FlatNode, HashMapContext};
+use crate::{EvalexprFloat, FlatNode, HashMapContext, Value};
 
 /// Returns `true` if any local variables were deduplicated at the end of this function.
 /// This is a signal that you may want to re-run this function, as that may eliminate more
@@ -96,7 +96,9 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
 		node.ops.splice(insert_place..insert_place, local_vars);
 	}
 
-	deduplicate_local_vars(node)
+	let mut deduplicated = deduplicate_local_vars(node);
+	deduplicated |= inline_single_ref_local_vars(node);
+	deduplicated
 }
 /// Inlining functions can produce local variables that are just ReadParam/ReadVar.
 /// Those are pointless, so we replace reads of those local vars with direct ReadParam/ReadVar,
@@ -212,6 +214,87 @@ fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 
 	deduplicated
 }
+fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
+	let mut local_var_ranges = get_n_previous_exprs(
+		&node.ops,
+		node.num_local_var_ops.saturating_sub(1) as usize,
+		node.num_local_vars as usize,
+	);
+	local_var_ranges.reverse();
+	// println!("local var ranges: {local_var_ranges:?}");
+
+	let mut inlined = false;
+	let mut i = 0;
+	'outer: while i < local_var_ranges.len() {
+		let (start, end) = local_var_ranges[i];
+		// println!("inlining local var {i} with staret {start} ..= {end} node {node:?}");
+		let num_ops_in_lv = end - start + 1;
+		// let mut j = i + 1;
+		let mut ref_pos = None;
+		for op_i in end + 1..node.ops.len() {
+			if let FlatOperator::ReadLocalVar { idx } = &node.ops[op_i] {
+				if *idx == i as u32 {
+					if ref_pos.is_some() {
+						// multiple references, nothing to do
+						i += 1;
+						continue 'outer;
+					} else {
+						ref_pos = Some(op_i);
+					}
+				}
+			}
+		}
+		if let Some(ref_pos) = ref_pos {
+			if let Some(target_local_var_i) =
+				local_var_ranges.iter().position(|(start, end)| (*start..=*end).contains(&ref_pos))
+			{
+				// since we just moved one local var into the other, total number of local ops is just 1
+				// less: ReadLocalVar in 2nd
+				node.num_local_var_ops -= 1;
+
+				for further_range in local_var_ranges[i..target_local_var_i].iter_mut() {
+					*further_range = (further_range.0 - num_ops_in_lv, further_range.1 - num_ops_in_lv);
+				}
+				// firsst we enlarge the range for target local var
+				// -1 because will will remove another 1 in the loop below
+				local_var_ranges[target_local_var_i].0 -= num_ops_in_lv - 1;
+
+				for further_range in local_var_ranges[target_local_var_i..].iter_mut() {
+					*further_range = (further_range.0 - 1, further_range.1 - 1);
+				}
+			} else {
+				node.num_local_var_ops -= num_ops_in_lv as u32;
+				for further_range in local_var_ranges[i..].iter_mut() {
+					*further_range = (further_range.0 - num_ops_in_lv, further_range.1 - num_ops_in_lv);
+				}
+
+				// node.ops.splice(ref_pos..=ref_pos,
+			}
+			node.num_local_vars -= 1;
+
+			let mut drained_ops = Some(node.ops.drain(start..=end).collect::<Vec<_>>());
+			for op_i in 0..node.ops.len() {
+				if let FlatOperator::ReadLocalVar { idx } = &mut node.ops[op_i] {
+					if *idx == i as u32 {
+						node.ops.splice(
+							op_i..=op_i,
+							drained_ops.take().expect("we're only doing this if there is just 1 ref"),
+						);
+					} else if *idx > i as u32 {
+						*idx -= 1;
+					}
+				}
+			}
+			local_var_ranges.remove(i);
+			// println!("inlined local var {i} ");
+			inlined = true;
+		} else {
+			i += 1;
+		}
+	}
+
+	inlined
+}
 
 fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 	match op {
@@ -316,10 +399,9 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::Integral(_) => 2,
 
 		FlatOperator::Clamp => 3,
-    FlatOperator::AccessX | FlatOperator::AccessY => 1,
-    FlatOperator::AccessIndex { .. } => 1,
+		FlatOperator::AccessX | FlatOperator::AccessY => 1,
+		FlatOperator::AccessIndex { .. } => 1,
 	}
-
 }
 fn get_operator_range<F: EvalexprFloat>(
 	ops: &[FlatOperator<F>], index: usize, min_start: usize,
@@ -378,4 +460,12 @@ pub fn get_n_previous_exprs<F: EvalexprFloat>(
 	}
 
 	result
+}
+pub fn range_as_const<F: EvalexprFloat>(ops: &[FlatOperator<F>], range: (usize, usize)) -> Option<Value<F>> {
+	if range.0 == range.1 {
+		if let FlatOperator::PushConst { value } = &ops[range.0] {
+			return Some(value.clone());
+		}
+	}
+	None
 }

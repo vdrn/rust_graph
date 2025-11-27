@@ -793,7 +793,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			},
 			FlatOperator::AccessIndex { index } => {
 				let value = stack.pop_unchecked();
-        stack.push(access_index(value, *index)?);
+				stack.push(access_index(value, *index)?);
 			},
 		}
 	}
@@ -814,7 +814,7 @@ pub fn access_index<F: EvalexprFloat>(value: Value<F>, index: u32) -> EvalexprRe
 			.cloned()
 			.ok_or_else(|| EvalexprError::InvalidIndex { index, len: tuple.len() as u32 }),
 		value => Err(EvalexprError::wrong_type_combination(
-			Operator::DotAccess { identifier: IStr::new(&index.to_string()) },
+			"Dot Access",
 			vec![(&value).into()],
 			vec![ValueType::Float2, ValueType::Tuple],
 		)),
@@ -935,4 +935,76 @@ fn read_var<F: EvalexprFloat>(
 		stack.num_args = prev_num_args;
 		val
 	})
+}
+
+#[inline(always)]
+pub fn math_op<F: EvalexprFloat>(
+	left: Value<F>, right: Value<F>, name: &'static str, op: impl Fn(F, F) -> F,
+) -> EvalexprResult<Value<F>, F> {
+	match (left, right) {
+		(Value::Float(l), Value::Float(r)) => Ok(Value::Float(op(l, r))),
+
+		(Value::Float2(l, r), Value::Float2(l2, r2)) => Ok(Value::Float2(op(l, l2), op(r, r2))),
+		(Value::Float(l), Value::Float2(l2, r2)) => Ok(Value::Float2(op(l, l2), op(l, r2))),
+		(Value::Float2(l, r), Value::Float(l2)) => Ok(Value::Float2(op(l, l2), op(r, l2))),
+		(left, right) => math_op_inner(left, right, name, op),
+	}
+}
+#[inline(never)]
+fn math_op_inner<F: EvalexprFloat>(
+	left: Value<F>, right: Value<F>, name: &'static str, op: impl Fn(F, F) -> F,
+) -> EvalexprResult<Value<F>, F> {
+	match (left, right) {
+		(Value::Tuple(l), Value::Tuple(r)) => {
+			if l.len() != r.len() {
+				return Err(EvalexprError::TuplesMismatchedLengths {
+					left:  l.len() as u32,
+					right: r.len() as u32,
+				});
+			}
+			let mut result = l;
+			for (l, r) in result.iter_mut().zip(r.into_iter()) {
+				*l = math_op(l.clone(), r, name, &op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+		(Value::Float(l), Value::Tuple(r)) => {
+			let mut result = r;
+			for r in result.iter_mut() {
+				*r = math_op(Value::Float(l), r.clone(), name, &op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+		(Value::Tuple(l), Value::Float(r)) => {
+			let mut result = l;
+			for l in result.iter_mut() {
+				*l = math_op(l.clone(), Value::Float(r), name, &op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+
+		(Value::Float2(l1, l2), Value::Tuple(r2)) => {
+			if r2.len() != 2 {
+				return Err(EvalexprError::TuplesMismatchedLengths { left: 2, right: r2.len() as u32 });
+			}
+			let mut result = r2;
+			result[0] = math_op(Value::Float(l1), result[0].clone(), name, &op)?;
+			result[1] = math_op(Value::Float(l2), result[1].clone(), name, &op)?;
+			Ok(Value::Tuple(result))
+		},
+		(Value::Tuple(l), Value::Float2(r1, r2)) => {
+			if l.len() != 2 {
+				return Err(EvalexprError::TuplesMismatchedLengths { left: 2, right: l.len() as u32 });
+			}
+			let mut result = l;
+			result[0] = math_op(result[0].clone(), Value::Float(r1), name, &op)?;
+			result[1] = math_op(result[1].clone(), Value::Float(r2), name, &op)?;
+			Ok(Value::Tuple(result))
+		},
+		(l, r) => Err(EvalexprError::wrong_type_combination(
+			name,
+			vec![(&l).into(), (&r).into()],
+			vec![ValueType::Float, ValueType::Float2, ValueType::Tuple],
+		)),
+	}
 }

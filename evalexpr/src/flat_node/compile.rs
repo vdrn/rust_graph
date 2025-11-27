@@ -70,18 +70,18 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				return Ok(());
 			};
 
-			//  x + C or
-			if let Some(c) = extract_const_float(&a)? {
-				compile_to_flat_inner(b, ops)?;
-				ops.push(FlatOperator::AddConst { value: c });
-				return Ok(());
-			}
-			//C + x
-			if let Some(c) = extract_const_float(&b)? {
-				compile_to_flat_inner(a, ops)?;
-				ops.push(FlatOperator::AddConst { value: c });
-				return Ok(());
-			}
+			////  x + C or
+			//if let Some(c) = extract_const_float(&a)? {
+			//	compile_to_flat_inner(b, ops)?;
+			//	ops.push(FlatOperator::AddConst { value: c });
+			//	return Ok(());
+			//}
+			////C + x
+			//if let Some(c) = extract_const_float(&b)? {
+			//	compile_to_flat_inner(a, ops)?;
+			//	ops.push(FlatOperator::AddConst { value: c });
+			//	return Ok(());
+			//}
 
 			nary_op(ops, a, b, Operator::Add, FlatOperator::Add, |n| FlatOperator::AddN { n })?;
 		},
@@ -98,18 +98,18 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				return Ok(());
 			};
 
-			//  x - C
-			if let Some(c) = extract_const_float(&b)? {
-				compile_to_flat_inner(a, ops)?;
-				ops.push(FlatOperator::SubConst { value: c });
-				return Ok(());
-			}
-			//  C - x
-			if let Some(c) = extract_const_float(&a)? {
-				compile_to_flat_inner(b, ops)?;
-				ops.push(FlatOperator::ConstSub { value: c });
-				return Ok(());
-			}
+			// //  x - C
+			// if let Some(c) = extract_const_float(&b)? {
+			// 	compile_to_flat_inner(a, ops)?;
+			// 	ops.push(FlatOperator::SubConst { value: c });
+			// 	return Ok(());
+			// }
+			// //  C - x
+			// if let Some(c) = extract_const_float(&a)? {
+			// 	compile_to_flat_inner(b, ops)?;
+			// 	ops.push(FlatOperator::ConstSub { value: c });
+			// 	return Ok(());
+			// }
 
 			nary_op(ops, a, b, Operator::Sub, FlatOperator::Sub, |n| FlatOperator::SubN { n })?;
 		},
@@ -135,18 +135,18 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				return Ok(());
 			};
 
-			//  x * C
-			if let Some(c) = extract_const_float(&b)? {
-				compile_to_flat_inner(a, ops)?;
-				ops.push(FlatOperator::MulConst { value: c });
-				return Ok(());
-			}
-			//  C * x
-			if let Some(c) = extract_const_float(&a)? {
-				compile_to_flat_inner(b, ops)?;
-				ops.push(FlatOperator::MulConst { value: c });
-				return Ok(());
-			}
+			// //  x * C
+			// if let Some(c) = extract_const_float(&b)? {
+			// 	compile_to_flat_inner(a, ops)?;
+			// 	ops.push(FlatOperator::MulConst { value: c });
+			// 	return Ok(());
+			// }
+			// //  C * x
+			// if let Some(c) = extract_const_float(&a)? {
+			// 	compile_to_flat_inner(b, ops)?;
+			// 	ops.push(FlatOperator::MulConst { value: c });
+			// 	return Ok(());
+			// }
 
 			nary_op(ops, a, b, Operator::Mul, FlatOperator::Mul, |n| FlatOperator::MulN { n })?;
 		},
@@ -170,43 +170,45 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				return Ok(());
 			};
 
-			//  x / C
-			if let Some(c) = extract_const_float(&b)? {
-				compile_to_flat_inner(a, ops)?;
-				ops.push(FlatOperator::DivConst { value: c });
-				return Ok(());
-			}
-			//  C / x
-			if let Some(c) = extract_const_float(&a)? {
-				compile_to_flat_inner(b, ops)?;
-				ops.push(FlatOperator::ConstDiv { value: c });
-				return Ok(());
-			}
+			// 			//  x / C
+			// 			if let Some(c) = extract_const_float(&b)? {
+			// 				compile_to_flat_inner(a, ops)?;
+			// 				ops.push(FlatOperator::DivConst { value: c });
+			// 				return Ok(());
+			// 			}
+			// 			//  C / x
+			// 			if let Some(c) = extract_const_float(&a)? {
+			// 				compile_to_flat_inner(b, ops)?;
+			// 				ops.push(FlatOperator::ConstDiv { value: c });
+			// 				return Ok(());
+			// 			}
 
 			nary_op(ops, a, b, Operator::Div, FlatOperator::Div, |n| FlatOperator::DivN { n })?;
 		},
 		Operator::Mod => {
 			let [a, b] = extract_two_nodes(node.children)?;
 			compile_to_flat_inner(a, ops)?;
-			if let Some(c) = extract_const_float(&b)? {
-				ops.push(FlatOperator::ModConst { value: c });
-			} else {
-				compile_to_flat_inner(b, ops)?;
-				ops.push(FlatOperator::Mod);
-			}
+			// if let Some(c) = extract_const_float(&b)? {
+			// 	ops.push(FlatOperator::ModConst { value: c });
+			// } else {
+			compile_to_flat_inner(b, ops)?;
+			ops.push(FlatOperator::Mod);
+			// }
 			// compile_to_flat_inner(b, ops)?;
 			// ops.push(FlatOperator::Mod);
 		},
 		Operator::Exp => {
 			let [a, b] = extract_two_nodes(node.children)?;
 			compile_to_flat_inner(a, ops)?;
-			if let Some(c) = extract_const_float(&b)? {
+			if let Some(c) = extract_const_float(&b) {
 				if c == F::from_f64(2.0) {
 					ops.push(FlatOperator::Square);
 				} else if c == F::from_f64(3.0) {
 					ops.push(FlatOperator::Cube);
 				} else {
-					ops.push(FlatOperator::ExpConst { value: c });
+					compile_to_flat_inner(b, ops)?;
+					ops.push(FlatOperator::Exp);
+					// ops.push(FlatOperator::ExpConst { value: c });
 				}
 			} else {
 				compile_to_flat_inner(b, ops)?;
@@ -220,13 +222,13 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 		// Unary operators
 		Operator::Neg => {
 			let child = extract_one_node(node.children)?;
-			if let Operator::Const { value } = &child.operator {
-				let val = value.as_float()?;
-				ops.push(FlatOperator::PushConst { value: Value::Float(-val) });
-			} else {
-				compile_to_flat_inner(child, ops)?;
-				ops.push(FlatOperator::Neg);
-			}
+			// if let Operator::Const { value } = &child.operator {
+			// 	let val = value.as_float()?;
+			// 	ops.push(FlatOperator::PushConst { value: Value::Float(-val) });
+			// } else {
+			compile_to_flat_inner(child, ops)?;
+			ops.push(FlatOperator::Neg);
+			// }
 		},
 		Operator::Not => {
 			let child = extract_one_node(node.children)?;
@@ -579,10 +581,10 @@ fn collect_same_operator<NumericTypes: EvalexprFloat>(
 		vec![node]
 	}
 }
-fn extract_const_float<T: EvalexprFloat>(node: &Node<T>) -> EvalexprResult<Option<T>, T> {
+fn extract_const_float<T: EvalexprFloat>(node: &Node<T>) -> Option<T> {
 	match &node.operator {
-		Operator::Const { value } => Ok(Some(value.as_float()?)),
-		_ => Ok(None),
+		Operator::Const { value } => value.as_float().ok(),
+		_ => None,
 	}
 }
 

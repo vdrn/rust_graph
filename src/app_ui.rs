@@ -305,6 +305,8 @@ pub fn side_panel<T: EvalexprFloat>(
 				prepare_entries(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
 			} else if animating {
 				scope!("prepare_constants");
+				state.ctx.clear();
+				init_builtins::<T>(&mut state.ctx);
 				entry::prepare_constants(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
 			}
 			if needs_recompilation || state.clear_cache || animating {

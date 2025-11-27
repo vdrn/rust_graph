@@ -1,6 +1,7 @@
 use thin_vec::ThinVec;
 
 use crate::flat_node::eval::{access_index, eval_range, eval_range_with_step};
+use crate::flat_node::subexpression_elemination::{get_n_previous_exprs, range_as_const};
 use crate::flat_node::{FlatOperator, IntegralNode};
 use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
 
@@ -92,10 +93,11 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				}
 			},
 			FlatOperator::Add => {
-				fold_binary_op_with_const_variant(
+				fold_binary_op_with_two_const_variants(
 					&mut new_ops,
 					source_op,
 					|a, b| a + b,
+					|value| FlatOperator::AddConst { value },
 					|value| FlatOperator::AddConst { value },
 				)?;
 			},
@@ -103,11 +105,12 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_binary_const_op(&mut new_ops, source_op, |base| base + *value)?;
 			},
 			FlatOperator::Sub => {
-				fold_binary_op_with_const_variant(
+				fold_binary_op_with_two_const_variants(
 					&mut new_ops,
 					source_op,
 					|a, b| a - b,
 					|value| FlatOperator::SubConst { value },
+					|value| FlatOperator::ConstSub { value },
 				)?;
 			},
 			FlatOperator::SubConst { value } => {
@@ -117,10 +120,11 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_binary_const_op(&mut new_ops, source_op, |sub| *value - sub)?;
 			},
 			FlatOperator::Mul => {
-				fold_binary_op_with_const_variant(
+				fold_binary_op_with_two_const_variants(
 					&mut new_ops,
 					source_op,
 					|a, b| a * b,
+					|value| FlatOperator::MulConst { value },
 					|value| FlatOperator::MulConst { value },
 				)?;
 			},
@@ -128,11 +132,12 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_binary_const_op(&mut new_ops, source_op, |base| base * *value)?;
 			},
 			FlatOperator::Div => {
-				fold_binary_op_with_const_variant(
+				fold_binary_op_with_two_const_variants(
 					&mut new_ops,
 					source_op,
 					|a, b| a / b,
 					|value| FlatOperator::DivConst { value },
+					|value| FlatOperator::ConstDiv { value },
 				)?;
 			},
 			FlatOperator::DivConst { value } => {
@@ -492,6 +497,28 @@ fn fold_binary_op_with_const_variant<F: EvalexprFloat>(
 	}
 	Ok(())
 }
+fn fold_binary_op_with_two_const_variants<F: EvalexprFloat>(
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold_2: impl FnOnce(F, F) -> F,
+	fold_1_1: impl FnOnce(F) -> FlatOperator<F>, fold_1_2: impl FnOnce(F) -> FlatOperator<F>,
+) -> EvalexprResult<(), F> {
+	if let Some((a, b)) = get_last_2_if_const_as_float(new_ops)? {
+		new_ops.pop();
+		new_ops.pop();
+		new_ops.push(FlatOperator::PushConst { value: Value::Float(fold_2(a, b)) });
+	} else if let Some(last_const) = get_last_if_const_as_float(new_ops)? {
+		new_ops.pop();
+		new_ops.push(fold_1_1(last_const));
+	} else if let Some((second_last_const, idx)) = get_second_last_if_const_as_float(new_ops)? {
+    println!("State before {new_ops:?}");
+    println!("folding secondd last const {op:?} removing {idx}");
+		new_ops.remove(idx);
+		new_ops.push(fold_1_2(second_last_const));
+    println!("State after {new_ops:?}");
+	} else {
+		new_ops.push(op.clone());
+	}
+	Ok(())
+}
 fn fold_binary_const_op<F: EvalexprFloat>(
 	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold: impl FnOnce(F) -> F,
 ) -> EvalexprResult<(), F> {
@@ -540,6 +567,17 @@ fn get_last_if_const_as_float<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Eval
 	if let Some(FlatOperator::PushConst { value }) = ops.last() {
 		return Ok(Some(value.as_float()?));
 	};
+
+	Ok(None)
+}
+fn get_second_last_if_const_as_float<F: EvalexprFloat>(
+	ops: &[FlatOperator<F>],
+) -> EvalexprResult<Option<(F, usize)>, F> {
+	let prev_ranges = get_n_previous_exprs(ops, ops.len() - 1, 2);
+	assert!(prev_ranges.len() == 2);
+	if let Some(value) = range_as_const(ops, prev_ranges[1]) {
+		return Ok(Some((value.as_float()?, prev_ranges[1].0)));
+	}
 
 	Ok(None)
 }
