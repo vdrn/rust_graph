@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 puffin = ["dep:puffin_http", "dep:puffin"]
-default = [ ]
+default = []
 
 [profile.dev]
 opt-level = 1
@@ -45,6 +45,7 @@ wgpu = { version = "*", features = [ "webgpu", "webgl"] }
 bytemuck = "1"
 cfg-if = "1"
 egui_plot="0.34"
+send_wrapper = "0.6"
 # enum-map="2.7"
 
 # egui_extras={version = "0.33", features=["syntect"]}

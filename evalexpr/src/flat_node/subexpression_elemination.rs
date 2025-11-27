@@ -214,6 +214,8 @@ fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 
 	deduplicated
 }
+/// Removes local variables that are only referenced once.
+/// This can happen after inlining or other subexpression eliminations.
 fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 	let mut local_var_ranges = get_n_previous_exprs(
 		&node.ops,
@@ -248,11 +250,13 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 			if let Some(target_local_var_i) =
 				local_var_ranges.iter().position(|(start, end)| (*start..=*end).contains(&ref_pos))
 			{
+				// ref is within local vars
+
 				// since we just moved one local var into the other, total number of local ops is just 1
-				// less: ReadLocalVar in 2nd
+				// less: ReadLocalVar in 2nd local var
 				node.num_local_var_ops -= 1;
 
-				for further_range in local_var_ranges[i..target_local_var_i].iter_mut() {
+				for further_range in local_var_ranges[i + 1..target_local_var_i].iter_mut() {
 					*further_range = (further_range.0 - num_ops_in_lv, further_range.1 - num_ops_in_lv);
 				}
 				// firsst we enlarge the range for target local var
@@ -263,17 +267,20 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 					*further_range = (further_range.0 - 1, further_range.1 - 1);
 				}
 			} else {
+				// ref is after local vars
+
 				node.num_local_var_ops -= num_ops_in_lv as u32;
-				for further_range in local_var_ranges[i..].iter_mut() {
+				for further_range in local_var_ranges[i + 1..].iter_mut() {
 					*further_range = (further_range.0 - num_ops_in_lv, further_range.1 - num_ops_in_lv);
 				}
-
-				// node.ops.splice(ref_pos..=ref_pos,
 			}
 			node.num_local_vars -= 1;
 
 			let mut drained_ops = Some(node.ops.drain(start..=end).collect::<Vec<_>>());
-			for op_i in 0..node.ops.len() {
+
+			let mut op_i = 0;
+			while op_i < node.ops.len() {
+				// for op_i in 0..node.ops.len() {
 				if let FlatOperator::ReadLocalVar { idx } = &mut node.ops[op_i] {
 					if *idx == i as u32 {
 						node.ops.splice(
@@ -284,6 +291,7 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 						*idx -= 1;
 					}
 				}
+				op_i += 1;
 			}
 			local_var_ranges.remove(i);
 			// println!("inlined local var {i} ");

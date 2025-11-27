@@ -139,35 +139,35 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	DivMul,
 	/// (x * C or C * x)
 	MulConst {
-		value: F,
+		value: Value<F>,
 	},
 	///(x + C or C + x)
 	AddConst {
-		value: F,
+		value: Value<F>,
 	},
 	///(x/C)
 	DivConst {
-		value: F,
+		value: Value<F>,
 	},
 	///(C/x)
 	ConstDiv {
-		value: F,
+		value: Value<F>,
 	},
 	///(x - C)
 	SubConst {
-		value: F,
+		value: Value<F>,
 	},
 	/// (C - x)
 	ConstSub {
-		value: F,
+		value: Value<F>,
 	},
 	/// x^C
 	ExpConst {
-		value: F,
+		value: Value<F>,
 	},
 	/// x%C
 	ModConst {
-		value: F,
+		value: Value<F>,
 	},
 	// Specialized math operations
 	Square,

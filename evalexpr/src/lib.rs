@@ -588,7 +588,7 @@
 //! Contributions to this crate are assumed to be licensed under the [MIT License](https://opensource.org/license/mit).
 
 #![deny(missing_docs)]
-// #![forbid(unsafe_code)]
+#![forbid(unsafe_code)]
 #![allow(clippy::get_first)]
 #![feature(vec_into_raw_parts)]
 

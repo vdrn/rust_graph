@@ -3,6 +3,7 @@ use core::num::NonZeroU64;
 use eframe::egui;
 use eframe::egui_wgpu::wgpu::util::DeviceExt as _;
 use eframe::egui_wgpu::{self, wgpu};
+use send_wrapper::SendWrapper;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Default, PartialEq, Clone, Copy, Debug)]
@@ -215,7 +216,7 @@ impl CustomRenderer {
 			mapped_at_creation: false,
 		});
 
-		wgpu_render_state.renderer.write().callback_resources.insert(FanRenderResources {
+		wgpu_render_state.renderer.write().callback_resources.insert(SendWrapper::new(FanRenderResources {
 			even_odd_stencil_pipeline,
 			non_zero_stencil_pipeline,
 			color_pipeline,
@@ -225,7 +226,7 @@ impl CustomRenderer {
 			index_buffer,
 			vertex_buffer_capacity: 1024,
 			index_buffer_capacity: 1024,
-		});
+		}));
 
 		Some(Self { texture_pool: Vec::new(), current_texture_index: 0, stencil_texture: None })
 	}
@@ -345,7 +346,8 @@ impl CustomRenderer {
 		];
 
 		let mut renderer = render_state.renderer.write();
-		let resources: &mut FanRenderResources = renderer.callback_resources.get_mut().unwrap();
+		let resources: &mut SendWrapper<FanRenderResources> = renderer.callback_resources.get_mut().unwrap();
+		let resources: &mut FanRenderResources = resources;
 
 		queue.write_buffer(&resources.uniform_buffer, 0, bytemuck::cast_slice(&color_unif));
 
@@ -364,7 +366,6 @@ impl CustomRenderer {
 		}
 		queue.write_buffer(&resources.vertex_buffer, 0, vertex_data);
 
-
 		let index_data = bytemuck::cast_slice(indices);
 		if index_data.len() > resources.index_buffer_capacity {
 			// must resize index buffer
@@ -379,8 +380,6 @@ impl CustomRenderer {
 		}
 
 		queue.write_buffer(&resources.index_buffer, 0, index_data);
-
-		drop(renderer);
 
 		let mut encoder = device
 			.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("fan_render_encoder") });
@@ -401,9 +400,6 @@ impl CustomRenderer {
 				timestamp_writes:         None,
 				occlusion_query_set:      None,
 			});
-
-			let renderer = render_state.renderer.read();
-			let resources: &FanRenderResources = renderer.callback_resources.get().unwrap();
 
 			match fill_rule {
 				FillRule::EvenOdd => {
@@ -445,9 +441,6 @@ impl CustomRenderer {
 				occlusion_query_set:      None,
 			});
 
-			let renderer = render_state.renderer.read();
-			let resources: &FanRenderResources = renderer.callback_resources.get().unwrap();
-
 			color_pass.set_pipeline(&resources.color_pipeline);
 			color_pass.set_bind_group(0, &resources.bind_group, &[]);
 			color_pass.set_stencil_reference(0);
@@ -469,12 +462,3 @@ struct FanRenderResources {
 	vertex_buffer_capacity:    usize,
 	index_buffer_capacity:     usize,
 }
-
-#[cfg(target_arch = "wasm32")]
-/// SAFETY:wgpu structs are not Send/Sync on wasm.
-/// We need them to be to be able to put them into TypeMap.
-/// We're not accessing them from other threads, so we're (hopefully) fine.
-unsafe impl Sync for FanRenderResources {}
-#[cfg(target_arch = "wasm32")]
-/// SAFETY: same as above
-unsafe impl Send for FanRenderResources {}

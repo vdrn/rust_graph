@@ -217,7 +217,9 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 	// Make this a const fn as soon as whatever is missing gets stable (issue #57563)
 	pub(crate) fn is_leaf(&self) -> bool { self.max_argument_amount() == Some(0) }
 
-	pub(crate) fn is_postfix(&self) -> bool { matches!(self, Operator::Factorial| Operator::DotAccess { .. }) }
+	pub(crate) fn is_postfix(&self) -> bool {
+		matches!(self, Operator::Factorial | Operator::DotAccess { .. })
+	}
 
 	/// Returns the maximum amount of arguments required by this operator.
 	pub(crate) const fn max_argument_amount(&self) -> Option<usize> {
@@ -442,7 +444,7 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
             || (self.operator().precedence() == node.operator().precedence() && !self.operator().is_left_to_right() && !node.operator().is_left_to_right())
 		{
 			if self.operator().is_leaf() {
-      // println!("insertback  appeand to leaf 0");
+				// println!("insertback  appeand to leaf 0");
 				Err(EvalexprError::AppendedToLeafNode)
 			} else if self.has_enough_children() {
 				// Unwrap cannot fail because is_leaf being false and has_enough_children being true implies
@@ -465,7 +467,7 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 				} else {
 					// println!("Rotating");
 					if node.operator().is_leaf() {
-      // println!("insertback  appeand to leaf 1");
+						// println!("insertback  appeand to leaf 1");
 
 						return Err(EvalexprError::AppendedToLeafNode);
 					}
@@ -588,24 +590,68 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 	Ok(())
 }
 
+// fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
+// 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
+// ) -> EvalexprResult<(), NumericTypes> {
+// 	// println!(
+// 	//     "Inserting postfix root {:?} postfix op {:?}, after_rbrace = {after_rbrace}",
+// 	// root, postfix_op,
+// 	// );
+// 	// find rightmost position based on precedence
+// 	if root.operator() == &Operator::RootNode {
+// 		if let Some(child) = root.children.last_mut() {
+// 			insert_postfix_operator(child, postfix_op, after_rbrace)
+// 		} else {
+// 			// println!("postfix appeand to leaf 0");
+// 			Err(EvalexprError::AppendedToLeafNode)
+// 		}
+// 	} else if root.operator().is_sequence() && after_rbrace {
+// 		// if we just closed a brace and we're at a sequence operator,
+// 		// wrap the entire sequence
+// 		let old_root = std::mem::replace(root, postfix_op);
+// 		root.children.push(old_root);
+// 		Ok(())
+// 	} else if root.operator().is_leaf() {
+// 		// wrap the leaf
+// 		let old_root = std::mem::replace(root, postfix_op);
+// 		root.children.push(old_root);
+// 		Ok(())
+// 	} else if root.operator().precedence() < postfix_op.operator().precedence() {
+// 		// cur oper has lower precedence, so bind to the right operand
+// 		if let Some(last_child) = root.children.last_mut() {
+// 			// if last child is a RootNode and we just had rbrace, wrap it entirely
+// 			if after_rbrace && last_child.operator() == &Operator::RootNode {
+// 				let nested_root = root.children.pop().unwrap();
+// 				postfix_op.children.push(nested_root);
+// 				root.children.push(postfix_op);
+// 				Ok(())
+// 			} else {
+// 				insert_postfix_operator(last_child, postfix_op, false)
+// 			}
+// 		} else {
+// 			// println!("postfix appeand to leaf 1");
+// 			Err(EvalexprError::AppendedToLeafNode)
+// 		}
+// 	} else {
+// 		// current op has higher or equal precedence, wrap it
+// 		let old_root = std::mem::replace(root, postfix_op);
+// 		root.children.push(old_root);
+// 		Ok(())
+// 	}
+// }
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
-		// println!(
-		//     "Inserting postfix root {:?} postfix op {:?}, after_rbrace = {after_rbrace}",
-        // root, postfix_op,
-		// );
 	// find rightmost position based on precedence
 	if root.operator() == &Operator::RootNode {
 		if let Some(child) = root.children.last_mut() {
 			insert_postfix_operator(child, postfix_op, after_rbrace)
 		} else {
-      // println!("postfix appeand to leaf 0");
 			Err(EvalexprError::AppendedToLeafNode)
 		}
-	} else if root.operator().is_sequence() && after_rbrace {
-		// if we just closed a brace and we're at a sequence operator,
-		// wrap the entire sequence
+	} else if after_rbrace {
+		// If we just closed a brace, wrap the entire current subtree
+		// This handles cases like ((1,2) * (3,4)).x
 		let old_root = std::mem::replace(root, postfix_op);
 		root.children.push(old_root);
 		Ok(())
@@ -617,17 +663,8 @@ fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	} else if root.operator().precedence() < postfix_op.operator().precedence() {
 		// cur oper has lower precedence, so bind to the right operand
 		if let Some(last_child) = root.children.last_mut() {
-			// if last child is a RootNode and we just had rbrace, wrap it entirely
-			if after_rbrace && last_child.operator() == &Operator::RootNode {
-				let nested_root = root.children.pop().unwrap();
-				postfix_op.children.push(nested_root);
-				root.children.push(postfix_op);
-				Ok(())
-			} else {
-				insert_postfix_operator(last_child, postfix_op, false)
-			}
+			insert_postfix_operator(last_child, postfix_op, false)
 		} else {
-      // println!("postfix appeand to leaf 1");
 			Err(EvalexprError::AppendedToLeafNode)
 		}
 	} else {
@@ -691,7 +728,7 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 					return Err(EvalexprError::UnmatchedRBrace);
 				} else {
 					collapse_all_sequences(&mut root_stack)?;
-					last_token_is_rbrace = true;
+					// last_token_is_rbrace = true;
 					root_stack.pop()
 				}
 			},
@@ -731,6 +768,7 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 		};
 
 		if let Some(mut node) = node {
+
 			// Need to pop and then repush here, because Rust 1.33.0 cannot release the mutable borrow of
 			// root_stack before the end of this complete if-statement
 			if let Some(mut root) = root_stack.pop() {
@@ -806,6 +844,7 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 
 		last_token_is_rightsided_value = token.is_rightsided_value();
 		last_token_is_rbrace = matches!(token, Token::RBrace);
+	
 	}
 
 	// In the end, all sequences are implicitly terminated
@@ -814,7 +853,7 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 	if root_stack.len() > 1 {
 		Err(EvalexprError::UnmatchedLBrace)
 	} else if let Some(root) = root_stack.pop() {
-    // println!("ROOT: {root:#?}");
+		// println!("ROOT: {root:#?}");
 		Ok(root)
 	} else {
 		Err(EvalexprError::UnmatchedRBrace)
