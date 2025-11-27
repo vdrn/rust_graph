@@ -1,6 +1,6 @@
 use thin_vec::ThinVec;
 
-use crate::flat_node::eval::{eval_range, eval_range_with_step};
+use crate::flat_node::eval::{access_index, eval_range, eval_range_with_step};
 use crate::flat_node::{FlatOperator, IntegralNode};
 use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
 
@@ -384,6 +384,15 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
+			FlatOperator::AccessIndex { index } => {
+				if let Some(last_const) = get_last_if_const(&new_ops)? {
+					new_ops.pop();
+					let value = access_index(last_const, *index)?;
+					new_ops.push(FlatOperator::PushConst { value });
+				} else {
+					new_ops.push(source_op.clone());
+				}
+			},
 			FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
 			| FlatOperator::Eq
@@ -508,6 +517,16 @@ fn fold_ternary_op<F: EvalexprFloat>(
 	Ok(())
 }
 
+fn get_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> EvalexprResult<Option<Value<F>>, F> {
+	let Some(last) = ops.last() else {
+		panic!("Must have last op");
+	};
+	if let FlatOperator::PushConst { value } = last {
+		return Ok(Some(value.clone()));
+	};
+
+	Ok(None)
+}
 fn get_last_if_const_as_float2<F: EvalexprFloat>(
 	ops: &[FlatOperator<F>],
 ) -> EvalexprResult<Option<(F, F)>, F> {

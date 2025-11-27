@@ -401,7 +401,12 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 			match identifier.to_str() {
 				"x" | "X" => ops.push(FlatOperator::AccessX),
 				"y" | "Y" => ops.push(FlatOperator::AccessY),
-				_ => return Err(EvalexprError::CustomMessage(format!("Unknown field {identifier}"))),
+				maybe_index => {
+					let index = maybe_index
+						.parse::<u32>()
+						.map_err(|_| EvalexprError::CustomMessage(format!("Unknown field {identifier}")))?;
+					ops.push(FlatOperator::AccessIndex { index });
+				},
 			}
 		},
 	}

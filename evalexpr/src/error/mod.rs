@@ -24,6 +24,13 @@ mod display;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
+	/// The index is out of bounds
+	InvalidIndex {
+		/// The index that was out of bounds
+		index: u32,
+    /// Number of elements
+    len: u32,
+	},
 	/// The stack overflowed.
 	StackOverflow,
 	/// An operator was called with a wrong amount of arguments.
@@ -140,6 +147,8 @@ pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	WrongTypeCombination {
 		/// The operator that whose evaluation caused the error.
 		operator: Operator<NumericTypes>,
+		/// Type that were Expected
+		expected: Vec<ValueType>,
 		/// The types that were used in the operator causing it to fail.
 		actual:   Vec<ValueType>,
 	},
@@ -278,8 +287,10 @@ impl<NumericTypes: EvalexprFloat> EvalexprError<NumericTypes> {
 	}
 
 	/// Constructs `EvalexprError::WrongTypeCombination{operator, actual}`.
-	pub fn wrong_type_combination(operator: Operator<NumericTypes>, actual: Vec<ValueType>) -> Self {
-		EvalexprError::WrongTypeCombination { operator, actual }
+	pub fn wrong_type_combination(
+		operator: Operator<NumericTypes>, actual: Vec<ValueType>, expected: Vec<ValueType>,
+	) -> Self {
+		EvalexprError::WrongTypeCombination { operator, expected, actual }
 	}
 
 	/// Constructs `EvalexprError::ExpectedString{actual}`.

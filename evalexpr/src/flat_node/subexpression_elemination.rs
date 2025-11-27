@@ -317,6 +317,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 
 		FlatOperator::Clamp => 3,
     FlatOperator::AccessX | FlatOperator::AccessY => 1,
+    FlatOperator::AccessIndex { .. } => 1,
 	}
 
 }

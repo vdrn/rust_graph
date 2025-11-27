@@ -7,7 +7,9 @@ use crate::error::EvalexprResultValue;
 use crate::flat_node::{cold, FlatOperator, IntegralNode};
 use crate::function::rust_function::builtin_function;
 use crate::math::integrate;
-use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value};
+use crate::{
+	EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Operator, Value, ValueType
+};
 
 #[inline(always)]
 pub fn eval_flat_node<F: EvalexprFloat>(
@@ -781,20 +783,42 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let value = stack.get_unchecked(base_index - *inverse_index as usize);
 				stack.push(value.clone());
 			},
-      FlatOperator::AccessX => {
-        let value = stack.pop_unchecked().as_float2()?;
-        stack.push(Value::Float(value.0));
-      }
-      FlatOperator::AccessY => {
-        let value = stack.pop_unchecked().as_float2()?;
-        stack.push(Value::Float(value.1));
-      }
+			FlatOperator::AccessX => {
+				let value = stack.pop_unchecked().as_float2()?;
+				stack.push(Value::Float(value.0));
+			},
+			FlatOperator::AccessY => {
+				let value = stack.pop_unchecked().as_float2()?;
+				stack.push(Value::Float(value.1));
+			},
+			FlatOperator::AccessIndex { index } => {
+				let value = stack.pop_unchecked();
+        stack.push(access_index(value, *index)?);
+			},
 		}
 	}
 
 	let result = stack.pop().unwrap();
 	stack.truncate(base_index);
 	Ok(result)
+}
+pub fn access_index<F: EvalexprFloat>(value: Value<F>, index: u32) -> EvalexprResult<Value<F>, F> {
+	match value {
+		Value::Float2(first, second) => match index {
+			0 => Ok(Value::Float(first)),
+			1 => Ok(Value::Float(second)),
+			_ => Err(EvalexprError::InvalidIndex { index, len: 2 }),
+		},
+		Value::Tuple(tuple) => tuple
+			.get(index as usize)
+			.cloned()
+			.ok_or_else(|| EvalexprError::InvalidIndex { index, len: tuple.len() as u32 }),
+		value => Err(EvalexprError::wrong_type_combination(
+			Operator::DotAccess { identifier: IStr::new(&index.to_string()) },
+			vec![(&value).into()],
+			vec![ValueType::Float2, ValueType::Tuple],
+		)),
+	}
 }
 
 #[inline(always)]

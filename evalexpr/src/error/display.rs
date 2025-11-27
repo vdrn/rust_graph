@@ -6,6 +6,9 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		use crate::EvalexprError::*;
 		match self {
+			InvalidIndex { index, len } => {
+				write!(f, "Index {} is out of bounds for a tuple of length {}", index, len)
+			},
 			StackOverflow => write!(f, "The stack overflowed."),
 			WrongOperatorArgumentAmount { expected, actual } => {
 				write!(f, "An operator expected {} arguments, but got {}.", expected, actual)
@@ -60,10 +63,11 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
 			TypeError { expected, actual } => {
 				write!(f, "Expected one of {:?}, but got {:?}.", expected, actual)
 			},
-			WrongTypeCombination { operator, actual } => write!(
+			WrongTypeCombination { operator, actual, expected } => write!(
 				f,
-				"The operator {:?} was called with a wrong combination of types: {:?}",
-				operator, actual
+				"The operator {:?} expected combination of types: {:?}, but was with a wrong combination: \
+				 {:?}",
+				operator, expected, actual
 			),
 			UnmatchedLBrace => write!(f, "Found an unmatched opening parenthesis '('."),
 			UnmatchedRBrace => write!(f, "Found an unmatched closing parenthesis ')'."),
