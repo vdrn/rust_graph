@@ -51,6 +51,8 @@ pub enum Token<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	Int(NumericTypes),
 	Boolean(bool),
 	String(String),
+
+	DotAccess(String),
 }
 
 /// A partial token is an input character whose meaning depends on the characters around it.
@@ -86,6 +88,8 @@ pub enum PartialToken<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	Ampersand,
 	/// A vertical bar character '|'.
 	VerticalBar,
+	/// Dot
+	Dot,
 }
 
 // Make this a const fn as soon as is_whitespace and to_string get stable (issue #57563)
@@ -110,6 +114,7 @@ fn char_to_partial_token<NumericTypes: EvalexprFloat>(c: char) -> PartialToken<N
 		'<' => PartialToken::Lt,
 		'&' => PartialToken::Ampersand,
 		'|' => PartialToken::VerticalBar,
+		'.' => PartialToken::Dot,
 		c => {
 			if c.is_whitespace() {
 				PartialToken::Whitespace
@@ -163,6 +168,9 @@ impl<NumericTypes: EvalexprFloat> Token<NumericTypes> {
 			Token::Int(_) => true,
 			Token::Boolean(_) => true,
 			Token::String(_) => true,
+
+			// might want to later make this true
+			Token::DotAccess(_) => false,
 		}
 	}
 
@@ -208,6 +216,8 @@ impl<NumericTypes: EvalexprFloat> Token<NumericTypes> {
 			Token::Int(_) => true,
 			Token::Boolean(_) => true,
 			Token::String(_) => true,
+
+			Token::DotAccess(_) => false,
 		}
 	}
 
@@ -336,11 +346,13 @@ fn str_to_partial_tokens<NumericTypes: EvalexprFloat>(
 fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 	mut tokens: &[PartialToken<NumericTypes>],
 ) -> EvalexprResult<Vec<Token<NumericTypes>>, NumericTypes> {
+	// println!("input {tokens:?}");
+
 	let mut result = Vec::new();
 	while !tokens.is_empty() {
 		let first = tokens[0].clone();
-		let second = tokens.get(1).cloned();
-		let third = tokens.get(2).cloned();
+		let second = tokens.get(1);
+		let third = tokens.get(2);
 		let mut cutoff = 2;
 
 		match first {
@@ -390,11 +402,24 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					result.push(Token::Hat)
 				},
 			},
+			PartialToken::Dot => match second {
+				Some(PartialToken::Dot) => {
+					cutoff = 2;
+					result.push(Token::Range);
+				},
+				Some(PartialToken::Literal(literal)) => {
+					cutoff = 2;
+					result.push(Token::DotAccess(literal.clone()));
+				},
+				_ => {
+					return Err(EvalexprError::CustomMessage("Dot access requires a literal".to_string()));
+				},
+			},
 			PartialToken::Literal(literal) => {
 				cutoff = 1;
 
 				fn litral_to_token<F: EvalexprFloat>(
-					literal: &str, second: Option<PartialToken<F>>, third: Option<PartialToken<F>>,
+					literal: &str, second: Option<&PartialToken<F>>, third: Option<&PartialToken<F>>,
 				) -> Option<(Token<F>, usize)> {
 					let mut result = None;
 					if let Some(number) = parse_dec_or_hex::<F>(literal) {
@@ -410,7 +435,7 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 						// for example [Literal("10e"), Minus, Literal("3")] => "1e-3".parse().
 						match (second, third) {
 							(Some(second), Some(third))
-								if second == PartialToken::Minus || second == PartialToken::Plus =>
+								if second == &PartialToken::Minus || second == &PartialToken::Plus =>
 							{
 								if let Ok(number) = format!("{}{}{}", literal, second, third).parse::<F>() {
 									result = Some((Token::Float(number), 3));
@@ -422,27 +447,27 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					result
 				}
 
-				if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, second, third) {
+				if let (Some(PartialToken::Dot), Some(PartialToken::Literal(other_part))) = (&second, &third) {
+					let fourth = tokens.get(3);
+					let fifth = tokens.get(4);
+					let joined = format!("{}.{}", literal, other_part);
+					if let Some((token, c)) = litral_to_token::<NumericTypes>(&joined, fourth, fifth) {
+						cutoff = c + 2;
+						result.push(token);
+					} else {
+						result.push(Token::Identifier(literal.to_string()))
+					}
+				} else if let (Some(PartialToken::Dot), Some(PartialToken::Dot)) = (&second, &third) {
+					if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, None, None) {
+						cutoff = c;
+						result.push(token);
+					} else {
+						result.push(Token::Identifier(literal.to_string()))
+					}
+				} else if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, second, third) {
 					cutoff = c;
 					result.push(token);
-				} else if let Some(range_pos) = literal.find("..") {
-					let before = literal[..range_pos].trim();
-					let after = literal[range_pos + 2..].trim();
-					if !before.is_empty() {
-						if let Some((token, _)) = litral_to_token::<NumericTypes>(before, None, None) {
-							result.push(token);
-						} else {
-							result.push(Token::Identifier(before.to_string()));
-						}
-					}
-					result.push(Token::Range);
-					if !after.is_empty() {
-						if let Some((token, _)) = litral_to_token::<NumericTypes>(after, None, None) {
-							result.push(token);
-						} else {
-							result.push(Token::Identifier(after.to_string()));
-						}
-					}
+
 				} else {
 					result.push(Token::Identifier(literal.to_string()))
 				}
@@ -486,7 +511,7 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					},
 					_ => result.push(Token::And),
 				},
-				_ => return Err(EvalexprError::unmatched_partial_token(first, second)),
+				_ => return Err(EvalexprError::unmatched_partial_token(first, second.cloned())),
 			},
 			PartialToken::VerticalBar => match second {
 				Some(PartialToken::VerticalBar) => match third {
@@ -496,12 +521,13 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					},
 					_ => result.push(Token::Or),
 				},
-				_ => return Err(EvalexprError::unmatched_partial_token(first, second)),
+				_ => return Err(EvalexprError::unmatched_partial_token(first, second.cloned())),
 			},
 		}
 
 		tokens = &tokens[cutoff..];
 	}
+	// println!("{result:?}");
 	Ok(result)
 }
 

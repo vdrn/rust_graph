@@ -368,6 +368,22 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				},
 			},
+			FlatOperator::AccessX => {
+				if let Some(last_const) = get_last_if_const_as_float2(&new_ops)? {
+					new_ops.pop();
+					new_ops.push(FlatOperator::PushConst { value: Value::Float(last_const.0) });
+				} else {
+					new_ops.push(source_op.clone());
+				}
+			},
+			FlatOperator::AccessY => {
+				if let Some(last_const) = get_last_if_const_as_float2(&new_ops)? {
+					new_ops.pop();
+					new_ops.push(FlatOperator::PushConst { value: Value::Float(last_const.1) });
+				} else {
+					new_ops.push(source_op.clone());
+				}
+			},
 			FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
 			| FlatOperator::Eq
@@ -492,6 +508,15 @@ fn fold_ternary_op<F: EvalexprFloat>(
 	Ok(())
 }
 
+fn get_last_if_const_as_float2<F: EvalexprFloat>(
+	ops: &[FlatOperator<F>],
+) -> EvalexprResult<Option<(F, F)>, F> {
+	if let Some(FlatOperator::PushConst { value }) = ops.last() {
+		return Ok(Some(value.as_float2()?));
+	};
+
+	Ok(None)
+}
 fn get_last_if_const_as_float<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> EvalexprResult<Option<F>, F> {
 	if let Some(FlatOperator::PushConst { value }) = ops.last() {
 		return Ok(Some(value.as_float()?));

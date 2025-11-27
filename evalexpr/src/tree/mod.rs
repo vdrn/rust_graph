@@ -102,6 +102,11 @@ pub enum Operator<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	},
 	/// A unary postfix factorial operator.
 	Factorial,
+	/// Dot Access
+	DotAccess {
+		/// The identifier of the field
+		identifier: IStr,
+	},
 }
 impl<NumericTypes: EvalexprFloat> core::fmt::Display for Operator<NumericTypes> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
@@ -146,6 +151,7 @@ impl<NumericTypes: EvalexprFloat> core::fmt::Display for Operator<NumericTypes> 
 				write!(f, "{}", identifier)
 			},
 			FunctionIdentifier { identifier } => write!(f, "{}", identifier),
+			DotAccess { identifier } => write!(f, ".{}", identifier),
 		}
 	}
 }
@@ -193,6 +199,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 			Const { .. } => 200,
 			VariableIdentifierWrite { .. } | VariableIdentifierRead { .. } => 200,
 			FunctionIdentifier { .. } => 190,
+			DotAccess { .. } => 140,
 		}
 	}
 
@@ -210,7 +217,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 	// Make this a const fn as soon as whatever is missing gets stable (issue #57563)
 	pub(crate) fn is_leaf(&self) -> bool { self.max_argument_amount() == Some(0) }
 
-	pub(crate) fn is_postfix(&self) -> bool { matches!(self, Operator::Factorial) }
+	pub(crate) fn is_postfix(&self) -> bool { matches!(self, Operator::Factorial| Operator::DotAccess { .. }) }
 
 	/// Returns the maximum amount of arguments required by this operator.
 	pub(crate) const fn max_argument_amount(&self) -> Option<usize> {
@@ -220,7 +227,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 			| AddAssign | SubAssign | MulAssign | DivAssign | ModAssign | ExpAssign | AndAssign | OrAssign
 			| Range => Some(2),
 			Tuple | Chain => None,
-			Not | Neg | Factorial | RootNode => Some(1),
+			Not | Neg | Factorial | RootNode | DotAccess { .. } => Some(1),
 			Const { .. } => Some(0),
 			VariableIdentifierWrite { .. } | VariableIdentifierRead { .. } => Some(0),
 			FunctionIdentifier { .. } => Some(99),
@@ -577,6 +584,7 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 	// println!("Root stack after collapsing all sequences is: {:?}", root_stack);
 	Ok(())
 }
+
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
@@ -587,6 +595,12 @@ fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 		} else {
 			Err(EvalexprError::AppendedToLeafNode)
 		}
+	} else if root.operator().is_sequence() && after_rbrace {
+		// if we just closed a brace and we're at a sequence operator,
+		// wrap the entire sequence
+		let old_root = std::mem::replace(root, postfix_op);
+		root.children.push(old_root);
+		Ok(())
 	} else if root.operator().is_leaf() {
 		// wrap the leaf
 		let old_root = std::mem::replace(root, postfix_op);
@@ -627,6 +641,9 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 		let next = token_iter.peek().cloned();
 
 		let node = match token.clone() {
+			Token::DotAccess(identifier) => {
+				Some(Node::new(Operator::DotAccess { identifier: istr(&identifier) }))
+			},
 			Token::Plus => Some(Node::new(Operator::Add)),
 			Token::Minus => {
 				if last_token_is_rightsided_value {
@@ -788,14 +805,8 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 	if root_stack.len() > 1 {
 		Err(EvalexprError::UnmatchedLBrace)
 	} else if let Some(root) = root_stack.pop() {
-		// remove_root_nodes(&mut root);
+    // println!("ROOT: {root:#?}");
 		Ok(root)
-
-		// if root.operator() == &Operator::RootNode && root.children.len() == 1 {
-		//     Ok(root.children.pop().unwrap())
-		// } else {
-		//     Ok(root)
-		// }
 	} else {
 		Err(EvalexprError::UnmatchedRBrace)
 	}

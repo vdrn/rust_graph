@@ -462,6 +462,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
+			// println!("EXPR FUNC: {:?}", expr_function);
 			// if identifier.to_str() == "F"{
 			//   panic!()
 			// }

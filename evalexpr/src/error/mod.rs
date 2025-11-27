@@ -293,7 +293,7 @@ impl<NumericTypes: EvalexprFloat> EvalexprError<NumericTypes> {
 	/// Constructs `EvalexprError::ExpectedFloat{actual}`.
 	pub fn expected_float(actual: Value<NumericTypes>) -> Self { EvalexprError::ExpectedFloat { actual } }
 	/// Constructs `EvalexprError::ExpectedFloat2{actual}`.
-	pub fn expected_float2(actual: Value<NumericTypes>) -> Self { EvalexprError::ExpectedFloat { actual } }
+	pub fn expected_float2(actual: Value<NumericTypes>) -> Self { EvalexprError::ExpectedFloat2 { actual } }
 
 	// /// Constructs `EvalexprError::ExpectedNumber{actual}`.
 	// pub fn expected_number(actual: Value<NumericTypes>) -> Self {

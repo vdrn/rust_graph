@@ -53,6 +53,7 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for Token<NumericTypes> {
 			Int(int) => write!(f, "{}", int),
 			Boolean(boolean) => boolean.fmt(f),
 			String(string) => fmt::Debug::fmt(string, f),
+			DotAccess(string) => write!(f, ".{}", string),
 		}
 	}
 }
@@ -76,6 +77,7 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for PartialToken<NumericTypes> {
 			Lt => write!(f, "<"),
 			Ampersand => write!(f, "&"),
 			VerticalBar => write!(f, "|"),
+			Dot => write!(f, "."),
 		}
 	}
 }

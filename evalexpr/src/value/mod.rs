@@ -109,7 +109,7 @@ impl<NumericTypes: EvalexprFloat> Value<NumericTypes> {
 	pub fn as_float2(&self) -> EvalexprResult<(NumericTypes, NumericTypes), NumericTypes> {
 		match self {
 			&Value::Float2(f1, f2) => Ok((f1, f2)),
-			value => Err(EvalexprError::expected_float(value.clone())),
+			value => Err(EvalexprError::expected_float2(value.clone())),
 		}
 	}
 

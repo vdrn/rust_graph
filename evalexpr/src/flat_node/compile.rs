@@ -394,6 +394,16 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				ops.push(FlatOperator::FunctionCall { identifier, arg_num: into_u32(len)? });
 			}
 		},
+		Operator::DotAccess { identifier } => {
+			let child = extract_one_node(node.children)?;
+			compile_to_flat_inner(child, ops)?;
+
+			match identifier.to_str() {
+				"x" | "X" => ops.push(FlatOperator::AccessX),
+				"y" | "Y" => ops.push(FlatOperator::AccessY),
+				_ => return Err(EvalexprError::CustomMessage(format!("Unknown field {identifier}"))),
+			}
+		},
 	}
 
 	Ok(())

@@ -316,7 +316,9 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::Integral(_) => 2,
 
 		FlatOperator::Clamp => 3,
+    FlatOperator::AccessX | FlatOperator::AccessY => 1,
 	}
+
 }
 fn get_operator_range<F: EvalexprFloat>(
 	ops: &[FlatOperator<F>], index: usize, min_start: usize,

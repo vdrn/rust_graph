@@ -234,6 +234,8 @@ pub enum FlatOperator<F: EvalexprFloat> {
 		/// inverse indices will be (3,2,1)
 		inverse_index: u32,
 	},
+  AccessX,
+  AccessY
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntegralNode<F: EvalexprFloat> {

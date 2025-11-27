@@ -781,6 +781,14 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let value = stack.get_unchecked(base_index - *inverse_index as usize);
 				stack.push(value.clone());
 			},
+      FlatOperator::AccessX => {
+        let value = stack.pop_unchecked().as_float2()?;
+        stack.push(Value::Float(value.0));
+      }
+      FlatOperator::AccessY => {
+        let value = stack.pop_unchecked().as_float2()?;
+        stack.push(Value::Float(value.1));
+      }
 		}
 	}
 
