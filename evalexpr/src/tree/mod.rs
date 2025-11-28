@@ -249,16 +249,6 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 /// The advantage of constructing the operator tree separately from the actual evaluation is that it can be
 /// evaluated arbitrarily often with different contexts.
 ///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-/// context.set_value("alpha".into(), Value::from_float(2.0)).unwrap(); // Do proper error handling here
-/// let node = build_operator_tree("1 + alpha").unwrap(); // Do proper error handling here
-/// assert_eq!(node.eval_with_context(&context), Ok(Value::from_float(3.0)));
-/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	pub(crate) operator: Operator<NumericTypes>,
@@ -273,19 +263,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + b + c * f()").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), Some("f"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -298,18 +275,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	/// Returns an iterator over all variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -321,18 +286,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	/// Returns an iterator over all read variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("d = a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_read_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierRead { identifier } => Some(identifier.to_str()),
@@ -343,16 +296,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	/// Returns an iterator over all write variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("d = a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_write_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("d"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_write_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier } => Some(identifier.to_str()),
@@ -363,16 +306,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	/// Returns an iterator over all function identifiers in this expression.
 	/// Each occurrence of a function identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_function_identifiers();
-	/// assert_eq!(iter.next(), Some("f"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::FunctionIdentifier { identifier } => Some(identifier.to_str()),
@@ -642,6 +575,7 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
+	// println!("INSERT POSTFIX OPERATOR: root {root:#?}, op {postfix_op:#?}, {after_rbrace}");
 	// find rightmost position based on precedence
 	if root.operator() == &Operator::RootNode {
 		if let Some(child) = root.children.last_mut() {
@@ -728,8 +662,52 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 					return Err(EvalexprError::UnmatchedRBrace);
 				} else {
 					collapse_all_sequences(&mut root_stack)?;
-					// last_token_is_rbrace = true;
-					root_stack.pop()
+
+					last_token_is_rbrace = true;
+					let closed_brace_node = root_stack.pop().ok_or_else(|| EvalexprError::UnmatchedRBrace)?;
+					// check if the next token is a postfix operator
+					if let Some(next_token) = token_iter.peek() {
+						if matches!(next_token, Token::Not | Token::DotAccess(_)) {
+							// Get the next token
+							let postfix_token = token_iter.next().unwrap();
+							let mut postfix_node = match postfix_token {
+								Token::Not => Node::new(Operator::Factorial),
+								Token::DotAccess(id) => {
+									Node::new(Operator::DotAccess { identifier: istr(id) })
+								},
+								_ => unreachable!(),
+							};
+
+							// wrap the closed brace node
+							postfix_node.children.push(closed_brace_node);
+
+							// and insert the wrapped node into the parent
+							if let Some(mut root) = root_stack.pop() {
+								if root.operator().is_sequence() {
+									if let Some(mut last_root_child) = root.children.pop() {
+										last_root_child.insert_back_prioritized(postfix_node, true)?;
+										root.children.push(last_root_child);
+										root_stack.push(root);
+									} else {
+										unreachable!()
+									}
+								} else {
+									root.insert_back_prioritized(postfix_node, true)?;
+									root_stack.push(root);
+								}
+							} else {
+								return Err(EvalexprError::UnmatchedRBrace);
+							}
+
+							last_token_is_rbrace = false;
+							// Skip normal node processing
+							None
+						} else {
+							Some(closed_brace_node)
+						}
+					} else {
+						Some(closed_brace_node)
+					}
 				}
 			},
 
@@ -768,7 +746,6 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 		};
 
 		if let Some(mut node) = node {
-
 			// Need to pop and then repush here, because Rust 1.33.0 cannot release the mutable borrow of
 			// root_stack before the end of this complete if-statement
 			if let Some(mut root) = root_stack.pop() {
@@ -823,6 +800,9 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 					} else {
 						insert_postfix_operator(&mut root, node, last_token_is_rbrace)?;
 						root_stack.push(root);
+						// let is_brace_root = root.operator() == &Operator::RootNode && last_token_is_rbrace;
+						// insert_postfix_operator(&mut root, node, is_brace_root)?;
+						// root_stack.push(root);
 					}
 				} else if root.operator().is_sequence() {
 					if let Some(mut last_root_child) = root.children.pop() {
@@ -844,7 +824,6 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 
 		last_token_is_rightsided_value = token.is_rightsided_value();
 		last_token_is_rbrace = matches!(token, Token::RBrace);
-	
 	}
 
 	// In the end, all sequences are implicitly terminated

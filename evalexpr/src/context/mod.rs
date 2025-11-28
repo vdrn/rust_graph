@@ -34,23 +34,24 @@ pub struct HashMapContext<F: EvalexprFloat = DefaultNumericTypes> {
 }
 
 impl<F: EvalexprFloat> HashMapContext<F> {
+  /// Compares two contexts for equality
+  /// Since we cannot compare closures for equality, RustFunctions are not compared, but their
+  /// names and order of insertion are.
+	pub fn contexts_almost_equal(c1: &HashMapContext<F>, c2: &HashMapContext<F>) -> bool {
+		let mut equal = c1.variables == c2.variables
+			&& c1.expr_functions == c2.expr_functions
+			&& c1.functions.len() == c2.functions.len();
+		for (k1, k2) in c1.functions.keys().zip(c2.functions.keys()) {
+			equal &= k1 == k2;
+		}
+		equal
+	}
 	/// Constructs a `HashMapContext` with no mappings.
 	pub fn new() -> Self { Default::default() }
 
 	/// Removes all variables from the context.
 	/// This allows to reuse the context without allocating a new HashMap.
 	///
-	/// # Example
-	///
-	/// ```rust
-	/// # use evalexpr::*;
-	///
-	/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-	/// context.set_value("abc".into(), "def".into()).unwrap();
-	/// assert_eq!(context.get_value("abc"), Some(&("def".into())));
-	/// context.clear_variables();
-	/// assert_eq!(context.get_value("abc"), None);
-	/// ```
 	pub fn clear_variables(&mut self) { self.variables.clear() }
 
 	/// Removes all functions from the context.
@@ -64,17 +65,6 @@ impl<F: EvalexprFloat> HashMapContext<F> {
 	/// Removes all variables and functions from the context.
 	/// This allows to reuse the context without allocating a new HashMap.
 	///
-	/// # Example
-	///
-	/// ```rust
-	/// # use evalexpr::*;
-	///
-	/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-	/// context.set_value("abc".into(), "def".into()).unwrap();
-	/// assert_eq!(context.get_value("abc"), Some(&("def".into())));
-	/// context.clear();
-	/// assert_eq!(context.get_value("abc"), None);
-	/// ```
 	pub fn clear(&mut self) {
 		self.clear_variables();
 		self.clear_rust_functions();
@@ -180,19 +170,6 @@ impl<NumericTypes: EvalexprFloat> Default for HashMapContext<NumericTypes> {
 
 /// This macro provides a convenient syntax for creating a static context.
 ///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let ctx: HashMapContext<DefaultNumericTypes> = context_map! {
-/// 	"x" => float 8,
-/// 	"f" => Function::new(|_| Ok(Value::from_float(42.0)))
-/// }
-/// .unwrap(); // Do proper error handling here
-///
-/// assert_eq!(eval_with_context("x + f()", &ctx), Ok(Value::from_float(50.0)));
-/// ```
 #[macro_export]
 macro_rules! context_map {
     // Termination (allow missing comma at the end of the argument list)

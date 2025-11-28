@@ -26,17 +26,6 @@ where
 /// A user-defined function.
 /// Functions can be used in expressions by storing them in a `Context`.
 ///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-/// context.set_function("id".into(), Function::new(|argument| {
-///     Ok(argument.clone())
-/// })).unwrap(); // Do proper error handling here
-/// assert_eq!(eval_with_context("id(4)", &context), Ok(Value::from_float(4.0)));
-/// ```
 pub struct RustFunction<F: EvalexprFloat> {
 	function: Box<dyn ClonableFn<F>>,
 }

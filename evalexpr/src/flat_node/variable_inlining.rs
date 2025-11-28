@@ -163,7 +163,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					&mut new_ops,
 					source_op,
 					|a, b| eval::mod_(a, b),
-					|value| FlatOperator::ModConst { value }
+					|value| FlatOperator::ModConst { value },
 				)?;
 			},
 			FlatOperator::ModConst { value } => {
@@ -179,61 +179,61 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_unary_op(&mut new_ops, source_op, |a| eval::cube(a))?;
 			},
 			FlatOperator::Sqrt => {
-				fold_unary_op(&mut new_ops, source_op,  eval::sqrt)?;
+				fold_unary_op(&mut new_ops, source_op, eval::sqrt)?;
 			},
 			FlatOperator::Cbrt => {
-				fold_unary_op(&mut new_ops, source_op,  eval::cbrt)?;
+				fold_unary_op(&mut new_ops, source_op, eval::cbrt)?;
 			},
 			FlatOperator::Abs => {
-				fold_unary_op(&mut new_ops, source_op,  eval::abs)?;
+				fold_unary_op(&mut new_ops, source_op, eval::abs)?;
 			},
 			FlatOperator::Floor => {
-				fold_unary_op(&mut new_ops, source_op,  eval::floor)?;
+				fold_unary_op(&mut new_ops, source_op, eval::floor)?;
 			},
 			FlatOperator::Round => {
-				fold_unary_op(&mut new_ops, source_op,  eval::round)?;
+				fold_unary_op(&mut new_ops, source_op, eval::round)?;
 			},
 			FlatOperator::Ceil => {
-				fold_unary_op(&mut new_ops, source_op,  eval::ceil)?;
+				fold_unary_op(&mut new_ops, source_op, eval::ceil)?;
 			},
 			FlatOperator::Ln => {
-				fold_unary_op(&mut new_ops, source_op,  eval::ln)?;
+				fold_unary_op(&mut new_ops, source_op, eval::ln)?;
 			},
 			FlatOperator::Log2 => {
-				fold_unary_op(&mut new_ops, source_op,  eval::log2)?;
+				fold_unary_op(&mut new_ops, source_op, eval::log2)?;
 			},
 			FlatOperator::Log10 => {
-				fold_unary_op(&mut new_ops, source_op,  eval::log10)?;
+				fold_unary_op(&mut new_ops, source_op, eval::log10)?;
 			},
 			FlatOperator::ExpE => {
-				fold_unary_op(&mut new_ops, source_op,  eval::exp_e)?;
+				fold_unary_op(&mut new_ops, source_op, eval::exp_e)?;
 			},
 			FlatOperator::Exp2 => {
-				fold_unary_op(&mut new_ops, source_op,  eval::exp_2)?;
+				fold_unary_op(&mut new_ops, source_op, eval::exp_2)?;
 			},
 			FlatOperator::Cos => {
-				fold_unary_op(&mut new_ops, source_op,  eval::cos)?;
+				fold_unary_op(&mut new_ops, source_op, eval::cos)?;
 			},
 			FlatOperator::Acos => {
-				fold_unary_op(&mut new_ops, source_op,  eval::acos)?;
+				fold_unary_op(&mut new_ops, source_op, eval::acos)?;
 			},
 			FlatOperator::CosH => {
-				fold_unary_op(&mut new_ops, source_op,  eval::cosh)?;
+				fold_unary_op(&mut new_ops, source_op, eval::cosh)?;
 			},
 			FlatOperator::AcosH => {
-				fold_unary_op(&mut new_ops, source_op,  eval::acosh)?;
+				fold_unary_op(&mut new_ops, source_op, eval::acosh)?;
 			},
 			FlatOperator::Sin => {
-				fold_unary_op(&mut new_ops, source_op,  eval::sin)?;
+				fold_unary_op(&mut new_ops, source_op, eval::sin)?;
 			},
 			FlatOperator::Asin => {
-				fold_unary_op(&mut new_ops, source_op,  eval::asin)?;
+				fold_unary_op(&mut new_ops, source_op, eval::asin)?;
 			},
 			FlatOperator::SinH => {
-				fold_unary_op(&mut new_ops, source_op,  eval::sinh)?;
+				fold_unary_op(&mut new_ops, source_op, eval::sinh)?;
 			},
 			FlatOperator::AsinH => {
-				fold_unary_op(&mut new_ops, source_op,  eval::asinh)?;
+				fold_unary_op(&mut new_ops, source_op, eval::asinh)?;
 			},
 			FlatOperator::Tan => {
 				fold_unary_op(&mut new_ops, source_op, eval::tan)?;
@@ -257,44 +257,74 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				fold_binary_op(&mut new_ops, source_op, eval::gcd)?;
 			},
 			FlatOperator::MulAdd => {
-				// a*b - c
-				fold_ternary_op(&mut new_ops, source_op, eval::mul_add)?;
+				// a*b + c
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::mul_add, |a, b, _| {
+					let mul = eval::mul(a, b)?;
+					Ok(FlatOperator::AddConst { value: mul })
+				})?;
 			},
 			FlatOperator::MulSub => {
 				// a*b - c
-				fold_ternary_op(&mut new_ops, source_op, eval::mul_sub)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::mul_sub, |a, b, _| {
+					let mul = eval::mul(a, b)?;
+					Ok(FlatOperator::ConstSub { value: mul })
+				})?;
 			},
 			FlatOperator::DivAdd => {
 				// a/b + c
-				fold_ternary_op(&mut new_ops, source_op, eval::div_add)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::div_add, |a, b, _| {
+					let div = eval::div(a, b)?;
+					Ok(FlatOperator::AddConst { value: div })
+				})?;
 			},
 			FlatOperator::DivSub => {
 				// a/b - c
-				fold_ternary_op(&mut new_ops, source_op, eval::div_sub)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::div_sub, |a, b, _| {
+					let div = eval::div(a, b)?;
+					Ok(FlatOperator::ConstSub { value: div })
+				})?;
 			},
 			FlatOperator::AddMul => {
 				// (a+b) * c
-				fold_ternary_op(&mut new_ops, source_op, eval::add_mul)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::add_mul, |a, b, _| {
+					let added = eval::add(a, b)?;
+					Ok(FlatOperator::MulConst { value: added })
+				})?;
 			},
 			FlatOperator::SubMul => {
 				// (a-b) * c
-				fold_ternary_op(&mut new_ops, source_op, eval::sub_mul)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::sub_mul, |a, b, _| {
+					let sub = eval::sub(a, b)?;
+					Ok(FlatOperator::MulConst { value: sub })
+				})?;
 			},
 			FlatOperator::AddDiv => {
 				// (a+b) / c
-				fold_ternary_op(&mut new_ops, source_op, eval::add_div)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::add_div, |a, b, _| {
+					let added = eval::add(a, b)?;
+					Ok(FlatOperator::ConstDiv { value: added })
+				})?;
 			},
 			FlatOperator::SubDiv => {
 				// (a-b) / c
-				fold_ternary_op(&mut new_ops, source_op, eval::sub_div)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::sub_div, |a, b, _| {
+					let sub = eval::sub(a, b)?;
+					Ok(FlatOperator::ConstDiv { value: sub })
+				})?;
 			},
 			FlatOperator::MulDiv => {
 				// a*b / c
-				fold_ternary_op(&mut new_ops, source_op, eval::mul_div)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::mul_div, |a, b, _| {
+					let mul = eval::mul(a, b)?;
+					Ok(FlatOperator::ConstDiv { value: mul })
+				})?;
 			},
 			FlatOperator::DivMul => {
 				// a/b * c
-				fold_ternary_op(&mut new_ops, source_op, eval::div_mul)?;
+				fold_ternary_op_with_partial(&mut new_ops, source_op, eval::div_mul, |a, b, _| {
+					let div = eval::div(a, b)?;
+					Ok(FlatOperator::MulConst { value: div })
+				})?;
 			},
 			FlatOperator::Log => {
 				fold_binary_op(&mut new_ops, source_op, eval::log)?;
@@ -434,8 +464,11 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 		num_local_var_ops: node.num_local_var_ops,
 	})
 }
+/// TODO: we're bailing out if any of the operands is not a constant, but we could fold all
+/// continous ranges of constants
 fn fold_nary_op<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, n: usize, source_op: &FlatOperator<F>, fold2: impl Fn(Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, n: usize, source_op: &FlatOperator<F>,
+	fold2: impl Fn(Value<F>, Value<F>) -> EvalexprResultValue<F>,
 ) -> EvalexprResult<(), F> {
 	let mut result = None;
 	for value in new_ops[new_ops.len() - n..].iter().rev() {
@@ -460,7 +493,8 @@ fn fold_nary_op<F: EvalexprFloat>(
 	Ok(())
 }
 fn fold_unary_op<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold: impl FnOnce(Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold: impl FnOnce(Value<F>) -> EvalexprResultValue<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some(last_const) = get_last_if_const(new_ops) {
 		new_ops.pop().unwrap();
@@ -471,7 +505,8 @@ fn fold_unary_op<F: EvalexprFloat>(
 	Ok(())
 }
 fn fold_binary_op<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some((a, b)) = get_last_2_if_const(new_ops) {
 		new_ops.pop().unwrap();
@@ -483,7 +518,8 @@ fn fold_binary_op<F: EvalexprFloat>(
 	Ok(())
 }
 fn fold_binary_op_with_const_variant<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold_2: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold_2: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
 	fold_1: impl FnOnce(Value<F>) -> FlatOperator<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some((a, b)) = get_last_2_if_const(new_ops) {
@@ -499,7 +535,8 @@ fn fold_binary_op_with_const_variant<F: EvalexprFloat>(
 	Ok(())
 }
 fn fold_binary_op_with_two_const_variants<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold_2: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold_2: impl FnOnce(Value<F>, Value<F>) -> EvalexprResultValue<F>,
 	fold_1_1: impl FnOnce(Value<F>) -> FlatOperator<F>, fold_1_2: impl FnOnce(Value<F>) -> FlatOperator<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some((a, b)) = get_last_2_if_const(new_ops) {
@@ -510,18 +547,19 @@ fn fold_binary_op_with_two_const_variants<F: EvalexprFloat>(
 		new_ops.pop().unwrap();
 		new_ops.push(fold_1_1(last_const));
 	} else if let Some((second_last_const, idx)) = get_second_last_if_const(new_ops) {
-    // println!("State before {new_ops:?}");
-    // println!("folding secondd last const {op:?} removing {idx}");
+		// println!("State before {new_ops:?}");
+		// println!("folding secondd last const {op:?} removing {idx}");
 		new_ops.remove(idx);
 		new_ops.push(fold_1_2(second_last_const));
-    // println!("State after {new_ops:?}");
+		// println!("State after {new_ops:?}");
 	} else {
 		new_ops.push(op.clone());
 	}
 	Ok(())
 }
 fn fold_binary_const_op<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold: impl FnOnce(Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold: impl FnOnce(Value<F>) -> EvalexprResultValue<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some(last_const) = get_last_if_const(new_ops) {
 		new_ops.pop().unwrap();
@@ -532,7 +570,8 @@ fn fold_binary_const_op<F: EvalexprFloat>(
 	Ok(())
 }
 fn fold_ternary_op<F: EvalexprFloat>(
-	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>, fold_3: impl FnOnce(Value<F>, Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold_3: impl FnOnce(Value<F>, Value<F>, Value<F>) -> EvalexprResultValue<F>,
 ) -> EvalexprResult<(), F> {
 	if let Some((a, b, c)) = get_last_3_if_const(new_ops) {
 		new_ops.pop().unwrap();
@@ -544,8 +583,32 @@ fn fold_ternary_op<F: EvalexprFloat>(
 	}
 	Ok(())
 }
+fn fold_ternary_op_with_partial<F: EvalexprFloat>(
+	new_ops: &mut Vec<FlatOperator<F>>, op: &FlatOperator<F>,
+	fold_3: impl FnOnce(Value<F>, Value<F>, Value<F>) -> EvalexprResultValue<F>,
+	fold_12: impl FnOnce(Value<F>, Value<F>, ()) -> EvalexprResult<FlatOperator<F>, F>,
+) -> EvalexprResult<(), F> {
+	let previous_three = get_n_previous_exprs(new_ops, new_ops.len() - 1, 3);
+	let c = range_as_const(new_ops, previous_three[0]);
+	let b = range_as_const(new_ops, previous_three[1]);
+	let a = range_as_const(new_ops, previous_three[2]);
+	if let (Some(a), Some(b), Some(c)) = (a.clone(), b.clone(), c) {
+		new_ops.pop().unwrap();
+		new_ops.pop().unwrap();
+		new_ops.pop().unwrap();
+		new_ops.push(FlatOperator::PushConst { value: fold_3(a, b, c)? });
+	} else if let (Some(a), Some(b)) = (a, b) {
+		new_ops.remove(previous_three[1].0);
+		new_ops.remove(previous_three[2].0);
+		new_ops.push(fold_12(a, b, ())?);
+	} else {
+		new_ops.push(op.clone());
+	}
 
-fn get_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<Value<F>>  {
+	Ok(())
+}
+
+fn get_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<Value<F>> {
 	let Some(last) = ops.last() else {
 		panic!("Must have last op");
 	};
@@ -571,9 +634,7 @@ fn get_last_if_const_as_float<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Eval
 
 	Ok(None)
 }
-fn get_second_last_if_const<F: EvalexprFloat>(
-	ops: &[FlatOperator<F>],
-) -> Option<(Value<F>, usize)>  {
+fn get_second_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Value<F>, usize)> {
 	let prev_ranges = get_n_previous_exprs(ops, ops.len() - 1, 2);
 	assert!(prev_ranges.len() == 2);
 	if let Some(value) = range_as_const(ops, prev_ranges[1]) {
@@ -595,9 +656,7 @@ fn pop_last_if_const_tuple<F: EvalexprFloat>(
 	Ok(None)
 }
 
-fn get_last_2_if_const<F: EvalexprFloat>(
-	ops: &[FlatOperator<F>],
-) -> Option<(Value<F>, Value<F>)>  {
+fn get_last_2_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Value<F>, Value<F>)> {
 	if ops.len() > 1 {
 		if let (FlatOperator::PushConst { value }, FlatOperator::PushConst { value: second }) =
 			(&ops[ops.len() - 2], &ops[ops.len() - 1])
@@ -621,9 +680,7 @@ fn get_last_2_if_const_as_float<F: EvalexprFloat>(
 
 	Ok(None)
 }
-fn get_last_3_if_const<F: EvalexprFloat>(
-	ops: &[FlatOperator<F>],
-) -> Option<(Value<F>, Value<F>, Value<F>)> {
+fn get_last_3_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Value<F>, Value<F>, Value<F>)> {
 	if ops.len() > 2 {
 		if let (
 			FlatOperator::PushConst { value },

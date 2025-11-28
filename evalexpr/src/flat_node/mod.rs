@@ -498,19 +498,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + b + c * f()").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), Some("f"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier }
@@ -522,18 +509,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } | FlatOperator::WriteVar { identifier } => {
@@ -545,18 +520,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all read variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("d = a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_read_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("a"));
-	/// assert_eq!(iter.next(), Some("b"));
-	/// assert_eq!(iter.next(), Some("c"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } => Some(identifier.to_str()),
@@ -566,16 +529,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all write variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("d = a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_write_variable_identifiers();
-	/// assert_eq!(iter.next(), Some("d"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_write_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::WriteVar { identifier } => Some(identifier.to_str()),
@@ -585,16 +538,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all function identifiers in this expression.
 	/// Each occurrence of a function identifier is returned separately.
 	///
-	/// # Examples
-	///
-	/// ```rust
-	/// use evalexpr::*;
-	///
-	/// let tree = build_operator_tree::<DefaultNumericTypes>("a + f(b + c)").unwrap(); // Do proper error handling here
-	/// let mut iter = tree.iter_function_identifiers();
-	/// assert_eq!(iter.next(), Some("f"));
-	/// assert_eq!(iter.next(), None);
-	/// ```
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),

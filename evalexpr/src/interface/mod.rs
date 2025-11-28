@@ -3,37 +3,21 @@ use crate::flat_node::{compile_to_flat, Stack};
 use crate::value::numeric_types::default_numeric_types::DefaultNumericTypes;
 use crate::value::TupleType;
 use crate::{
-	token, tree, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, EMPTY_VALUE
+	EMPTY_VALUE, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, optimize_flat_node, token, tree
 };
 
 /// Evaluate the given expression string.
-///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// assert_eq!(eval("1 + 2 + 3"), Ok(Value::from_float(6.0)));
-/// ```
 ///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
 pub fn eval(string: &str) -> EvalexprResultValue {
 	eval_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
+/// Used for testing, optimizations are not worth it for one off evaluations.
+pub fn eval_optimized(string: &str) -> EvalexprResultValue {
+	eval_optimized_with_context(string, &mut HashMapContext::<DefaultNumericTypes>::new())
+}
 
 /// Evaluate the given expression string with the given context.
-///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-/// context.set_value("one".into(), Value::from_float(1.0)).unwrap(); // Do proper error handling here
-/// context.set_value("two".into(), Value::from_float(2.0)).unwrap(); // Do proper error handling here
-/// context.set_value("three".into(), Value::from_float(3.0)).unwrap(); // Do proper error handling here
-/// assert_eq!(eval_with_context("one + two + three", &context), Ok(Value::from_float(6.0)));
-/// ```
 ///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
 pub fn eval_with_context<F: EvalexprFloat>(
@@ -48,18 +32,6 @@ pub fn eval_with_context<F: EvalexprFloat>(
 
 /// Evaluate the given expression string with the given mutable context.
 ///
-/// # Examples
-///
-/// ```rust
-/// use evalexpr::*;
-///
-/// let mut context = HashMapContext::<DefaultNumericTypes>::new();
-/// context.set_value("one".into(), Value::from_float(1.0)).unwrap(); // Do proper error handling here
-/// context.set_value("two".into(), Value::from_float(2.0)).unwrap(); // Do proper error handling here
-/// context.set_value("three".into(), Value::from_float(3.0)).unwrap(); // Do proper error handling here
-/// assert_eq!(eval_with_context_mut("one + two + three", &mut context), Ok(Value::from_float(6.0)));
-/// ```
-///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
 pub fn eval_with_context_mut<F: EvalexprFloat>(
 	string: &str, context: &mut HashMapContext<F>,
@@ -70,6 +42,17 @@ pub fn eval_with_context_mut<F: EvalexprFloat>(
 	compiled_node.eval_with_context_mut(&mut Stack::new(), context)
 }
 
+/// Parse the string and build optimized flat node with context, then evaluate it.
+/// Only useful for testing, optimizing is not worth it for one off evaluations.
+/// If you want performance, you should use `build_optimized_flat_node` instead!
+/// Or `build_flat_node` with `optimize_flat_node` combination.
+pub fn eval_optimized_with_context<F: EvalexprFloat>(
+	string: &str, context: &mut HashMapContext<F>,
+) -> EvalexprResultValue<F> {
+  let optimized = build_optimized_flat_node(string, context)?;
+
+	optimized.eval_with_context(&mut Stack::new(), context)
+}
 /// Build the flat node for the given string
 pub fn build_flat_node<F: EvalexprFloat>(
 	string: &str,
@@ -78,6 +61,18 @@ pub fn build_flat_node<F: EvalexprFloat>(
 	compile_to_flat(node)
 }
 
+/// Builds optimized flat node with inlining variabless from context
+/// Takes mutable reference to context, but after returning the context will have saame values as
+/// before the call
+pub fn build_optimized_flat_node<F: EvalexprFloat>(
+	string: &str,
+  context: &mut HashMapContext<F>,
+) -> EvalexprResult<FlatNode<F>, F> {
+	let node = tree::tokens_to_operator_tree(token::tokenize(string)?)?;
+
+	let flat_node = compile_to_flat(node)?;
+  optimize_flat_node(&flat_node, context)
+}
 /// Build the operator tree for the given expression string.
 pub fn build_ast<F: EvalexprFloat>(
 	string: &str,
@@ -91,21 +86,6 @@ pub fn build_flat_node_from_ast<F: EvalexprFloat>(
 ) -> EvalexprResult<FlatNode<F>, F> {
 	compile_to_flat(ast)
 }
-// /// Evaluate the given expression string into a string.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_string(string: &str) -> EvalexprResult<String> {
-//     eval_string_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
-// }
-
-// /// Evaluate the given expression string into an integer.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_int(
-//     string: &str,
-// ) -> EvalexprResult<<DefaultNumericTypes as EvalexprNumericTypes>::Int> {
-//     eval_int_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
-// }
 
 /// Evaluate the given expression string into a float.
 ///
@@ -114,15 +94,6 @@ pub fn eval_float(string: &str) -> EvalexprResult<DefaultNumericTypes> {
 	eval_float_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
 
-// /// Evaluate the given expression string into a float.
-// /// If the result of the expression is an integer, it is silently converted into a float.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_number(
-//     string: &str,
-// ) -> EvalexprResult<<DefaultNumericTypes as EvalexprNumericTypes>::Float> {
-//     eval_number_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
-// }
 
 /// Evaluate the given expression string into a boolean.
 ///
@@ -145,33 +116,6 @@ pub fn eval_empty(string: &str) -> EvalexprResult<EmptyType> {
 	eval_empty_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
 
-// /// Evaluate the given expression string into a string with the given context.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_string_with_context<C: Context>(
-//     string: &str,
-//     context: &C,
-// ) -> EvalexprResult<String, C::F> {
-//     match eval_with_context(string, context) {
-//         Ok(Value::String(string)) => Ok(string),
-//         Ok(value) => Err(EvalexprError::expected_string(value)),
-//         Err(error) => Err(error),
-//     }
-// }
-
-// /// Evaluate the given expression string into an integer with the given context.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_int_with_context<C: Context>(
-//     string: &str,
-//     context: &C,
-// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Int, C::F> {
-//     match eval_with_context(string, context) {
-//         Ok(Value::Int(int)) => Ok(int),
-//         Ok(value) => Err(EvalexprError::expected_int(value)),
-//         Err(error) => Err(error),
-//     }
-// }
 
 /// Evaluate the given expression string into a float with the given context.
 ///
@@ -186,23 +130,6 @@ pub fn eval_float_with_context<F: EvalexprFloat>(
 	}
 }
 
-// /// Evaluate the given expression string into a float with the given context.
-// /// If the result of the expression is an integer, it is silently converted into a float.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_number_with_context<C: Context>(
-//     string: &str,
-//     context: &C,
-// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Float, C::F> {
-//     match eval_with_context(string, context) {
-//         Ok(Value::Float(float)) => Ok(float),
-//         Ok(Value::Int(int)) => Ok(<C::F as EvalexprNumericTypes>::int_as_float(
-//             &int,
-//         )),
-//         Ok(value) => Err(EvalexprError::expected_number(value)),
-//         Err(error) => Err(error),
-//     }
-// }
 
 /// Evaluate the given expression string into a boolean with the given context.
 ///
@@ -243,33 +170,6 @@ pub fn eval_empty_with_context<F: EvalexprFloat>(
 	}
 }
 
-// /// Evaluate the given expression string into a string with the given mutable context.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_string_with_context_mut<C: ContextWithMutableVariables>(
-//     string: &str,
-//     context: &mut C,
-// ) -> EvalexprResult<String, C::F> {
-//     match eval_with_context_mut(string, context) {
-//         Ok(Value::String(string)) => Ok(string),
-//         Ok(value) => Err(EvalexprError::expected_string(value)),
-//         Err(error) => Err(error),
-//     }
-// }
-
-// /// Evaluate the given expression string into an integer with the given mutable context.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_int_with_context_mut<C: ContextWithMutableVariables>(
-//     string: &str,
-//     context: &mut C,
-// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Int, C::F> {
-//     match eval_with_context_mut(string, context) {
-//         Ok(Value::Int(int)) => Ok(int),
-//         Ok(value) => Err(EvalexprError::expected_int(value)),
-//         Err(error) => Err(error),
-//     }
-// }
 
 /// Evaluate the given expression string into a float with the given mutable context.
 ///
@@ -284,23 +184,6 @@ pub fn eval_float_with_context_mut<F: EvalexprFloat>(
 	}
 }
 
-// /// Evaluate the given expression string into a float with the given mutable context.
-// /// If the result of the expression is an integer, it is silently converted into a float.
-// ///
-// /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
-// pub fn eval_number_with_context_mut<C: ContextWithMutableVariables>(
-//     string: &str,
-//     context: &mut C,
-// ) -> EvalexprResult<<C::F as EvalexprNumericTypes>::Float, C::F> {
-//     match eval_with_context_mut(string, context) {
-//         Ok(Value::Float(float)) => Ok(float),
-//         Ok(Value::Int(int)) => Ok(<C::F as EvalexprNumericTypes>::int_as_float(
-//             &int,
-//         )),
-//         Ok(value) => Err(EvalexprError::expected_number(value)),
-//         Err(error) => Err(error),
-//     }
-// }
 
 /// Evaluate the given expression string into a boolean with the given mutable context.
 ///

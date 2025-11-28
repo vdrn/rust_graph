@@ -32,9 +32,10 @@ pub fn eval_flat_node<F: EvalexprFloat>(
 }
 /// Evaluates the operator with the given arguments and mutable context.
 pub fn eval_flat_node_mut<F: EvalexprFloat>(
-	_node: &FlatNode<F>, _stack: &mut Stack<F>, _context: &mut HashMapContext<F>,
+	node: &FlatNode<F>, stack: &mut Stack<F>, context: &mut HashMapContext<F>,
 ) -> EvalexprResultValue<F> {
-	todo!()
+  eval_flat_node(node, stack, context,&[])
+	// todo!()
 	// use crate::operator::Operator::*;
 	// match self {
 	//     Assign => {
@@ -381,10 +382,10 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::Chain { len } => {
 				debug_assert!(*len > 0, "Chain with 0 length should be caught at compile time");
 
-				todo!()
-				// // Keep only the last value, discard the rest
-				// let start_idx = stack.len() - *len as usize;
-				// stack.drain(start_idx..stack.len() - 1);
+				// todo!()
+				// Keep only the last value, discard the rest 
+        let start_idx = stack.len() - *len as usize;
+				stack.drain(start_idx..stack.len() - 1);
 			},
 			FlatOperator::FunctionCall { identifier, arg_num } => {
 				let prev_num_args = stack.num_args;
