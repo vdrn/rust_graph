@@ -14,6 +14,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 	let mut new_ops = Vec::with_capacity(node.ops.len());
 	new_ops.extend(node.ops.iter().take(node.num_local_var_ops as usize).cloned());
 
+	let mut rerun_inlning = false;
 	for source_op in node.ops.iter().skip(node.num_local_var_ops as usize) {
 		match source_op {
 			FlatOperator::ReadVar { identifier } => {
@@ -54,11 +55,12 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					if tuple_param.len() > 20 {
 						new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param.clone()) });
 					} else {
+						rerun_inlning = true;
 						let param_len = tuple_param.len();
 
 						let prev_variable_value = context.get_value(*variable).cloned();
 
-						for value in tuple_param {
+						for value in tuple_param.into_iter().rev() {
 							context.set_value(*variable, value)?;
 							let mut inlined_expr = inline_variables_and_fold(expr, context)?;
 							new_ops.append(&mut inlined_expr.ops);
@@ -458,11 +460,16 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 		}
 	}
 
-	Ok(FlatNode {
+	let result = FlatNode {
 		ops:               new_ops,
 		num_local_vars:    node.num_local_vars,
 		num_local_var_ops: node.num_local_var_ops,
-	})
+	};
+	if rerun_inlning {
+		inline_variables_and_fold(&result, context)
+	} else {
+		Ok(result)
+	}
 }
 /// TODO: we're bailing out if any of the operands is not a constant, but we could fold all
 /// continous ranges of constants

@@ -19,7 +19,6 @@ fn test_eval_and_fold_to_const(string: &str, expected: EvalexprResultValue) {
 	// test unoptimizd flat node
 	assert_eq!(eval_with_context(string, &ctx), expected.clone());
 
-
 	match build_optimized_flat_node(string, &mut ctx) {
 		Ok(optimized) => {
 			// test optimized and folded flat node
@@ -29,7 +28,8 @@ fn test_eval_and_fold_to_const(string: &str, expected: EvalexprResultValue) {
 			assert_eq!(
 				optimized.as_constant(),
 				Some(expected.clone().unwrap()),
-				"Node should be optimized to a single constant"
+				"Node should be optimized to a single constant, got {:?}",
+				optimized
 			);
 		},
 		Err(err) => {
@@ -40,13 +40,13 @@ fn test_eval_and_fold_to_const(string: &str, expected: EvalexprResultValue) {
 
 #[track_caller]
 fn test_eval_with_context(string: &str, ctx: &HashMapContext, expected: EvalexprResultValue) {
-  // test unoptimized flat node
+	// test unoptimized flat node
 	assert_eq!(eval_with_context(string, ctx), expected.clone());
 
-  // test optimized flat node without inlining context
+	// test optimized flat node without inlining context
 	match build_optimized_flat_node(string, &mut HashMapContext::<DefaultNumericTypes>::new()) {
 		Ok(optimized) => {
-      let mut stack = Stack::new();
+			let mut stack = Stack::new();
 			assert_eq!(optimized.eval_with_context(&mut stack, ctx), expected.clone());
 		},
 		Err(err) => {
@@ -54,7 +54,7 @@ fn test_eval_with_context(string: &str, ctx: &HashMapContext, expected: Evalexpr
 		},
 	}
 
-  // test optimized flat node with inlining context
+	// test optimized flat node with inlining context
 	let mut cloned_ctx = ctx.clone();
 	match build_optimized_flat_node(string, &mut cloned_ctx) {
 		Ok(optimized) => {
@@ -74,13 +74,13 @@ fn test_eval_with_context(string: &str, ctx: &HashMapContext, expected: Evalexpr
 fn test_eval_and_fold_to_const_with_context(
 	string: &str, ctx: &HashMapContext, expected: EvalexprResultValue,
 ) {
-  // test unoptimized flat node
+	// test unoptimized flat node
 	assert_eq!(eval_with_context(string, ctx), expected.clone());
 
-  // test optimized flat node without inlining context
+	// test optimized flat node without inlining context
 	match build_optimized_flat_node(string, &mut HashMapContext::<DefaultNumericTypes>::new()) {
 		Ok(optimized) => {
-      let mut stack = Stack::new();
+			let mut stack = Stack::new();
 			assert_eq!(optimized.eval_with_context(&mut stack, ctx), expected.clone());
 		},
 		Err(err) => {
@@ -88,15 +88,18 @@ fn test_eval_and_fold_to_const_with_context(
 		},
 	}
 
-  // test optimized flat node with inlining context
+	// test optimized flat node with inlining context
 	let mut cloned_ctx = ctx.clone();
 	match build_optimized_flat_node(string, &mut cloned_ctx) {
 		Ok(optimized) => {
 			assert_eq!(optimized.eval(), expected.clone());
+
+			// Make sure the final node is just a constant
 			assert_eq!(
 				optimized.as_constant(),
 				Some(expected.clone().unwrap()),
-				"Node should be optimized to a single constant"
+				"Node should be optimized to a single constant, got {:?}",
+				optimized
 			);
 		},
 		Err(err) => {
@@ -106,6 +109,52 @@ fn test_eval_and_fold_to_const_with_context(
 	assert!(
 		HashMapContext::contexts_almost_equal(&cloned_ctx, ctx),
 		"Context should not change during optimization"
+	);
+}
+
+#[track_caller]
+fn test_fold_to_const_expr_and_func(
+	string: &str, args: &[(IStr, f64)], ctx: &mut HashMapContext, expected: EvalexprResultValue,
+) {
+	let mut fn_args = Vec::with_capacity(args.len());
+	let mut fn_arg_values = String::with_capacity(args.len() * 3);
+	for (i, (arg_name, arg_value)) in args.iter().enumerate() {
+		// set the args in the context so the raw expression witohut function wrapping works
+		ctx.set_value(*arg_name, Value::Float(*arg_value)).unwrap();
+
+		fn_args.push(*arg_name);
+		fn_arg_values.push_str(arg_value.to_string().as_str());
+		if i != args.len() - 1 {
+			fn_arg_values.push_str(", ");
+		}
+	}
+
+	// test as expression
+	test_eval_and_fold_to_const_with_context(string, ctx, expected.clone());
+
+	// test as function
+	let expr = build_optimized_flat_node(string, ctx).unwrap();
+	let func = ExpressionFunction::new(expr, &fn_args, &mut Some(ctx)).unwrap();
+	// indirectly call the function to check more code paths
+	ctx.set_expression_function(istr("func"), func);
+	test_eval_and_fold_to_const_with_context(&format!("func({fn_arg_values})"), ctx, expected);
+}
+
+#[test]
+fn test_sum_operator() {
+	let mut ctx = HashMapContext::<DefaultNumericTypes>::new();
+	// number of iterations
+	ctx.set_value(istr("c"), Value::Float(7.0)).unwrap();
+
+	let args = &[(istr("x"), -2.7)];
+	// approx sin(-2.7)
+	let expected = Value::Float(-0.4273798209522364);
+	test_fold_to_const_expr_and_func(
+		// taylor series for sin(x) with `c` iterations
+		"Sum(0..c, n, (-1)^n * x^(2*n+1) / (2*n+1)!)",
+		args,
+		&mut ctx,
+		Ok(expected),
 	);
 }
 
@@ -1411,7 +1460,6 @@ fn test_try_from() {
 
 #[test]
 fn test_negative_power() {
-	println!("{:?}", build_flat_node::<DefaultNumericTypes>("3^-2").unwrap());
 	assert_eq!(eval("3^-2"), Ok(Value::Float(1.0 / 9.0)));
 	assert_eq!(eval("3^(-2)"), Ok(Value::Float(1.0 / 9.0)));
 	assert_eq!(eval("-3^2"), Ok(Value::Float(-9.0)));

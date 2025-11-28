@@ -13,21 +13,20 @@ pub fn inline_functions<F: EvalexprFloat>(
 	let mut cur_idx = node.num_local_var_ops as usize;
 	let mut inlined_functions = 0;
 
-
 	while cur_idx < node.ops.len() {
 		let op = &node.ops[cur_idx];
 		#[allow(clippy::single_match)]
 		match op {
 			FlatOperator::FunctionCall { identifier, arg_num } => {
 				if let Some(expr_func) = context.expr_functions.get(identifier) {
-					inline_function(node, &mut cur_idx, *identifier, expr_func.clone(), *arg_num, )?;
+					inline_function(node, &mut cur_idx, *identifier, expr_func.clone(), *arg_num)?;
 					inlined_functions += 1;
 				}
 			},
 			FlatOperator::ReadVar { identifier } => {
 				if !context.variables.contains_key(identifier) {
 					if let Some(expr_func) = context.expr_functions.get(identifier) {
-						inline_function(node, &mut cur_idx, *identifier, expr_func.clone(), 0, )?;
+						inline_function(node, &mut cur_idx, *identifier, expr_func.clone(), 0)?;
 						inlined_functions += 1;
 					}
 				}
@@ -96,8 +95,6 @@ fn inline_function<F: EvalexprFloat>(
 	node: &mut FlatNode<F>, cur_idx: &mut usize, fn_name: IStr, expr_func: ExpressionFunction<F>, arg_num: u32,
 ) -> EvalexprResult<(), F> {
 	expect_function_argument_amount(arg_num as usize, expr_func.num_args())?;
-
-  let debug = fn_name.to_str() == "F";
 
 	let arg_ranges = get_arg_ranges(&node.ops, *cur_idx);
 	let const_args = arg_ranges
@@ -172,7 +169,6 @@ fn inline_function<F: EvalexprFloat>(
 	*cur_idx -= num_removed_ops;
 	let new_num_args = expr_func.num_args() - num_inlined_args;
 
-
 	// find local vars
 	let local_var_ranges = get_n_previous_exprs(
 		&func_expr.ops,
@@ -214,32 +210,30 @@ fn inline_function<F: EvalexprFloat>(
 		func_expr.ops.drain(*start..=*end);
 		num_removed_var_ops += end - start + 1;
 		num_inlined_vars += 1;
-    if debug{
-      panic!()
-    }
 	}
 	func_expr.num_local_var_ops -= num_removed_var_ops as u32;
 	func_expr.num_local_vars -= num_inlined_vars;
-
 
 	let shift_read_arg = node.num_local_vars;
 	let shift_read_var = node.num_local_vars + new_num_args as u32;
 
 	// move arguments to parents local vars
-	let arg_ranges = get_n_previous_exprs(&node.ops, *cur_idx - 1, new_num_args);
-	let arg_range = arg_ranges.last().map(|(start, _)| *start).unwrap_or(0)
-		..arg_ranges.first().map(|(_, end)| *end + 1).unwrap_or(0);
-	let insertion_idx = node.num_local_var_ops as usize;
-	let args = node.ops.drain(arg_range.clone()).collect::<Vec<FlatOperator<F>>>();
-	node.ops.splice(insertion_idx..insertion_idx, args);
-	node.num_local_vars += new_num_args as u32;
-	node.num_local_var_ops += arg_range.len() as u32;
+	if new_num_args > 0 {
+		let arg_ranges = get_n_previous_exprs(&node.ops, *cur_idx - 1, new_num_args);
+		let arg_range = arg_ranges.last().map(|(start, _)| *start).unwrap_or(0)
+			..arg_ranges.first().map(|(_, end)| *end + 1).unwrap_or(0);
+		let insertion_idx = node.num_local_var_ops as usize;
+		let args = node.ops.drain(arg_range.clone()).collect::<Vec<FlatOperator<F>>>();
+		node.ops.splice(insertion_idx..insertion_idx, args);
+		node.num_local_vars += new_num_args as u32;
+		node.num_local_var_ops += arg_range.len() as u32;
+	}
 
 	// update references to params and vars in the function being inlined
 	func_expr.iter_mut(&mut |op| {
 		if let FlatOperator::ReadParam { inverse_index } = op {
-      let idx = shift_read_arg + (new_num_args as u32 - *inverse_index);
-			*op = FlatOperator::ReadLocalVar { idx  };
+			let idx = shift_read_arg + (new_num_args as u32 - *inverse_index);
+			*op = FlatOperator::ReadLocalVar { idx };
 		} else if let FlatOperator::ReadLocalVar { idx } = op {
 			*idx += shift_read_var;
 		}
@@ -270,7 +264,7 @@ fn inline_function<F: EvalexprFloat>(
 	let num_ops = func_expr.ops.len();
 	node.ops.splice(*cur_idx..=*cur_idx, func_expr.ops);
 
-	*cur_idx -= 1;
 	*cur_idx += num_ops;
+	*cur_idx -= 1;
 	Ok(())
 }

@@ -211,7 +211,7 @@ pub fn serialize_to_url<T: EvalexprFloat>(
 #[cfg(target_arch = "wasm32")]
 pub fn deserialize_from_url<T: EvalexprFloat>(
 	id_counter: &mut u64,
-) -> Result<(Vec<Entry<T>>, graph_config::GraphConfig), String> {
+) -> Result<(Vec<Entry<T>>, GraphConfig), String> {
 	let href = web_sys::window()
 		.expect("Couldn't get window")
 		.document()
@@ -223,10 +223,10 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	// let href = "";
 
 	if !href.contains('#') {
-		return Ok((Vec::new(), None));
+		return Ok((Vec::new(), Default::default()));
 	}
 	let Some(without_prefix) = href.split('#').last() else {
-		return Ok((Vec::new(), None));
+		return Ok((Vec::new(), Default::default()));
 	};
 
 	let base64_decoded =
@@ -339,7 +339,7 @@ pub fn deserialize_from_json<T: EvalexprFloat>(
 pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame) {
 	let file = format!("{}.json", state.name);
 	let mut output = Vec::new();
-	if let Err(e) = serialize_to_json(&mut output, &state.entries, Some(&ui_state.plot_bounds)) {
+	if let Err(e) = serialize_to_json(&mut output, &state.entries, ui_state.graph_config.clone()) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
@@ -400,9 +400,9 @@ pub fn load_file<T: EvalexprFloat>(
 	id_counter: &mut u64,
 ) -> Result<(), String> {
 	if let Some(file) = ser_states.get(file_name) {
-		let (entries, bounds) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
+		let (entries, default_graph_config) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
 		state.entries = entries;
-		state.default_bounds = bounds;
+    state.saved_graph_config = default_graph_config;
 
 		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 		state.clear_cache = true;

@@ -1,9 +1,9 @@
 name: Run tests
 on:
   push:
-    branches: ["main"]
+    branches: ["master"]
   pull_request:
-    branches: ["main"]
+    branches: ["master"]
 env:
   CARGO_TERM_COLOR: always
 jobs:
@@ -14,6 +14,8 @@ jobs:
         working-directory: ./evalexpr
     steps:
       - uses: actions/checkout@v5
+      - name: Move .cargo/config.toml out of the way
+        run: mv ../.cargo/config.toml ../.cargo/config.toml.bak
       - name: Run tests in debug mode
         run: cargo test
       - name: Run tests in release mode

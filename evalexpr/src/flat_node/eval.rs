@@ -34,7 +34,7 @@ pub fn eval_flat_node<F: EvalexprFloat>(
 pub fn eval_flat_node_mut<F: EvalexprFloat>(
 	node: &FlatNode<F>, stack: &mut Stack<F>, context: &mut HashMapContext<F>,
 ) -> EvalexprResultValue<F> {
-  eval_flat_node(node, stack, context,&[])
+	eval_flat_node(node, stack, context, &[])
 	// todo!()
 	// use crate::operator::Operator::*;
 	// match self {
@@ -132,14 +132,14 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 			return None;
 		}
 		let arg_i = self.stack.len() - self.num_args + index;
-    Some(self.stack.get(arg_i).unwrap())
+		Some(self.stack.get(arg_i).unwrap())
 		// debug_assert!(arg_i < self.stack.len());
 		// Some(unsafe { self.stack.get_unchecked(arg_i) })
 	}
 	fn get_unchecked(&self, index: usize) -> &Value<T> {
 		// assert!(index < self.stack.len(), "index {} out of bounds {}", index, self.stack.len());
 		// unsafe { self.stack.get_unchecked(index) }
-    self.stack.get(index).unwrap()
+		self.stack.get(index).unwrap()
 	}
 	// fn get(&self, index: usize) -> Option<&Value<T>> {
 	//     self.stack.get(index)
@@ -154,7 +154,7 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 	fn pop_unchecked(&mut self) -> Value<T> {
 		// assert!(!self.is_empty());
 		// unsafe { self.stack.pop().unwrap_unchecked() }
-    self.stack.pop().unwrap()
+		self.stack.pop().unwrap()
 	}
 }
 // // /// helper for stack
@@ -383,8 +383,8 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				debug_assert!(*len > 0, "Chain with 0 length should be caught at compile time");
 
 				// todo!()
-				// Keep only the last value, discard the rest 
-        let start_idx = stack.len() - *len as usize;
+				// Keep only the last value, discard the rest
+				let start_idx = stack.len() - *len as usize;
 				stack.drain(start_idx..stack.len() - 1);
 			},
 			FlatOperator::FunctionCall { identifier, arg_num } => {
@@ -423,7 +423,9 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let n = *n as usize;
 				let mut sum = stack.pop_unchecked();
 				for _ in 0..n - 1 {
-					sum = add(sum, stack.pop_unchecked())?;
+					let value = stack.pop_unchecked();
+
+					sum = add(sum, value)?;
 				}
 				stack.push(sum);
 			},
