@@ -7,9 +7,7 @@ use crate::error::EvalexprResultValue;
 use crate::flat_node::{cold, FlatOperator, IntegralNode};
 use crate::function::rust_function::builtin_function;
 use crate::math::integrate;
-use crate::{
-	EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Operator, Value, ValueType
-};
+use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value, ValueType};
 
 #[inline(always)]
 pub fn eval_flat_node<F: EvalexprFloat>(
@@ -798,6 +796,11 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let value = stack.pop_unchecked();
 				stack.push(access_index(value, *index)?);
 			},
+			FlatOperator::Access => {
+				let field = stack.pop_unchecked();
+				let value = stack.pop_unchecked();
+				stack.push(access(value, field)?);
+			},
 		}
 	}
 
@@ -805,6 +808,15 @@ fn eval_priv_inner<F: EvalexprFloat>(
 	stack.truncate(base_index);
 	Ok(result)
 }
+pub fn access<F: EvalexprFloat>(value: Value<F>, index: Value<F>) -> EvalexprResult<Value<F>, F> {
+	let index = if let Value::Float(index) = index {
+		index.to_usize()? as u32
+	} else {
+		return Err(EvalexprError::CustomMessage("Index must be a number".to_string()));
+	};
+	access_index(value, index)
+}
+
 pub fn access_index<F: EvalexprFloat>(value: Value<F>, index: u32) -> EvalexprResult<Value<F>, F> {
 	match value {
 		Value::Float2(first, second) => match index {

@@ -6,9 +6,13 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		use crate::EvalexprError::*;
 		match self {
-      TuplesMismatchedLengths { left, right } => {
-        write!(f, "Tuples have different lengths. Left tuple has length {}, right tuple has length {}.", left, right)
-      },
+			TuplesMismatchedLengths { left, right } => {
+				write!(
+					f,
+					"Tuples have different lengths. Left tuple has length {}, right tuple has length {}.",
+					left, right
+				)
+			},
 			InvalidIndex { index, len } => {
 				write!(f, "Index {} is out of bounds for a tuple of length {}", index, len)
 			},

@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
 use core::mem;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use core::sync::atomic::AtomicBool;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
@@ -10,13 +11,14 @@ use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashM
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, FillMesh, OtherPointType, PointInteraction, PointInteractionType
+	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult, FillMesh, OtherPointType, PointInteraction, PointInteractionType
 };
-use crate::entry::{Entry, EntryType, EquationType, f64_to_value};
+use crate::entry::{COLORS, ClonedEntry, Entry, EntryType, EquationType, NUM_COLORS, f64_to_value};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary};
 use crate::{ThreadLocalContext, marching_squares, thread_local_get};
 
+#[derive(Clone)]
 pub struct PlotParams {
 	pub eps:                 f64,
 	pub first_x:             f64,
@@ -29,227 +31,90 @@ pub struct PlotParams {
 	pub prev_plot_transform: Option<egui_plot::PlotTransform>,
 	pub invert_axes:         [bool; 2],
 }
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::panic_in_result_fn)]
-pub fn entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
-	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	draw_buffer: &ThreadLocal<crate::DrawBufferRC>, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
-) -> Result<(), Vec<(u64, String)>> {
-	// thread_local_get(tl_context).stack_overflow_guard.set(0);
-
+pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
+	entry: &mut Entry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
+	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
+) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
-		return Ok(());
+		return;
 	}
-	let color = entry.color();
-	// println!("step_size: {deriv_step_x}");
-
-	let draw_buffer_c = thread_local_get(draw_buffer);
-	match &entry.ty {
+	match &mut entry.ty {
+		EntryType::Constant { .. } => {},
 		EntryType::Folder { entries } => {
-			let mut errors = std::sync::Mutex::new(Vec::new());
-			entries.par_iter().enumerate().for_each(|(ei, entry)| {
-				let eid = Id::new(entry.id);
-				if let Err(e) = entry_create_plot_elements(
-					entry,
-					eid,
-					sorting_idx + ei as u32,
-					selected_id,
-					ctx,
-					plot_params,
-					draw_buffer,
-					tl_context,
-				) {
-					errors.lock().unwrap().extend(e);
+			for (ei, entry) in entries.iter_mut().enumerate() {
+				if entry.active {
+					schedule_entry_create_plot_elements(
+						entry,
+						sorting_idx + ei as u32,
+						selected_id,
+						ctx,
+						plot_params,
+						tl_context,
+					);
+				} else {
+					entry.draw_buffer_scheduler.execute(|draw_buffer| {
+						draw_buffer.clear();
+						Ok(())
+					})
+				}
+			}
+		},
+		EntryType::Function { can_be_drawn, .. } => {
+			if !*can_be_drawn {
+				entry.draw_buffer_scheduler.execute(|draw_buffer| {
+					draw_buffer.clear();
+					Ok(())
+				})
+			} else {
+				entry.draw_buffer_scheduler.schedule({
+					let entry_cloned = ClonedEntry {
+						id:    entry.id.clone(),
+						name:  entry.name.clone(),
+						color: entry.color.clone(),
+						ty:    entry.ty.clone(),
+					};
+					let ctx = ctx.clone();
+					let plot_params = plot_params.clone();
+					let tl_context = Arc::clone(tl_context);
+
+					move |cancel_signal| {
+						entry_create_plot_elements_async(
+							&entry_cloned, sorting_idx, selected_id, &ctx, &plot_params, &tl_context,
+							cancel_signal,
+						)
+					}
+				});
+			}
+		},
+
+		_ => {
+			entry.draw_buffer_scheduler.execute({
+				|draw_buffer| {
+					entry_create_plot_elements_sync(
+						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, &ctx,
+						&plot_params, &tl_context, draw_buffer,
+					)
 				}
 			});
-			if errors.get_mut().unwrap().is_empty() {
-				return Ok(());
-			}
-			return Err(errors.into_inner().unwrap());
 		},
-		EntryType::Constant { .. } => {},
-		EntryType::Label { x, y, size, underline, .. } => {
-			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+	}
+}
+pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
+	entry: &ClonedEntry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
+	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
+	cancel_signal: &AtomicBool,
+) -> Option<ExecutionResult> {
+	let color = entry.color();
+	let id = Id::new(entry.id);
 
-			match eval_point(&mut stack, ctx, x.node.as_ref(), y.node.as_ref()) {
-				Ok(Some((x, y))) => {
-					let size = if let Some(size) = &size.node {
-						match size.eval_float_with_context(&mut stack, ctx) {
-							Ok(size) => size.to_f64() as f32,
-							Err(e) => {
-								return Err(vec![(entry.id, e.to_string())]);
-							},
-						}
-					} else {
-						12.0
-					};
-					let mut label_text = RichText::new(entry.name.clone()).size(size);
-					if *underline {
-						label_text = label_text.underline()
-					}
-
-					let text = Text::new(entry.name.clone(), PlotPoint { x, y }, label_text).color(color);
-
-					draw_buffer.texts.push(DrawText::new(sorting_idx, text));
-				},
-				Err(e) => {
-					return Err(vec![(entry.id, e)]);
-				},
-				_ => {},
-			}
-		},
-		EntryType::Points { points, style,.. } => {
-			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-			// main_context
-			// 	.write()
-			// 	.unwrap()
-			// 	.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
-			// 	.unwrap();
-			let mut arrow_buffer = vec![];
-			let mut line_buffer = vec![];
-			let color_rgba = color.to_array();
-			let color_outer =
-				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
-			let mut prev_point: Option<egui::Vec2> = None;
-			let arrow_scale = egui::Vec2::new(
-				(plot_params.last_x - plot_params.first_x) as f32,
-				(plot_params.last_y - plot_params.first_y) as f32,
-			) * 0.002;
-			let points_len = points.len();
-			let mut fill_mesh = if style.fill
-				&& points_len > 2
-				&& let Some(plot_trans) = &plot_params.prev_plot_transform
-			{
-				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
-				Some((FillMesh::new(fill_color, style.fill_rule), plot_trans))
-			} else {
-				None
-			};
-			for (i, p) in points.iter().enumerate() {
-				if let Some((x, y)) = p.val {
-          let x = x.to_f64();
-          let y = y.to_f64();
-					let point_id = id.with(i);
-					let selected = selected_id == Some(id);
-					let radius = if selected { 6.5 } else { 4.5 };
-					let radius_outer = if selected { 12.5 } else { 7.5 };
-
-					if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
-						let screen_point = gpu_position_from_point(
-							plot_trans,
-							plot_params.invert_axes,
-							&PlotPoint::new(x, y),
-						);
-						fill_mesh.add_vertex(screen_point.x, screen_point.y);
-					}
-					if style.show_points || p.drag_point.is_some() {
-						draw_buffer.points.push(DrawPoint::new(
-							sorting_idx,
-							i as u32,
-							PointInteraction {
-								x,
-								y,
-								radius,
-								ty: PointInteractionType::Other(OtherPointType::Point),
-							},
-							Points::new(entry.name.clone(), [x, y]).color(color).radius(radius),
-						));
-						if p.drag_point.is_some() {
-							let selectable_point = PointInteraction {
-								ty: PointInteractionType::Draggable { i: (id, i as u32) },
-								x,
-								y,
-								radius: radius_outer,
-							};
-							draw_buffer.points.push(DrawPoint::new(
-								sorting_idx,
-								i as u32,
-								selectable_point,
-								Points::new(entry.name.clone(), [x, y])
-									.id(point_id)
-									.color(color_outer)
-									.radius(radius_outer),
-							));
-						}
-					}
-					if let Some(label_config) = &style.label_config
-						&& i == points_len - 1
-						&& !entry.name.trim().is_empty()
-					{
-						let size = label_config.size.size();
-						let mut label = RichText::new(entry.name.clone()).size(size);
-						if label_config.italic {
-							label = label.italics();
-						}
-
-						let dir = label_config.pos.dir();
-						let text = Text::new(
-							entry.name.clone(),
-							PlotPoint {
-								x: x + (dir.x * size * arrow_scale.x) as f64,
-								y: y + (dir.y * size * arrow_scale.y) as f64,
-							},
-							label,
-						)
-						.color(color);
-
-						draw_buffer.texts.push(DrawText::new(sorting_idx, text));
-					}
-
-					if style.show_lines {
-						line_buffer.push([x, y]);
-						let cur_point = egui::Vec2::new(x as f32, y as f32);
-						if style.show_arrows
-							&& let Some(pp) = prev_point
-						{
-							let dir = (pp - cur_point).normalized();
-							let arrow_len = arrow_scale * radius_outer;
-							let base = cur_point + dir * arrow_len.length();
-							let a = base + dir.rot90() * arrow_len * 0.5;
-							let b = base - dir.rot90() * arrow_len * 0.5;
-
-							arrow_buffer.push(
-								Polygon::new(
-									"",
-									vec![[x, y], [a.x as f64, a.y as f64], [b.x as f64, b.y as f64]],
-								)
-								.fill_color(color)
-								.allow_hover(false)
-								.stroke(Stroke::new(0.0, color)),
-							);
-						}
-						prev_point = Some(cur_point);
-					}
-				}
-			}
-
-			// let width = if selected { 3.5 } else { 1.0 };
-			let width = 1.0;
-
-			if line_buffer.len() > 1 && style.show_lines {
-				if style.connect_first_and_last {
-					line_buffer.push(line_buffer[0]);
-				}
-				let line = Line::new(entry.name.clone(), line_buffer)
-					.color(color)
-					.id(id)
-					.width(style.line_style.line_width)
-					.style(style.line_style.egui_line_style());
-				draw_buffer.lines.push(DrawLine::new(sorting_idx, id, width, line));
-				if !arrow_buffer.is_empty() {
-					draw_buffer.polygons.push(DrawPolygonGroup::new(sorting_idx, arrow_buffer));
-				}
-				if let Some((fill_mesh, _)) = fill_mesh {
-					draw_buffer.meshes.push(DrawMesh {
-						sorting_index: sorting_idx,
-						ty:            DrawMeshType::FillMesh(fill_mesh),
-					});
-				}
-				// plot_ui.line(line);
-			}
+	let mut draw_buffer = DrawBuffer::empty();
+	match &entry.ty {
+		EntryType::Folder { .. }
+		| EntryType::Constant { .. }
+		| EntryType::Label { .. }
+		| EntryType::Points { .. } => {
+			unreachable!()
 		},
 		EntryType::Function {
 			func,
@@ -265,9 +130,6 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			selectable,
 			..
 		} => {
-			if !*can_be_drawn {
-				return Ok(());
-			}
 			let stack_len = thread_local_get(tl_context).stack.borrow().len();
 			assert!(stack_len == 0, "stack is not empty: {stack_len}");
 
@@ -277,18 +139,19 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				format!("{}({}): {}", identifier, func.args_to_string(), func.text.trim())
 			};
 
-			let selected = selected_id == Some(id);
-			let width = if selected { style.line_width + 2.5 } else { style.line_width };
+			// let selected = selected_id == Some(id);
+			// let width = if selected { style.line_width + 2.5 } else { style.line_width };
+			let width = style.line_width;
 
 			let mut add_line = |line: Vec<PlotPoint>| {
 				if line.is_empty() {
 					return;
 				}
-				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.lines.push(DrawLine::new(
 					sorting_idx,
 					id,
 					width,
+					style.egui_line_style(),
 					Line::new(&display_name, PlotPoints::Owned(line))
 						.id(id)
 						.allow_hover(*selectable)
@@ -301,7 +164,6 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				if mesh.is_empty() {
 					return;
 				}
-				let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 				draw_buffer.meshes.push(DrawMesh {
 					sorting_index: sorting_idx,
 					ty:            DrawMeshType::EguiPlotMesh(EguiPlotMesh {
@@ -322,10 +184,10 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						Ok(v) => match v {
 							Value::Float(v) => v,
 							Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
-								return Ok(());
+								return Some(Ok(draw_buffer));
 							},
 						},
-						Err(e) => return Err(vec![(entry.id, e.to_string())]),
+						Err(e) => return Some(Err((entry.id, e.to_string()))),
 					};
 					add_line(vec![
 						PlotPoint::new(plot_params.first_x, value.to_f64()),
@@ -371,7 +233,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 								};
 
 								if func.args[0].to_str() == "y" {
-									draw_parametric_function::<T, { SimpleFunctionType::Y }>(
+									match draw_parametric_function::<T, { SimpleFunctionType::Y }>(
 										tl_context,
 										ctx,
 										plot_params,
@@ -380,9 +242,16 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
 										&mut add_parametric_line,
-									)?;
+									) {
+										Ok(finished) => {
+											if !finished {
+												return None;
+											}
+										},
+										Err(err) => return Some(Err(err)),
+									}
 								} else {
-									draw_parametric_function::<T, { SimpleFunctionType::X }>(
+									match draw_parametric_function::<T, { SimpleFunctionType::X }>(
 										tl_context,
 										ctx,
 										plot_params,
@@ -391,11 +260,17 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
 										&mut add_parametric_line,
-									)?;
+									) {
+										Ok(finished) => {
+											if !finished {
+												return None;
+											}
+										},
+										Err(err) => return Some(Err(err)),
+									}
 								}
 
 								if let Some((fm, _)) = fill_mesh {
-									let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 									draw_buffer.meshes.push(DrawMesh {
 										sorting_index: sorting_idx,
 										ty:            DrawMeshType::FillMesh(fm),
@@ -403,13 +278,27 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 								}
 							} else {
 								if func.args[0].to_str() == "y" {
-									draw_simple_function::<T, { SimpleFunctionType::Y }>(
+									match draw_simple_function::<T, { SimpleFunctionType::Y }>(
 										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-									)?;
+									) {
+										Ok(finished) => {
+											if !finished {
+												return None;
+											}
+										},
+										Err(err) => return Some(Err(err)),
+									}
 								} else {
-									draw_simple_function::<T, { SimpleFunctionType::X }>(
+									match draw_simple_function::<T, { SimpleFunctionType::X }>(
 										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-									)?;
+									) {
+										Ok(finished) => {
+											if !finished {
+												return None;
+											}
+										},
+										Err(err) => return Some(Err(err)),
+									}
 								}
 							}
 						},
@@ -422,10 +311,10 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									| Value::Boolean(_)
 									| Value::Tuple(_)
 									| Value::Empty => {
-										return Ok(());
+										return Some(Ok(draw_buffer));
 									},
 								},
-								Err(e) => return Err(vec![(entry.id, e.to_string())]),
+								Err(e) => return Some(Err((entry.id, e.to_string()))),
 							};
 
 							if func.args[0].to_str() == "x" {
@@ -442,7 +331,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 						},
 						equation_type => {
 							if func.args[0].to_str() == "y" {
-								draw_implicit(
+								match draw_implicit(
 									tl_context,
 									plot_params,
 									entry.id,
@@ -452,9 +341,17 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-								)?;
+                  cancel_signal,
+								) {
+									Ok(finished) => {
+										if !finished {
+											return None;
+										}
+									},
+									Err(err) => return Some(Err(err)),
+								}
 							} else {
-								draw_implicit(
+								match draw_implicit(
 									tl_context,
 									plot_params,
 									entry.id,
@@ -464,14 +361,22 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-								)?;
+                  cancel_signal,
+								) {
+									Ok(finished) => {
+										if !finished {
+											return None;
+										}
+									},
+									Err(err) => return Some(Err(err)),
+								}
 							}
 						},
 					}
 				} else if func.args.len() == 2 {
 					if func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
 						if func.equation_type != EquationType::None {
-							draw_implicit(
+							match draw_implicit(
 								tl_context,
 								plot_params,
 								entry.id,
@@ -483,10 +388,224 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 								},
 								&mut add_line,
 								&mut add_egui_plot_mesh,
-							)?;
+                  cancel_signal,
+							) {
+								Ok(finished) => {
+									if !finished {
+										return None;
+									}
+								},
+								Err(err) => return Some(Err(err)),
+							};
 						}
 					}
 				}
+			}
+		},
+	}
+	Some(Ok(draw_buffer))
+}
+pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
+	id: u64, ty: &EntryType<T>, name: &str, color: usize, sorting_idx: u32, selected_id: Option<Id>,
+	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut DrawBuffer,
+) -> Result<(), (u64, String)> {
+	let color = COLORS[color % NUM_COLORS];
+	// println!("step_size: {deriv_step_x}");
+	let egui_id = Id::new(id);
+
+	match ty {
+		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Function { .. } => {
+			unreachable!()
+		},
+		EntryType::Label { x, y, size, underline, .. } => {
+			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+
+			match eval_point(&mut stack, ctx, x.node.as_ref(), y.node.as_ref()) {
+				Ok(Some((x, y))) => {
+					let size = if let Some(size) = &size.node {
+						match size.eval_float_with_context(&mut stack, ctx) {
+							Ok(size) => size.to_f64() as f32,
+							Err(e) => {
+								return Err((id, e.to_string()));
+							},
+						}
+					} else {
+						12.0
+					};
+					let mut label_text = RichText::new(name.to_string()).size(size);
+					if *underline {
+						label_text = label_text.underline()
+					}
+
+					let text = Text::new(name.to_string(), PlotPoint { x, y }, label_text).color(color);
+
+					draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+				},
+				Err(e) => {
+					return Err((id, e));
+				},
+				_ => {},
+			}
+		},
+		EntryType::Points { points, style, .. } => {
+			// main_context
+			// 	.write()
+			// 	.unwrap()
+			// 	.set_value("x", evalexpr::Value::<T>::Float(T::ZERO))
+			// 	.unwrap();
+			let mut arrow_buffer = vec![];
+			let mut line_buffer = vec![];
+			let color_rgba = color.to_array();
+			let color_outer =
+				Color32::from_rgba_unmultiplied(color_rgba[0], color_rgba[1], color_rgba[1], 128);
+			let mut prev_point: Option<egui::Vec2> = None;
+			let arrow_scale = egui::Vec2::new(
+				(plot_params.last_x - plot_params.first_x) as f32,
+				(plot_params.last_y - plot_params.first_y) as f32,
+			) * 0.002;
+			let points_len = points.len();
+			let mut fill_mesh = if style.fill
+				&& points_len > 2
+				&& let Some(plot_trans) = &plot_params.prev_plot_transform
+			{
+				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+				Some((FillMesh::new(fill_color, style.fill_rule), plot_trans))
+			} else {
+				None
+			};
+			for (i, p) in points.iter().enumerate() {
+				if let Some((x, y)) = p.val {
+					let x = x.to_f64();
+					let y = y.to_f64();
+					let point_id = egui_id.with(i);
+					let selected = selected_id == Some(egui_id);
+					let radius = if selected { 6.5 } else { 4.5 };
+					let radius_outer = if selected { 12.5 } else { 7.5 };
+
+					if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
+						let screen_point = gpu_position_from_point(
+							plot_trans,
+							plot_params.invert_axes,
+							&PlotPoint::new(x, y),
+						);
+						fill_mesh.add_vertex(screen_point.x, screen_point.y);
+					}
+					if style.show_points || p.drag_point.is_some() {
+						draw_buffer.points.push(DrawPoint::new(
+							sorting_idx,
+							i as u32,
+							PointInteraction {
+								x,
+								y,
+								radius,
+								ty: PointInteractionType::Other(OtherPointType::Point),
+							},
+							Points::new(name.to_string(), [x, y]).color(color).radius(radius),
+						));
+						if p.drag_point.is_some() {
+							let selectable_point = PointInteraction {
+								ty: PointInteractionType::Draggable { i: (egui_id, i as u32) },
+								x,
+								y,
+								radius: radius_outer,
+							};
+							draw_buffer.points.push(DrawPoint::new(
+								sorting_idx,
+								i as u32,
+								selectable_point,
+								Points::new(name.to_string(), [x, y])
+									.id(point_id)
+									.color(color_outer)
+									.radius(radius_outer),
+							));
+						}
+					}
+					if let Some(label_config) = &style.label_config
+						&& i == points_len - 1
+						&& !name.trim().is_empty()
+					{
+						let size = label_config.size.size();
+						let mut label = RichText::new(name.to_string()).size(size);
+						if label_config.italic {
+							label = label.italics();
+						}
+
+						let dir = label_config.pos.dir();
+						let text = Text::new(
+							name.to_string(),
+							PlotPoint {
+								x: x + (dir.x * size * arrow_scale.x) as f64,
+								y: y + (dir.y * size * arrow_scale.y) as f64,
+							},
+							label,
+						)
+						.color(color);
+
+						draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+					}
+
+					if style.show_lines {
+						line_buffer.push([x, y]);
+						let cur_point = egui::Vec2::new(x as f32, y as f32);
+						if style.show_arrows
+							&& let Some(pp) = prev_point
+						{
+							let dir = (pp - cur_point).normalized();
+							let arrow_len = arrow_scale * radius_outer;
+							let base = cur_point + dir * arrow_len.length();
+							let a = base + dir.rot90() * arrow_len * 0.5;
+							let b = base - dir.rot90() * arrow_len * 0.5;
+
+							arrow_buffer.push(
+								Polygon::new(
+									"",
+									vec![[x, y], [a.x as f64, a.y as f64], [b.x as f64, b.y as f64]],
+								)
+								.fill_color(color)
+								.allow_hover(false)
+								.stroke(Stroke::new(0.0, color)),
+							);
+						}
+						prev_point = Some(cur_point);
+					}
+				}
+			}
+
+			// let width = if selected { 3.5 } else { 1.0 };
+			let width = 1.0;
+
+			if line_buffer.len() > 1 && style.show_lines {
+				if style.connect_first_and_last {
+					line_buffer.push(line_buffer[0]);
+				}
+				let line = Line::new(name.to_string(), line_buffer)
+					.color(color)
+					.id(egui_id)
+					.width(style.line_style.line_width)
+					.style(style.line_style.egui_line_style());
+				draw_buffer.lines.push(DrawLine::new(
+					sorting_idx,
+					egui_id,
+					width,
+					style.line_style.egui_line_style(),
+					line,
+				));
+				if !arrow_buffer.is_empty() {
+					draw_buffer.polygons.push(DrawPolygonGroup::new(
+						sorting_idx,
+						color,
+						Stroke::new(0.0, color),
+						arrow_buffer,
+					));
+				}
+				if let Some((fill_mesh, _)) = fill_mesh {
+					draw_buffer.meshes.push(DrawMesh {
+						sorting_index: sorting_idx,
+						ty:            DrawMeshType::FillMesh(fill_mesh),
+					});
+				}
+				// plot_ui.line(line);
 			}
 		},
 	}
@@ -524,7 +643,7 @@ enum SimpleFunctionType {
 fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
-) -> Result<(), Vec<(u64, String)>> {
+) -> Result<bool, (u64, String)> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
 	let mut prev_sampling_point: Option<(f64, f64)> = None;
@@ -546,7 +665,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		let value = match constant {
 			Value::Float(v) => v,
 			Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
-				return Ok(());
+				return Ok(true);
 			},
 		};
 		match TY {
@@ -662,16 +781,13 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					add_line(mem::take(&mut pp_buffer));
 				},
 				Ok(Value::Tuple(_) | Value::Float2(_, _)) => {
-					return Err(vec![(
-						id,
-						"Non-parametric function must return a single number.".to_string(),
-					)]);
+					return Err((id, "Non-parametric function must return a single number.".to_string()));
 				},
 				Ok(Value::Boolean(_)) => {
-					return Err(vec![(id, "Non-parametric function must return a number.".to_string())]);
+					return Err((id, "Non-parametric function must return a number.".to_string()));
 				},
 				Err(e) => {
-					return Err(vec![(id, e.to_string())]);
+					return Err((id, e.to_string()));
 				},
 			}
 
@@ -686,7 +802,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// println!("fn {} num points", pp_buffer.len());
 	add_line(pp_buffer);
 
-	Ok(())
+	Ok(true)
 }
 
 const P_CURVATURE_FACTOR_SCALE: f64 = 8.0;
@@ -706,25 +822,25 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, range_start: Option<&FlatNode<T>>, range_end: Option<&FlatNode<T>>,
 	mut add_line: impl FnMut(Vec<PlotPoint>, bool),
-) -> Result<(), Vec<(u64, String)>> {
+) -> Result<bool, (u64, String)> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
 	let (start, end) = match eval_point(&mut stack, ctx, range_start, range_end) {
 		Ok(Some((start, end))) => (start, end),
 		Err(e) => {
-			return Err(vec![(id, e)]);
+			return (Err((id, e)));
 		},
 		_ => {
-			return Ok(());
+			return Ok(true);
 		},
 	};
 	if start > end {
-		return Err(vec![(id, "Range start must be less than range end".to_string())]);
+		return Err((id, "Range start must be less than range end".to_string()));
 	}
 	let range = end - start;
 	let step = range / plot_params.resolution as f64;
 	if start + step == end {
-		return Ok(());
+		return Ok(true);
 	}
 
 	let plot_width = plot_params.last_x - plot_params.first_x;
@@ -745,7 +861,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// Determine function type from first evaluation
 	let first_value = match func.call(&mut stack, ctx, &[f64_to_value::<T>(start)]) {
 		Ok(v) => v,
-		Err(e) => return Err(vec![(id, e.to_string())]),
+		Err(e) => return Err((id, e.to_string())),
 	};
 
 	let is_float2 = matches!(first_value, Value::Float2(_, _));
@@ -826,7 +942,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			Some(p)
 		},
 		Ok(None) => None,
-		Err(e) => return Err(vec![(id, e)]),
+		Err(e) => return Err((id, e)),
 	};
 
 	let mut discontinuity_detector =
@@ -840,7 +956,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		let curr_arg = start + step * i as f64;
 		let curr_result = match eval_point_at(curr_arg) {
 			Ok(r) => r,
-			Err(e) => return Err(vec![(id, e)]),
+			Err(e) => return Err((id, e)),
 		};
 		let mut cur_angle = None;
 
@@ -951,7 +1067,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 									// NaN in the middle
 									add_line(mem::take(&mut pp_buffer), true);
 								},
-								Err(e) => return Err(vec![(id, e)]),
+								Err(e) => return Err((id, e)),
 							}
 						}
 					}
@@ -1005,7 +1121,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// 	);
 	// }
 	add_line(pp_buffer, false);
-	Ok(())
+	Ok(true)
 }
 #[allow(clippy::too_many_arguments)]
 fn draw_implicit<T: EvalexprFloat>(
@@ -1013,7 +1129,8 @@ fn draw_implicit<T: EvalexprFloat>(
 	resolution: usize, equation_type: EquationType, color: Color32,
 	call: impl Fn(&mut RefMut<Stack<T>>, f64, f64) -> Result<Value<T>, EvalexprError<T>> + Sync,
 	mut add_line: impl FnMut(Vec<PlotPoint>), mut add_mesh: impl FnMut(MeshBuilder),
-) -> Result<(), Vec<(u64, String)>> {
+  interrupt_signal: &AtomicBool,
+) -> Result<bool, (u64, String)> {
 	let mins = (plot_params.first_x, plot_params.first_y);
 	let maxs = (plot_params.last_x, plot_params.last_y);
 
@@ -1036,7 +1153,7 @@ fn draw_implicit<T: EvalexprFloat>(
 			draw_fill = Some(marching_squares::MarchingSquaresFill::Positive);
 		},
 		EquationType::None => {
-			return Ok(());
+			return Ok(true);
 		},
 	}
 
@@ -1048,7 +1165,7 @@ fn draw_implicit<T: EvalexprFloat>(
 		draw_fill,
 		fill_color: color,
 	};
-	for result in marching_squares::marching_squares(
+	let result = marching_squares::marching_squares(
 		params,
 		|cc: &mut RefMut<Stack<T>>, x, y| {
 			let value = call(cc, x, y);
@@ -1081,16 +1198,21 @@ fn draw_implicit<T: EvalexprFloat>(
 			tl_context.stack.borrow_mut()
 		},
 		&thread_local_get(tl_context).marching_squares_cache,
-	)
-	.map_err(|e| vec![(id, e)])?
-	{
+    interrupt_signal
+	);
+	let result = match result {
+		Some(Ok(result)) => result,
+		Some(Err(e)) => return Err((id, e)),
+		None => return Ok(false),
+	};
+	for result in result {
 		for line in result.lines {
 			add_line(line);
 		}
 		add_mesh(result.mesh);
 	}
 
-	Ok(())
+	Ok(true)
 }
 
 pub fn gpu_position_from_point(plot_trans: &PlotTransform, invert_axes: [bool; 2], point: &PlotPoint) -> Pos2 {

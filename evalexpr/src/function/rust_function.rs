@@ -25,7 +25,6 @@ where
 
 /// A user-defined function.
 /// Functions can be used in expressions by storing them in a `Context`.
-///
 pub struct RustFunction<F: EvalexprFloat> {
 	function: Box<dyn ClonableFn<F>>,
 }

@@ -8,8 +8,7 @@
 //! evalexpr = "<desired version>"
 //! ```
 //!
-//! Then you can use `evalexpr` to **evaluate expressions** 
-//!
+//! Then you can use `evalexpr` to **evaluate expressions**
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
@@ -53,4 +52,3 @@ mod math;
 mod token;
 mod tree;
 mod value;
-

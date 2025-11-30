@@ -396,20 +396,40 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 				ops.push(FlatOperator::FunctionCall { identifier, arg_num: into_u32(len)? });
 			}
 		},
-		Operator::DotAccess { identifier } => {
-			let child = extract_one_node(node.children)?;
-			compile_to_flat_inner(child, ops)?;
+		Operator::DotAccess => {
+			let [receiver, field] = extract_two_nodes(node.children)?;
+			compile_to_flat_inner(receiver, ops)?;
 
-			match identifier.to_str() {
-				"x" | "X" => ops.push(FlatOperator::AccessX),
-				"y" | "Y" => ops.push(FlatOperator::AccessY),
-				maybe_index => {
-					let index = maybe_index
-						.parse::<u32>()
-						.map_err(|_| EvalexprError::CustomMessage(format!("Unknown field {identifier}")))?;
-					ops.push(FlatOperator::AccessIndex { index });
+			match &field.operator {
+				Operator::VariableIdentifierRead { identifier } => match identifier.to_str() {
+					"x" | "X" => {
+						ops.push(FlatOperator::AccessX);
+
+						return Ok(());
+					},
+					"y" | "Y" => {
+						ops.push(FlatOperator::AccessY);
+						return Ok(());
+					},
+					_ => {
+						// If we dont error here, behavior would be confusing as t.z would read the value of z
+						// and index by it.
+						return Err(EvalexprError::CustomMessage(format!("Unknown field {identifier}")));
+					},
 				},
+				Operator::Const { value } =>
+				{
+					#[allow(clippy::collapsible_match)]
+					if let Value::Float(float) = value {
+						ops.push(FlatOperator::AccessIndex { index: float.to_usize()? as u32 });
+						return Ok(());
+					}
+				},
+				_ => {},
 			}
+
+			compile_to_flat_inner(field, ops)?;
+			ops.push(FlatOperator::Access);
 		},
 	}
 

@@ -11,8 +11,12 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelI
 use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
-use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
-use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries};
+use crate::draw_buffer::{
+	DrawMeshType, PointInteraction, PointInteractionType, ProcessedShape, process_draw_buffers
+};
+use crate::entry::{
+	self, Entry, EntryType, point_dragging, prepare_entries, schedule_entry_create_plot_elements
+};
 use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::{AppConfig, State, UiState, persistence, scope};
 
@@ -30,7 +34,7 @@ fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 
 pub fn side_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
-) {
+) -> bool {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	{
 		ui_state.full_frame_scope.take();
@@ -39,307 +43,359 @@ pub fn side_panel<T: EvalexprFloat>(
 	}
 
 	scope!("side_panel");
-	SidePanel::left("left_panel").default_width(200.0).show(ctx, |ui| {
-		ScrollArea::vertical().show(ui, |ui| {
-			ui.add_space(10.0);
-			ui.horizontal_top(|ui| {
-				ui.heading("Rust Graph");
-				if ui
-					.button(if ui_state.conf.dark_mode { "🌙" } else { "☀" })
-					.on_hover_text("Toggle Dark Mode")
-					.clicked()
-				{
-					ui_state.conf.dark_mode = !ui_state.conf.dark_mode;
-				}
-			});
+	let changed = SidePanel::left("left_panel")
+		.default_width(200.0)
+		.show(ctx, |ui| {
+			ScrollArea::vertical()
+				.show(ui, |ui| {
+					ui.add_space(10.0);
+					ui.horizontal_top(|ui| {
+						ui.heading("Rust Graph");
+						if ui
+							.button(if ui_state.conf.dark_mode { "🌙" } else { "☀" })
+							.on_hover_text("Toggle Dark Mode")
+							.clicked()
+						{
+							ui_state.conf.dark_mode = !ui_state.conf.dark_mode;
+						}
+					});
 
-			ui.separator();
+					ui.separator();
 
-			let mut needs_recompilation = false;
+					let mut needs_recompilation = false;
 
-			ui.horizontal_top(|ui| {
-				if add_new_entry_btn(ui, "New entry", &mut ui_state.next_id, &mut state.entries, true) {
-					needs_recompilation = true;
-				}
+					ui.horizontal_top(|ui| {
+						if add_new_entry_btn(ui, "New entry", &mut ui_state.next_id, &mut state.entries, true)
+						{
+							needs_recompilation = true;
+						}
 
-				if ui.button("❌ Remove all").on_hover_text("Remove all entries").clicked() {
-					state.entries.clear();
-					state.clear_cache = true;
-				}
-			});
+						if ui.button("❌ Remove all").on_hover_text("Remove all entries").clicked() {
+							state.entries.clear();
+							state.clear_cache = true;
+						}
+					});
 
-			ui.add_space(4.5);
+					ui.add_space(4.5);
 
-			fn entry_frame(ui: &mut egui::Ui, is_dark_mode: bool, cb: impl FnOnce(&mut egui::Ui)) {
-				let border_color = if is_dark_mode { Color32::from_gray(56) } else { Color32::from_gray(220) };
-				let bg_color = if is_dark_mode { Color32::from_gray(32) } else { Color32::from_gray(240) };
-				let shadow = egui::Shadow {
-					offset: [0, 0],
-					blur:   4,
-					spread: 0,
-					color:  if is_dark_mode { Color32::from_gray(65) } else { Color32::from_gray(195) },
-				};
+					fn entry_frame(ui: &mut egui::Ui, is_dark_mode: bool, cb: impl FnOnce(&mut egui::Ui)) {
+						let border_color =
+							if is_dark_mode { Color32::from_gray(56) } else { Color32::from_gray(220) };
+						let bg_color =
+							if is_dark_mode { Color32::from_gray(32) } else { Color32::from_gray(240) };
+						let shadow = egui::Shadow {
+							offset: [0, 0],
+							blur:   4,
+							spread: 0,
+							color:  if is_dark_mode {
+								Color32::from_gray(65)
+							} else {
+								Color32::from_gray(195)
+							},
+						};
 
-				egui::Frame::new()
-					.inner_margin(4.0)
-					.fill(bg_color)
-					.shadow(shadow)
-					.corner_radius(4.0)
-					.stroke(Stroke::new(1.0, border_color))
-					.show(ui, cb);
-			}
+						egui::Frame::new()
+							.inner_margin(4.0)
+							.fill(bg_color)
+							.shadow(shadow)
+							.corner_radius(4.0)
+							.stroke(Stroke::new(1.0, border_color))
+							.show(ui, cb);
+					}
 
-			let mut remove = None;
-			let mut duplicate = None;
-			let mut animating = false;
-			// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
-			egui_dnd::dnd(ui, "entries_dnd").show_vec(&mut state.entries, |ui, entry, handle, _state| {
-				entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
-					let symbol = entry.symbol();
-					if let EntryType::Folder { entries } = &mut entry.ty {
-						ui.vertical(|ui| {
-							ui.horizontal(|ui| {
-								handle.ui(ui, |ui| {
-									ui.label("||").on_hover_text("Drag to reorder entries");
-								});
-								if ui
-									.add(
-										Button::new(RichText::new(symbol).strong().monospace())
-											.corner_radius(10),
-									)
-									.on_hover_text(if entry.active { "Close folder" } else { "Open Folder" })
-									.clicked()
-								{
-									entry.active = !entry.active;
-								}
+					let mut remove = None;
+					let mut duplicate = None;
+					let mut animating = false;
+          let mut needs_redraw = false;
+					// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
+					egui_dnd::dnd(ui, "entries_dnd").show_vec(
+						&mut state.entries,
+						|ui, entry, handle, _state| {
+							entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+								let symbol = entry.symbol();
+								if let EntryType::Folder { entries } = &mut entry.ty {
+									ui.vertical(|ui| {
+										ui.horizontal(|ui| {
+											handle.ui(ui, |ui| {
+												ui.label("||").on_hover_text("Drag to reorder entries");
+											});
+											if ui
+												.add(
+													Button::new(RichText::new(symbol).strong().monospace())
+														.corner_radius(10),
+												)
+												.on_hover_text(if entry.active {
+													"Close folder"
+												} else {
+													"Open Folder"
+												})
+												.clicked()
+											{
+												entry.active = !entry.active;
+											}
 
-								ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
-									if entries.is_empty() {
-										if remove_entry_btn(ui, "Folder") {
-											remove = Some(entry.id);
+											ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
+												if entries.is_empty() {
+													if remove_entry_btn(ui, "Folder") {
+														remove = Some(entry.id);
+													}
+												}
+												if duplicate_entry_btn(ui, "Folder") {
+													duplicate = Some(entry.id);
+												}
+												if add_new_entry_btn(
+													ui, "", &mut ui_state.next_id, entries, false,
+												) {
+													needs_recompilation = true;
+												}
+												ui.add(
+													TextEdit::multiline(&mut entry.name)
+														.hint_text("name")
+														.desired_rows(1)
+														.desired_width(ui.available_width()),
+												)
+												.changed();
+											});
+										});
+										if !entry.active {
+											return;
 										}
-									}
-									if duplicate_entry_btn(ui, "Folder") {
-										duplicate = Some(entry.id);
-									}
-									if add_new_entry_btn(ui, "", &mut ui_state.next_id, entries, false) {
-										needs_recompilation = true;
-									}
-									ui.add(
-										TextEdit::multiline(&mut entry.name)
-											.hint_text("name")
-											.desired_rows(1)
-											.desired_width(ui.available_width()),
-									)
-									.changed();
-								});
-							});
-							if !entry.active {
-								return;
-							}
-							let mut remove_from_folder = None;
-							let mut duplicate_in_folder = None;
+										let mut remove_from_folder = None;
+										let mut duplicate_in_folder = None;
 
-							egui_dnd::dnd(ui, entry.id).show_vec(entries, |ui, entry, handle, _state| {
-								entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+										egui_dnd::dnd(ui, entry.id).show_vec(
+											entries,
+											|ui, entry, handle, _state| {
+												entry_frame(
+													ui,
+													ui_state.conf.dark_mode,
+													|ui: &mut egui::Ui| {
+														ui.horizontal(|ui| {
+															handle.ui(ui, |ui| {
+																ui.label("    |")
+																	.on_hover_text("Drag to reorder entries");
+															});
+															ui.horizontal(|ui| {
+																let fe_result = entry::entry_ui(
+																	ui, &state.ctx, entry, state.clear_cache,
+																);
+																if fe_result.remove {
+																	remove_from_folder = Some(entry.id);
+																}
+																if fe_result.duplicate {
+																	duplicate_in_folder = Some(entry.id);
+																}
+                                needs_redraw |= fe_result.needs_redraw;
+																animating |= fe_result.animating;
+																needs_recompilation |=
+																	fe_result.needs_recompilation;
+																if let Some(error) = fe_result.error {
+																	ui_state
+																		.parsing_errors
+																		.insert(entry.id, error);
+																} else if fe_result.parsed {
+																	ui_state.parsing_errors.remove(&entry.id);
+																}
+															});
+														});
+														display_entry_errors(ui, ui_state, entry.id);
+													},
+												);
+											},
+										);
+										if add_new_entry_btn(
+											ui, "New Folder Entry", &mut ui_state.next_id, entries, false,
+										) {
+											needs_recompilation = true;
+										}
+										if let Some(id) = remove_from_folder {
+											if let Some(index) = entries.iter().position(|e| e.id == id) {
+												entries.remove(index);
+											}
+										} else if let Some(id) = duplicate_in_folder {
+											duplicate_entry(id, &mut ui_state.next_id, entries);
+										}
+									});
+								} else {
 									ui.horizontal(|ui| {
 										handle.ui(ui, |ui| {
-											ui.label("    |").on_hover_text("Drag to reorder entries");
+											ui.label("||").on_hover_text("Drag to reorder entries");
 										});
 										ui.horizontal(|ui| {
-											let fe_result =
+											let result =
 												entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
-											if fe_result.remove {
-												remove_from_folder = Some(entry.id);
+											if result.remove {
+												remove = Some(entry.id);
 											}
-											if fe_result.duplicate {
-												duplicate_in_folder = Some(entry.id);
+											if result.duplicate {
+												duplicate = Some(entry.id);
 											}
-											animating |= fe_result.animating;
-											needs_recompilation |= fe_result.needs_recompilation;
-											if let Some(error) = fe_result.error {
+                      needs_redraw |= result.needs_redraw;
+											animating |= result.animating;
+											needs_recompilation |= result.needs_recompilation;
+
+											if let Some(error) = result.error {
 												ui_state.parsing_errors.insert(entry.id, error);
-											} else if fe_result.parsed {
+											} else if result.parsed {
 												ui_state.parsing_errors.remove(&entry.id);
 											}
 										});
 									});
-									display_entry_errors(ui, ui_state, entry.id);
+								}
+								display_entry_errors(ui, ui_state, entry.id);
+							});
+						},
+					);
+					if add_new_entry_btn(ui, "New Entry", &mut ui_state.next_id, &mut state.entries, true) {
+						needs_recompilation = true;
+					}
+
+					if let Some(id) = remove {
+						if let Some(index) = state.entries.iter().position(|e| e.id == id) {
+							state.entries.remove(index);
+						}
+					} else if let Some(id) = duplicate {
+						duplicate_entry(id, &mut ui_state.next_id, &mut state.entries);
+					}
+					ui.separator();
+
+					#[cfg(not(target_arch = "wasm32"))]
+					ui.hyperlink_to("View Online", {
+						let mut base_url = "https://rust-graph.netlify.app/".to_string();
+						base_url.push_str(ui_state.permalink_string.as_str());
+
+						base_url
+					});
+					ui.separator();
+
+					CollapsingHeader::new("Settings").default_open(true).show(ui, |ui| {
+						ui.separator();
+						ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
+
+						ui.separator();
+						ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=2000).text("Point Resolution"));
+
+						ui.separator();
+						ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
+
+						ui.separator();
+						#[cfg(not(target_arch = "wasm32"))]
+						if ui.button("Toggle Fullscreen").clicked()
+							|| ui.input(|i| i.key_pressed(egui::Key::F11))
+							|| ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter))
+						{
+							ui_state.conf.fullscreen = !ui_state.conf.fullscreen;
+							ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+								ui_state.conf.fullscreen,
+							));
+						}
+
+						if ui
+							.button(format!("{} Help", if ui_state.showing_help { "📖" } else { "📚" }))
+							.clicked()
+						{
+							ui_state.showing_help = !ui_state.showing_help;
+						}
+						if ui_state.showing_help {
+							Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
+								ScrollArea::vertical().show(ui, |ui| {
+									show_builtin_information(ui);
 								});
 							});
-							if add_new_entry_btn(ui, "New Folder Entry", &mut ui_state.next_id, entries, false)
-							{
-								needs_recompilation = true;
-							}
-							if let Some(id) = remove_from_folder {
-								if let Some(index) = entries.iter().position(|e| e.id == id) {
-									entries.remove(index);
-								}
-							} else if let Some(id) = duplicate_in_folder {
-								duplicate_entry(id, &mut ui_state.next_id, entries);
-							}
-						});
-					} else {
-						ui.horizontal(|ui| {
-							handle.ui(ui, |ui| {
-								ui.label("||").on_hover_text("Drag to reorder entries");
-							});
-							ui.horizontal(|ui| {
-								let result = entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
-								if result.remove {
-									remove = Some(entry.id);
-								}
-								if result.duplicate {
-									duplicate = Some(entry.id);
-								}
-								animating |= result.animating;
-								needs_recompilation |= result.needs_recompilation;
-
-								if let Some(error) = result.error {
-									ui_state.parsing_errors.insert(entry.id, error);
-								} else if result.parsed {
-									ui_state.parsing_errors.remove(&entry.id);
-								}
-							});
-						});
-					}
-					display_entry_errors(ui, ui_state, entry.id);
-				});
-			});
-			if add_new_entry_btn(ui, "New Entry", &mut ui_state.next_id, &mut state.entries, true) {
-				needs_recompilation = true;
-			}
-
-			if let Some(id) = remove {
-				if let Some(index) = state.entries.iter().position(|e| e.id == id) {
-					state.entries.remove(index);
-				}
-			} else if let Some(id) = duplicate {
-				duplicate_entry(id, &mut ui_state.next_id, &mut state.entries);
-			}
-			ui.separator();
-
-			#[cfg(not(target_arch = "wasm32"))]
-			ui.hyperlink_to("View Online", {
-				let mut base_url = "https://rust-graph.netlify.app/".to_string();
-				base_url.push_str(ui_state.permalink_string.as_str());
-
-				base_url
-			});
-			ui.separator();
-
-			CollapsingHeader::new("Settings").default_open(true).show(ui, |ui| {
-				ui.separator();
-				ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
-
-				ui.separator();
-				ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=2000).text("Point Resolution"));
-
-				ui.separator();
-				ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
-
-				ui.separator();
-				#[cfg(not(target_arch = "wasm32"))]
-				if ui.button("Toggle Fullscreen").clicked()
-					|| ui.input(|i| i.key_pressed(egui::Key::F11))
-					|| ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter))
-				{
-					ui_state.conf.fullscreen = !ui_state.conf.fullscreen;
-					ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(ui_state.conf.fullscreen));
-				}
-
-				if ui.button(format!("{} Help", if ui_state.showing_help { "📖" } else { "📚" })).clicked()
-				{
-					ui_state.showing_help = !ui_state.showing_help;
-				}
-				if ui_state.showing_help {
-					Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
-						ScrollArea::vertical().show(ui, |ui| {
-							show_builtin_information(ui);
-						});
+						}
 					});
-				}
-			});
 
-			ui.separator();
-			#[cfg(target_arch = "wasm32")]
-			const PERSISTANCE_TYPE: &str = "Local Storage";
-			#[cfg(not(target_arch = "wasm32"))]
-			const PERSISTANCE_TYPE: &str = "Persistence";
-			CollapsingHeader::new(PERSISTANCE_TYPE).default_open(true).show(ui, |ui| {
-				persistence::persistence_ui(state, ui_state, ui, frame);
-			});
-
-			if let Some(error) = &ui_state.serialization_error {
-				if ui.label(RichText::new(error).color(Color32::RED)).clicked() {
-					ui_state.serialization_error = None;
-				}
-			}
-
-			ui.separator();
-			ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
-
-			if needs_recompilation || state.clear_cache {
-				scope!("prepare_entries");
-				// state.points_cache.clear();
-				match persistence::serialize_to_url(&state.entries, ui_state.graph_config.clone()) {
-					Ok(output) => {
-						// let mut data_str = String::with_capacity(output.len() + 1);
-						// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
-						let mut permalink_string = String::with_capacity(output.len() + 1);
-						permalink_string.push('#');
-						permalink_string.push_str(&output);
-						ui_state.permalink_string = permalink_string;
-						ui_state.scheduled_url_update = true;
-					},
-					Err(e) => {
-						println!("Error: {e}");
-					},
-				}
-
-				state.ctx.clear();
-				init_builtins::<T>(&mut state.ctx);
-
-				// state.context_stash.lock().unwrap().clear();
-
-				prepare_entries(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
-			} else if animating {
-				scope!("prepare_constants");
-				state.ctx.clear();
-				init_builtins::<T>(&mut state.ctx);
-				entry::prepare_constants(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
-			}
-			if needs_recompilation || state.clear_cache || animating {
-				entry::optimize_entries(&mut state.entries, &mut state.ctx, &mut ui_state.optimization_errors);
-			}
-			state.clear_cache = false;
-
-			if ui_state.scheduled_url_update {
-				let time = ui.input(|i| i.time);
-
-				if time - 1.0 > ui_state.last_url_update {
-					ui_state.last_url_update = time;
-					ui_state.scheduled_url_update = false;
-
+					ui.separator();
 					#[cfg(target_arch = "wasm32")]
-					{
-						use eframe::wasm_bindgen::prelude::*;
-						let history = web_sys::window()
-							.expect("Couldn't get window")
-							.history()
-							.expect("Couldn't get window.history");
-						history
-							.push_state_with_url(&JsValue::NULL, "", Some(&ui_state.permalink_string))
-							.unwrap();
+					const PERSISTANCE_TYPE: &str = "Local Storage";
+					#[cfg(not(target_arch = "wasm32"))]
+					const PERSISTANCE_TYPE: &str = "Persistence";
+					CollapsingHeader::new(PERSISTANCE_TYPE).default_open(true).show(ui, |ui| {
+						persistence::persistence_ui(state, ui_state, ui, frame);
+					});
+
+					if let Some(error) = &ui_state.serialization_error {
+						if ui.label(RichText::new(error).color(Color32::RED)).clicked() {
+							ui_state.serialization_error = None;
+						}
 					}
-				}
-			}
-		});
-	});
+
+					ui.separator();
+					ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
+
+					if needs_recompilation || state.clear_cache {
+						scope!("prepare_entries");
+						// state.points_cache.clear();
+						match persistence::serialize_to_url(&state.entries, ui_state.graph_config.clone()) {
+							Ok(output) => {
+								// let mut data_str = String::with_capacity(output.len() + 1);
+								// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
+								let mut permalink_string = String::with_capacity(output.len() + 1);
+								permalink_string.push('#');
+								permalink_string.push_str(&output);
+								ui_state.permalink_string = permalink_string;
+								ui_state.scheduled_url_update = true;
+							},
+							Err(e) => {
+								println!("Error: {e}");
+							},
+						}
+
+						state.ctx.clear();
+						init_builtins::<T>(&mut state.ctx);
+
+						// state.context_stash.lock().unwrap().clear();
+
+						prepare_entries(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
+					} else if animating {
+						scope!("prepare_constants");
+						state.ctx.clear();
+						init_builtins::<T>(&mut state.ctx);
+						entry::prepare_constants(
+							&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors,
+						);
+					}
+					let changed_any = needs_recompilation || state.clear_cache || animating ;
+					if changed_any {
+						entry::optimize_entries(
+							&mut state.entries,
+							&mut state.ctx,
+							&mut ui_state.optimization_errors,
+						);
+					}
+
+					state.clear_cache = false;
+
+					if ui_state.scheduled_url_update {
+						let time = ui.input(|i| i.time);
+
+						if time - 1.0 > ui_state.last_url_update {
+							ui_state.last_url_update = time;
+							ui_state.scheduled_url_update = false;
+
+							#[cfg(target_arch = "wasm32")]
+							{
+								use eframe::wasm_bindgen::prelude::*;
+								let history = web_sys::window()
+									.expect("Couldn't get window")
+									.history()
+									.expect("Couldn't get window.history");
+								history
+									.push_state_with_url(&JsValue::NULL, "", Some(&ui_state.permalink_string))
+									.unwrap();
+							}
+						}
+					}
+					changed_any || needs_redraw
+				})
+				.inner
+		})
+		.inner;
 	ui_state.eval_errors.clear();
+	changed
 }
 pub fn graph_panel<T: EvalexprFloat>(
-	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame,
+	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame, changed: bool,
 ) {
 	let first_x = ui_state.plot_bounds.min()[0];
 	let last_x = ui_state.plot_bounds.max()[0];
@@ -373,33 +429,13 @@ pub fn graph_panel<T: EvalexprFloat>(
 		step_size_y,
 		resolution: ui_state.conf.resolution,
 		prev_plot_transform: ui_state.prev_plot_transform,
-    invert_axes: ui_state.graph_config.invert_axes
+		invert_axes: ui_state.graph_config.invert_axes,
 	};
 
-	let main_context = &state.ctx;
 	scope!("graph");
 
-	let eval_errors = Mutex::new(&mut ui_state.eval_errors);
-
-	state.entries.par_iter_mut().enumerate().for_each(|(i, entry)| {
-		scope!("entry_draw", entry.name.clone());
-
-		let id = Id::new(entry.id);
-		if let Err(errors) = entry::entry_create_plot_elements(
-			entry,
-			id,
-			i as u32 * 1000,
-			ui_state.selected_plot_line.map(|(id, _)| id),
-			main_context,
-			&plot_params,
-			&ui_state.draw_buffers,
-			&state.thread_local_context,
-		) {
-			for (id, error) in errors {
-				eval_errors.lock().unwrap().insert(id, error);
-			}
-		}
-	});
+	// TODO: this is not enough for changedete4ction.
+	// we need resolution, invert_axes too!
 
 	let mouse_pos_in_graph =
 		if let (Some(pos), Some(trans)) = (ui_state.plot_mouese_pos, ui_state.prev_plot_transform) {
@@ -409,18 +445,89 @@ pub fn graph_panel<T: EvalexprFloat>(
 			None
 		};
 
-	let mut p_draw_buffer = process_draw_buffers(
-		ui_state.draw_buffers.as_mut(),
-		ui_state.selected_plot_line,
-		mouse_pos_in_graph,
-		&plot_params,
-	);
-
 	egui::CentralPanel::default().show(ctx, |ui| {
+		let mut received_new = false;
+		{
+			scope!("receive_draw_buffers");
+			for entry in state.entries.iter_mut() {
+				match &mut entry.ty {
+					EntryType::Folder { entries } => {
+						for entry in entries.iter_mut() {
+							if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
+								received_new = true;
+								match received {
+									Ok(()) => {},
+									Err((id, error)) => {
+										ui_state.eval_errors.insert(id, error);
+									},
+								}
+							}
+						}
+					},
+					_ => {
+						if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
+							received_new = true;
+							match received {
+								Ok(()) => {},
+								Err((id, error)) => {
+									ui_state.eval_errors.insert(id, error);
+								},
+							}
+						}
+					},
+				}
+			}
+		}
+		if ui_state.force_create_elements || changed || ui_state.reset_graph {
+			scope!("schedule_entry_create_plot_elements");
+			for (i, entry) in state.entries.iter_mut().enumerate() {
+				let main_context = &state.ctx;
+				schedule_entry_create_plot_elements(
+					entry,
+					i as u32 * 1000,
+					ui_state.selected_plot_line.map(|(id, _)| id),
+					main_context,
+					&plot_params,
+					&state.thread_local_context,
+				);
+			}
+		}
+		if ui_state.force_create_elements
+			|| changed
+			|| received_new
+			|| ui_state.reset_graph
+			|| ui_state.force_process_elements
+		{
+			scope!("process_draw_buffers");
+			ui_state.processed_shapess.process(
+				ui,
+				&mut state.entries,
+				&plot_params,
+				&mut ui_state.eval_errors,
+				ui_state.selected_plot_line.map(|(id, _)| id),
+			);
+			ui.ctx().request_repaint();
+			// println!(
+			// 	"REQUEST REPAIN {} {changed} {received_new} {} {}",
+			// 	ui_state.force_process_elements, ui_state.reset_graph, ui_state.force_create_elements,
+			// );
+		}
+		ui_state.force_process_elements = false;
+		ui_state.force_create_elements = false;
+
+		let p_draw_buffer = {
+			scope!("process_draw_buffers");
+			process_draw_buffers(
+				&state.entries, ui_state.selected_plot_line, mouse_pos_in_graph, &plot_params,
+				&mut ui_state.eval_errors, &mut ui_state.draw_buffers,
+			)
+		};
+
 		let plot_id = ui.make_persistent_id("Plot");
 		let mut plot = Plot::new(plot_id).id(plot_id).legend(Legend::default().text_style(TextStyle::Body));
 
 		if ui_state.reset_graph {
+			ui_state.force_create_elements = true;
 			ui_state.reset_graph = false;
 			ui_state.graph_config = state.saved_graph_config.clone();
 		}
@@ -429,7 +536,8 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let view_aspect = available_size.x as f64 / available_size.y as f64;
 		let calcd_bounds = ui_state.graph_config.graph_plot_bounds.calc_plot_bounds(view_aspect);
 
-		let can_drag = ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse.is_none();
+		let can_drag =
+			ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse_on_selected.is_none();
 		let mut allow_drag = ui_state.graph_config.allow_scroll;
 		allow_drag[0] &= can_drag;
 		allow_drag[1] &= can_drag;
@@ -453,7 +561,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			.default_x_bounds(calcd_bounds.min()[0], calcd_bounds.max()[0])
 			.default_y_bounds(calcd_bounds.min()[1], calcd_bounds.max()[1]);
 
-		if ui_state.showing_custom_label || p_draw_buffer.closest_point_to_mouse.is_some() {
+		if ui_state.showing_custom_label || p_draw_buffer.closest_point_to_mouse_on_selected.is_some() {
 			// plot = plot.label_formatter(|_, _| String::new());
 			plot = plot.show_x(false);
 			plot = plot.show_y(false);
@@ -472,11 +580,12 @@ pub fn graph_panel<T: EvalexprFloat>(
 			let draw_frame = prev_plot_transform.frame();
 
 			let size = draw_frame.size();
-			for mesh in p_draw_buffer.draw_meshes.iter_mut() {
+			for mesh in ui_state.processed_shapess.draw_meshes.iter_mut() {
 				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
 					if fill_mesh.vertices.len() > 2 {
 						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
-							render_state, &fill_mesh.vertices,&fill_mesh.indices, fill_mesh.color,fill_mesh.fill_rule, size.x, size.y,
+							render_state, &fill_mesh.vertices, &fill_mesh.indices, fill_mesh.color,
+							fill_mesh.fill_rule, size.x, size.y,
 						));
 					}
 				}
@@ -490,10 +599,11 @@ pub fn graph_panel<T: EvalexprFloat>(
 			scope!("graph_show");
 			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
-			for mesh in p_draw_buffer.draw_meshes {
-				match mesh.ty {
+			for mesh in ui_state.processed_shapess.draw_meshes.iter() {
+				match &mesh.ty {
 					DrawMeshType::EguiPlotMesh(mesh) => {
-						plot_ui.add(mesh);
+						// TODO: we can have processed mesh instead, and keep it as Arc
+						plot_ui.add(mesh.clone());
 					},
 					DrawMeshType::FillMesh(fill_mesh) => {
 						if let Some(texture_id) = fill_mesh.texture_id {
@@ -511,20 +621,23 @@ pub fn graph_panel<T: EvalexprFloat>(
 						}
 					},
 				}
-				// plot_ui.mesh(mesh.mesh);
 			}
-			// if let Some(tex_id) = tex_id {
-			// 	plot_ui.image(PlotImage::new("bla", tex_id, PlotPoint::new(0.0, 0.0), [2.0, 2.0]));
-			// }
-			for draw_poly_group in p_draw_buffer.draw_polygons {
-				for poly in draw_poly_group.polygons {
+			for draw_poly_group in ui_state.processed_shapess.draw_polygons.iter() {
+				for poly in draw_poly_group.clone().polygons {
 					plot_ui.polygon(poly);
 				}
 			}
-			for draw_line in p_draw_buffer.draw_lines {
-				plot_ui.line(draw_line.line);
+			// for draw_line in p_draw_buffer.draw_lines {
+			// 	plot_ui.line(draw_line.line);
+			// }
+			for line in ui_state.processed_shapess.lines.iter() {
+				plot_ui.add(line.clone());
 			}
-			for draw_point in p_draw_buffer.draw_points {
+			for draw_point in p_draw_buffer
+				.draw_points
+				.into_iter()
+				.chain(ui_state.processed_shapess.draw_points.iter().cloned())
+			{
 				if let Some(mouse_pos) = ui_state.plot_mouese_pos {
 					let transform = ui_state.prev_plot_transform.as_ref().unwrap();
 					let sel = &draw_point.interaction;
@@ -544,8 +657,8 @@ pub fn graph_panel<T: EvalexprFloat>(
 				}
 				plot_ui.points(draw_point.points);
 			}
-			for draw_text in p_draw_buffer.draw_texts {
-				plot_ui.text(draw_text.text);
+			for draw_text in ui_state.processed_shapess.draw_texts.iter() {
+				plot_ui.text(draw_text.text.clone());
 			}
 		});
 
@@ -563,7 +676,9 @@ pub fn graph_panel<T: EvalexprFloat>(
 			ui_state.reset_graph = true;
 		}
 
-		ui_state.graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect);
+		if ui_state.graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect) {
+			ui_state.force_create_elements = true;
+		}
 
 		if ui_state.plot_bounds != *plot_res.transform.bounds() {
 			ui.ctx().request_repaint();
@@ -578,7 +693,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			&plot_res,
 			&mut ui_state.dragging_point_i,
 			hovered_point.as_ref(),
-			&plot_params
+			&plot_params,
 		) {
 			state.clear_cache = true;
 			ui_state.showing_custom_label = true;
@@ -597,7 +712,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			);
 		}
 
-		if let Some((closest_point, _dist_sq)) = p_draw_buffer.closest_point_to_mouse {
+		if let Some((closest_point, _dist_sq)) = p_draw_buffer.closest_point_to_mouse_on_selected {
 			let screen_x = plot_res.transform.position_from_point_x(closest_point.0);
 			let screen_y = plot_res.transform.position_from_point_y(closest_point.1);
 			ui_state.showing_custom_label = true;
@@ -632,7 +747,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			);
 		}
 
-		if let Some(hovered_id) = plot_res.hovered_plot_item {
+		if let Some(hovered_id) = plot_res.hovered_plot_item.or_else(|| p_draw_buffer.hovered_id) {
 			if plot_res.response.clicked()
 				|| plot_res.response.drag_started()
 				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
@@ -643,6 +758,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 					_ => false,
 				}) {
 					ui_state.selected_plot_line = Some((hovered_id, true));
+					ui_state.force_process_elements = true;
 				}
 			}
 		} else {
@@ -650,6 +766,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				if let Some(selected_plot_line) = &mut ui_state.selected_plot_line {
 					if !selected_plot_line.1 {
 						ui_state.selected_plot_line = None;
+						ui_state.force_process_elements = true;
 					}
 				}
 			}
@@ -730,7 +847,8 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 	needs_recompilation
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+fn default_true() -> bool { true }
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct GraphPlotBounds {
 	pub center:      [f64; 2],
 	pub h_size:      f64,
@@ -747,7 +865,9 @@ impl GraphPlotBounds {
 		PlotBounds::from_min_max(min_bounds, max_bounds)
 	}
 
-	pub fn update(&mut self, plot_transform: &PlotTransform, view_aspect: f64) {
+	pub fn update(&mut self, plot_transform: &PlotTransform, view_aspect: f64) -> bool {
+		let prev = self.clone();
+
 		let graph_bounds = plot_transform.bounds();
 		self.center[0] = graph_bounds.center().x;
 		self.center[1] = graph_bounds.center().y;
@@ -760,6 +880,8 @@ impl GraphPlotBounds {
 		// 	graph_bounds.width() / graph_bounds.height()
 		// );
 		self.data_aspect = (graph_bounds.width() / graph_bounds.height()) / view_aspect;
+
+		self != &prev
 	}
 }
 

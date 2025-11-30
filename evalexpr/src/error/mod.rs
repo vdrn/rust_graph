@@ -13,7 +13,6 @@ use crate::value::numeric_types::default_numeric_types::DefaultNumericTypes;
 use crate::value::value_type::ValueType;
 use crate::EvalexprFloat;
 
-use crate::tree::Operator;
 use crate::value::Value;
 
 // Exclude error display code from test coverage, as the code does not make sense to test.
@@ -24,19 +23,19 @@ mod display;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
-  /// The tuple lengths do not match
-  TuplesMismatchedLengths{
-    /// The length of the left tuple
-    left: u32,
-    /// The length of the right tuple
-    right: u32,
-  },
+	/// The tuple lengths do not match
+	TuplesMismatchedLengths {
+		/// The length of the left tuple
+		left:  u32,
+		/// The length of the right tuple
+		right: u32,
+	},
 	/// The index is out of bounds
 	InvalidIndex {
 		/// The index that was out of bounds
 		index: u32,
-    /// Number of elements
-    len: u32,
+		/// Number of elements
+		len:   u32,
 	},
 	/// The stack overflowed.
 	StackOverflow,

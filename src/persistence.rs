@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_ui::GraphConfig;
 use crate::custom_rendering::FillRule;
+use crate::draw_buffer::DrawBufferScheduler;
 use crate::entry::{
 	EquationType, Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
 };
@@ -250,6 +251,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 			id:     *id,
 			active: entry.visible,
 			color:  entry.color,
+      draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty:     match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
@@ -402,7 +404,7 @@ pub fn load_file<T: EvalexprFloat>(
 	if let Some(file) = ser_states.get(file_name) {
 		let (entries, default_graph_config) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
 		state.entries = entries;
-    state.saved_graph_config = default_graph_config;
+		state.saved_graph_config = default_graph_config;
 
 		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 		state.clear_cache = true;

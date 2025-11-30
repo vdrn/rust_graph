@@ -48,6 +48,8 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use crate::draw_buffer::{ProcessedShape, ProcessedShapes};
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn wasm_main() -> () {
@@ -140,7 +142,7 @@ impl Default for AppConfig {
 			fullscreen:           true,
 			dark_mode:            true,
 			use_f32:              false,
-			resolution:           500,
+			resolution:           2000,
 			ui_scale:             1.5,
 			default_graph_config: GraphConfig::default(),
 		}
@@ -148,13 +150,16 @@ impl Default for AppConfig {
 }
 
 struct UiState {
-	conf:         AppConfig,
-	next_id:      u64,
-	plot_bounds:  PlotBounds,
-	graph_config: GraphConfig,
+	processed_shapess: ProcessedShapes,
+	conf:              AppConfig,
+	next_id:           u64,
+	plot_bounds:       PlotBounds,
+	graph_config:      GraphConfig,
 
 	// data_aspect: f32,
-	reset_graph: bool,
+	reset_graph:            bool,
+	force_process_elements: bool,
+	force_create_elements:  bool,
 
 	cur_dir:             String,
 	serialization_error: Option<String>,
@@ -304,6 +309,9 @@ impl Application {
 				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
+				force_process_elements: true,
+				force_create_elements: true,
+				processed_shapess: ProcessedShapes::new(),
 				custom_renderer: CustomRenderer::new(cc),
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 				full_frame_scope: None,
@@ -350,11 +358,11 @@ impl App for Application {
 
 		let use_f32 = self.ui.conf.use_f32;
 		if use_f32 {
-			app_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
+			let changed = app_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
+			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx, frame, changed);
 		} else {
-			app_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
+			let changed = app_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
+			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame, changed);
 		}
 		if use_f32 != self.ui.conf.use_f32 {
 			if use_f32 {

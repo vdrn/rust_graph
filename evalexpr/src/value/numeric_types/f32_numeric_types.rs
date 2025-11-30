@@ -44,7 +44,7 @@ impl EvalexprFloat for f32 {
 	fn to_i64(&self) -> i64 { *self as i64 }
 	fn from_u64(int: u64) -> Self { int as Self }
 
-	fn try_from_hex_str(literal: &str) -> Option<Self>{
+	fn try_from_hex_str(literal: &str) -> Option<Self> {
 		i64::from_str_radix(literal, 16).map(|i| i as Self).ok()
 	}
 

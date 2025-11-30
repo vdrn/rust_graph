@@ -19,6 +19,7 @@ use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
 	pub animating:           bool,
+	pub needs_redraw:        bool,
 	pub remove:              bool,
 	pub duplicate:           bool,
 	pub error:               Option<String>,
@@ -31,6 +32,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 		needs_recompilation: false,
 		animating:           false,
 		remove:              false,
+		needs_redraw:        false,
 		duplicate:           false,
 		parsed:              false,
 
@@ -226,14 +228,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			// handled in outer scope
 		},
-		EntryType::Function {
-			func,
-			parametric,
-			range_start,
-			range_end,
-			implicit_resolution,
-			..
-		} => {
+		EntryType::Function { func, parametric, range_start, range_end, implicit_resolution, .. } => {
 			ui.vertical(|ui| {
 				match expr_ui(func, ui, "sin(x)", None, clear_cache, true) {
 					Ok(changed) => {
@@ -298,12 +293,16 @@ fn entry_type_ui<T: EvalexprFloat>(
 					}
 					if func.args.len() == 2 && func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
 						ui.horizontal(|ui| {
-							Slider::new(
+							if Slider::new(
 								implicit_resolution,
 								MIN_IMPLICIT_RESOLUTION..=MAX_IMPLICIT_RESOLUTION,
 							)
 							.text("Implicit Resolution")
-							.ui(ui);
+							.ui(ui)
+							.changed()
+							{
+								result.needs_redraw = true;
+							}
 						});
 					}
 				});
@@ -338,7 +337,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 						result.error = Some(format!("Parsing error: {e}"));
 					},
 				}
-				ui.checkbox(underline, "Underline");
+				if ui.checkbox(underline, "Underline").changed() {
+					result.needs_redraw = true;
+				}
 			});
 		},
 		EntryType::Points { points, .. } => {
@@ -487,7 +488,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					if full_width_slider(ui, &mut v, range, *step, T::EPSILON) {
 						entry.active = false;
-            result.animating = true;
+						result.animating = true;
 					}
 
 					if original_value.to_f64() != v {

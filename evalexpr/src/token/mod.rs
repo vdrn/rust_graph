@@ -52,7 +52,7 @@ pub enum Token<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	Boolean(bool),
 	String(String),
 
-	DotAccess(String),
+	DotAccess,
 }
 
 /// A partial token is an input character whose meaning depends on the characters around it.
@@ -170,7 +170,7 @@ impl<NumericTypes: EvalexprFloat> Token<NumericTypes> {
 			Token::String(_) => true,
 
 			// might want to later make this true
-			Token::DotAccess(_) => false,
+			Token::DotAccess => false,
 		}
 	}
 
@@ -217,7 +217,7 @@ impl<NumericTypes: EvalexprFloat> Token<NumericTypes> {
 			Token::Boolean(_) => true,
 			Token::String(_) => true,
 
-			Token::DotAccess(_) => true,
+			Token::DotAccess => true,
 		}
 	}
 
@@ -407,12 +407,9 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 					cutoff = 2;
 					result.push(Token::Range);
 				},
-				Some(PartialToken::Literal(literal)) => {
-					cutoff = 2;
-					result.push(Token::DotAccess(literal.clone()));
-				},
 				_ => {
-					return Err(EvalexprError::CustomMessage("Dot access requires a literal".to_string()));
+					cutoff = 1;
+					result.push(Token::DotAccess);
 				},
 			},
 			PartialToken::Literal(literal) => {
@@ -467,7 +464,6 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 				} else if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, second, third) {
 					cutoff = c;
 					result.push(token);
-
 				} else {
 					result.push(Token::Identifier(literal.to_string()))
 				}

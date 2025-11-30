@@ -103,10 +103,7 @@ pub enum Operator<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	/// A unary postfix factorial operator.
 	Factorial,
 	/// Dot Access
-	DotAccess {
-		/// The identifier of the field
-		identifier: IStr,
-	},
+	DotAccess,
 }
 impl<NumericTypes: EvalexprFloat> core::fmt::Display for Operator<NumericTypes> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
@@ -151,7 +148,7 @@ impl<NumericTypes: EvalexprFloat> core::fmt::Display for Operator<NumericTypes> 
 				write!(f, "{}", identifier)
 			},
 			FunctionIdentifier { identifier } => write!(f, "{}", identifier),
-			DotAccess { identifier } => write!(f, ".{}", identifier),
+			DotAccess => write!(f, "."),
 		}
 	}
 }
@@ -199,7 +196,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 			Const { .. } => 200,
 			VariableIdentifierWrite { .. } | VariableIdentifierRead { .. } => 200,
 			FunctionIdentifier { .. } => 190,
-			DotAccess { .. } => 220,
+			DotAccess => 190,
 		}
 	}
 
@@ -217,9 +214,7 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 	// Make this a const fn as soon as whatever is missing gets stable (issue #57563)
 	pub(crate) fn is_leaf(&self) -> bool { self.max_argument_amount() == Some(0) }
 
-	pub(crate) fn is_postfix(&self) -> bool {
-		matches!(self, Operator::Factorial | Operator::DotAccess { .. })
-	}
+	pub(crate) fn is_postfix(&self) -> bool { matches!(self, Operator::Factorial) }
 
 	/// Returns the maximum amount of arguments required by this operator.
 	pub(crate) const fn max_argument_amount(&self) -> Option<usize> {
@@ -227,9 +222,9 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 		match self {
 			Add | Sub | Mul | Div | Mod | Exp | Eq | Neq | Gt | Lt | Geq | Leq | And | Or | Assign
 			| AddAssign | SubAssign | MulAssign | DivAssign | ModAssign | ExpAssign | AndAssign | OrAssign
-			| Range => Some(2),
+			| Range | DotAccess => Some(2),
 			Tuple | Chain => None,
-			Not | Neg | Factorial | RootNode | DotAccess { .. } => Some(1),
+			Not | Neg | Factorial | RootNode => Some(1),
 			Const { .. } => Some(0),
 			VariableIdentifierWrite { .. } | VariableIdentifierRead { .. } => Some(0),
 			FunctionIdentifier { .. } => Some(99),
@@ -248,7 +243,6 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 ///
 /// The advantage of constructing the operator tree separately from the actual evaluation is that it can be
 /// evaluated arbitrarily often with different contexts.
-///
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	pub(crate) operator: Operator<NumericTypes>,
@@ -262,7 +256,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
-	///
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -274,7 +267,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -285,7 +277,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all read variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierRead { identifier } => Some(identifier.to_str()),
@@ -295,7 +286,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all write variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_write_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier } => Some(identifier.to_str()),
@@ -305,7 +295,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all function identifiers in this expression.
 	/// Each occurrence of a function identifier is returned separately.
-	///
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::FunctionIdentifier { identifier } => Some(identifier.to_str()),
@@ -573,7 +562,7 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 // 	}
 // }
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
-	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
+	root: &mut Node<NumericTypes>, postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
 	// println!("INSERT POSTFIX OPERATOR: root {root:#?}, op {postfix_op:#?}, {after_rbrace}");
 	// find rightmost position based on precedence
@@ -621,9 +610,7 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 		let next = token_iter.peek().cloned();
 
 		let node = match token.clone() {
-			Token::DotAccess(identifier) => {
-				Some(Node::new(Operator::DotAccess { identifier: istr(&identifier) }))
-			},
+			Token::DotAccess => Some(Node::new(Operator::DotAccess)),
 			Token::Plus => Some(Node::new(Operator::Add)),
 			Token::Minus => {
 				if last_token_is_rightsided_value {
@@ -667,14 +654,11 @@ pub(crate) fn tokens_to_operator_tree<NumericTypes: EvalexprFloat>(
 					let closed_brace_node = root_stack.pop().ok_or_else(|| EvalexprError::UnmatchedRBrace)?;
 					// check if the next token is a postfix operator
 					if let Some(next_token) = token_iter.peek() {
-						if matches!(next_token, Token::Not | Token::DotAccess(_)) {
+						if matches!(next_token, Token::Not) {
 							// Get the next token
 							let postfix_token = token_iter.next().unwrap();
 							let mut postfix_node = match postfix_token {
 								Token::Not => Node::new(Operator::Factorial),
-								Token::DotAccess(id) => {
-									Node::new(Operator::DotAccess { identifier: istr(id) })
-								},
 								_ => unreachable!(),
 							};
 

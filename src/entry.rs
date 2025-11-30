@@ -5,6 +5,7 @@ use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr
 use serde::{Deserialize, Serialize};
 
 use crate::custom_rendering::FillRule;
+use crate::draw_buffer::DrawBufferScheduler;
 
 mod drag_point;
 mod entry_plot_elements;
@@ -12,7 +13,7 @@ mod entry_processing;
 mod entry_ui;
 
 pub use drag_point::point_dragging;
-pub use entry_plot_elements::{PlotParams, entry_create_plot_elements};
+pub use entry_plot_elements::{PlotParams, schedule_entry_create_plot_elements};
 pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprocess_ast};
 pub use entry_ui::entry_ui;
 
@@ -44,13 +45,47 @@ pub const COLORS: &[Color32; 20] = &[
 ];
 pub const NUM_COLORS: usize = COLORS.len();
 
-#[derive(Clone, Debug)]
 pub struct Entry<T: EvalexprFloat> {
-	pub id:     u64,
-	pub name:   String,
-	pub active: bool,
-	pub color:  usize,
-	pub ty:     EntryType<T>,
+	pub id:                    u64,
+	pub name:                  String,
+	pub active:                bool,
+	pub color:                 usize,
+	pub ty:                    EntryType<T>,
+	pub draw_buffer_scheduler: DrawBufferScheduler,
+}
+pub struct ClonedEntry<T: EvalexprFloat> {
+  pub id:                    u64,
+  pub name:                  String,
+  pub color:                 usize,
+  pub ty:                    EntryType<T>,
+}
+impl <T: EvalexprFloat> ClonedEntry<T> {
+  fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
+}
+
+impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Entry")
+			.field("id", &self.id)
+			.field("name", &self.name)
+			.field("active", &self.active)
+			.field("color", &self.color)
+			.field("ty", &self.ty)
+			.finish()
+	}
+}
+
+impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
+	fn clone(&self) -> Self {
+		Self {
+			id:                    self.id.clone(),
+			name:                  self.name.clone(),
+			active:                self.active.clone(),
+			color:                 self.color.clone(),
+			ty:                    self.ty.clone(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
+		}
+	}
 }
 impl<T: EvalexprFloat> core::hash::Hash for Entry<T> {
 	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
@@ -354,6 +389,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
 				selectable:   true,
@@ -377,6 +413,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: false,
 			name: String::new(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Constant {
 				istr_name:   istr_empty(),
 				value:       T::ZERO,
@@ -393,6 +430,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Points {
 				identifier: istr_empty(),
 				points:     vec![PointEntry::default()],
@@ -406,6 +444,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Label {
 				x:         Expr::default(),
 				y:         Expr::default(),
@@ -420,6 +459,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
+			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Folder { entries: Vec::new() },
 		}
 	}
