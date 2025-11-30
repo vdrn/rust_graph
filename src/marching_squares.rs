@@ -77,8 +77,8 @@ pub struct MarchingSquaresParams {
 #[derive(Default)]
 pub struct MarchingSquaresResult {
 	pub _y_bounds: (f64, f64),
-	pub lines:    Vec<Vec<PlotPoint>>,
-	pub mesh:     MeshBuilder,
+	pub lines:     Vec<Vec<PlotPoint>>,
+	pub mesh:      MeshBuilder,
 }
 
 pub fn marching_squares<C>(

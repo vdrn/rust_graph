@@ -634,13 +634,6 @@ fn get_last_if_const_as_float2<F: EvalexprFloat>(
 
 	Ok(None)
 }
-fn get_last_if_const_as_float<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> EvalexprResult<Option<F>, F> {
-	if let Some(FlatOperator::PushConst { value }) = ops.last() {
-		return Ok(Some(value.as_float()?));
-	};
-
-	Ok(None)
-}
 fn get_second_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Value<F>, usize)> {
 	let prev_ranges = get_n_previous_exprs(ops, ops.len() - 1, 2);
 	assert!(prev_ranges.len() == 2);
@@ -673,19 +666,6 @@ fn get_last_2_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Val
 	}
 
 	None
-}
-fn get_last_2_if_const_as_float<F: EvalexprFloat>(
-	ops: &[FlatOperator<F>],
-) -> EvalexprResult<Option<(F, F)>, F> {
-	if ops.len() > 1 {
-		if let (FlatOperator::PushConst { value }, FlatOperator::PushConst { value: second }) =
-			(&ops[ops.len() - 2], &ops[ops.len() - 1])
-		{
-			return Ok(Some((value.as_float()?, second.as_float()?)));
-		}
-	}
-
-	Ok(None)
 }
 fn get_last_3_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Value<F>, Value<F>, Value<F>)> {
 	if ops.len() > 2 {

@@ -402,7 +402,7 @@ pub fn load_file<T: EvalexprFloat>(
 	if let Some(file) = ser_states.get(file_name) {
 		let (entries, default_graph_config) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
 		state.entries = entries;
-    state.saved_graph_config = default_graph_config;
+		state.saved_graph_config = default_graph_config;
 
 		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
 		state.clear_cache = true;

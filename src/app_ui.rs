@@ -373,7 +373,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		step_size_y,
 		resolution: ui_state.conf.resolution,
 		prev_plot_transform: ui_state.prev_plot_transform,
-    invert_axes: ui_state.graph_config.invert_axes
+		invert_axes: ui_state.graph_config.invert_axes,
 	};
 
 	let main_context = &state.ctx;
@@ -476,7 +476,8 @@ pub fn graph_panel<T: EvalexprFloat>(
 				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
 					if fill_mesh.vertices.len() > 2 {
 						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
-							render_state, &fill_mesh.vertices,&fill_mesh.indices, fill_mesh.color,fill_mesh.fill_rule, size.x, size.y,
+							render_state, &fill_mesh.vertices, &fill_mesh.indices, fill_mesh.color,
+							fill_mesh.fill_rule, size.x, size.y,
 						));
 					}
 				}
@@ -578,7 +579,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			&plot_res,
 			&mut ui_state.dragging_point_i,
 			hovered_point.as_ref(),
-			&plot_params
+			&plot_params,
 		) {
 			state.clear_cache = true;
 			ui_state.showing_custom_label = true;

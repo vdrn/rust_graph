@@ -467,7 +467,6 @@ fn partial_tokens_to_tokens<NumericTypes: EvalexprFloat>(
 				} else if let Some((token, c)) = litral_to_token::<NumericTypes>(&literal, second, third) {
 					cutoff = c;
 					result.push(token);
-
 				} else {
 					result.push(Token::Identifier(literal.to_string()))
 				}

@@ -98,8 +98,7 @@ fn bench_parse_many_small_expressions(bencher: &mut Bencher) {
 fn bench_evaluate_long_expression_chains(bencher: &mut Bencher) {
 	let mut gen = Pcg32::seed_from_u64(0);
 	let long_expression_chain =
-		build_flat_node::<DefaultNumericTypes>(&generate_expression_chain(BENCHMARK_LEN, &mut gen))
-			.unwrap();
+		build_flat_node::<DefaultNumericTypes>(&generate_expression_chain(BENCHMARK_LEN, &mut gen)).unwrap();
 
 	bencher.iter(|| long_expression_chain.eval().unwrap());
 }

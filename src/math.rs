@@ -39,7 +39,11 @@ pub struct DiscontinuityDetector {
 }
 impl DiscontinuityDetector {
 	pub fn new_with_initial(step_size: f64, eps: f64, initial_value: (f64, f64)) -> Self {
-		Self { prev_value: Some(initial_value), prev_abs_change: 0.0, eps: (step_size * 0.01).max(eps) }
+		Self {
+			prev_value:      Some(initial_value),
+			prev_abs_change: 0.0,
+			eps:             (step_size * 0.01).max(eps),
+		}
 	}
 	pub fn new(step_size: f64, eps: f64) -> Self {
 		Self { prev_value: None, prev_abs_change: 0.0, eps: (step_size * 0.01).max(eps) }
@@ -371,12 +375,12 @@ pub fn newton_raphson_minimizer2_tmp<const ITERS: usize>(
 	Ok(if best_f < initial_f { Some((best_x, best_y)) } else { None })
 }
 
-  pub fn pseudoangle(x:f64, y:f64) -> f64 {
-    let p = x / (x.abs() + y.abs()); // -1 .. 1 increasing with x
-    // if dy < 0.0 {
-    //   3.0 + p //  2 .. 4 increasing with x
-    // } else {
-    //   1.0 - p //  0 .. 2 decreasing with x
-    // }
-    -y.signum() * (p + 1.0) + 2.0
-  }
+pub fn pseudoangle(x: f64, y: f64) -> f64 {
+	let p = x / (x.abs() + y.abs()); // -1 .. 1 increasing with x
+	// if dy < 0.0 {
+	//   3.0 + p //  2 .. 4 increasing with x
+	// } else {
+	//   1.0 - p //  0 .. 2 decreasing with x
+	// }
+	-y.signum() * (p + 1.0) + 2.0
+}

@@ -226,14 +226,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			// handled in outer scope
 		},
-		EntryType::Function {
-			func,
-			parametric,
-			range_start,
-			range_end,
-			implicit_resolution,
-			..
-		} => {
+		EntryType::Function { func, parametric, range_start, range_end, implicit_resolution, .. } => {
 			ui.vertical(|ui| {
 				match expr_ui(func, ui, "sin(x)", None, clear_cache, true) {
 					Ok(changed) => {
@@ -487,7 +480,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					if full_width_slider(ui, &mut v, range, *step, T::EPSILON) {
 						entry.active = false;
-            result.animating = true;
+						result.animating = true;
 					}
 
 					if original_value.to_f64() != v {

@@ -25,7 +25,7 @@ pub fn optimize_flat_node<F: EvalexprFloat>(
 		inlined = inline_variables_and_fold(&inlined, context)?;
 	};
 	if subexpression_elemination::eliminate_subexpressions(&mut inlined, context) {
-    // run again since we deduplicated local vars. could be a loop maybe
+		// run again since we deduplicated local vars. could be a loop maybe
 		subexpression_elemination::eliminate_subexpressions(&mut inlined, context);
 	}
 	Ok(inlined)
@@ -234,10 +234,11 @@ pub enum FlatOperator<F: EvalexprFloat> {
 		/// inverse indices will be (3,2,1)
 		inverse_index: u32,
 	},
-  AccessX,
-  AccessY,
-  AccessIndex{index: u32},
-
+	AccessX,
+	AccessY,
+	AccessIndex {
+		index: u32,
+	},
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntegralNode<F: EvalexprFloat> {
@@ -497,7 +498,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	}
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
-	///
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier }
@@ -508,7 +508,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	}
 	/// Returns an iterator over all variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } | FlatOperator::WriteVar { identifier } => {
@@ -519,7 +518,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	}
 	/// Returns an iterator over all read variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } => Some(identifier.to_str()),
@@ -528,7 +526,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	}
 	/// Returns an iterator over all write variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_write_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::WriteVar { identifier } => Some(identifier.to_str()),
@@ -537,7 +534,6 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	}
 	/// Returns an iterator over all function identifiers in this expression.
 	/// Each occurrence of a function identifier is returned separately.
-	///
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),

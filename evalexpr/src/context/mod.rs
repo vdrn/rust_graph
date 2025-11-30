@@ -34,9 +34,9 @@ pub struct HashMapContext<F: EvalexprFloat = DefaultNumericTypes> {
 }
 
 impl<F: EvalexprFloat> HashMapContext<F> {
-  /// Compares two contexts for equality
-  /// Since we cannot compare closures for equality, RustFunctions are not compared, but their
-  /// names and order of insertion are.
+	/// Compares two contexts for equality
+	/// Since we cannot compare closures for equality, RustFunctions are not compared, but their
+	/// names and order of insertion are.
 	pub fn contexts_almost_equal(c1: &HashMapContext<F>, c2: &HashMapContext<F>) -> bool {
 		let mut equal = c1.variables == c2.variables
 			&& c1.expr_functions == c2.expr_functions
@@ -51,7 +51,6 @@ impl<F: EvalexprFloat> HashMapContext<F> {
 
 	/// Removes all variables from the context.
 	/// This allows to reuse the context without allocating a new HashMap.
-	///
 	pub fn clear_variables(&mut self) { self.variables.clear() }
 
 	/// Removes all functions from the context.
@@ -64,7 +63,6 @@ impl<F: EvalexprFloat> HashMapContext<F> {
 
 	/// Removes all variables and functions from the context.
 	/// This allows to reuse the context without allocating a new HashMap.
-	///
 	pub fn clear(&mut self) {
 		self.clear_variables();
 		self.clear_rust_functions();
@@ -169,7 +167,6 @@ impl<NumericTypes: EvalexprFloat> Default for HashMapContext<NumericTypes> {
 }
 
 /// This macro provides a convenient syntax for creating a static context.
-///
 #[macro_export]
 macro_rules! context_map {
     // Termination (allow missing comma at the end of the argument list)

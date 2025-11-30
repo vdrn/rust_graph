@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
 use core::mem;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
@@ -32,9 +32,9 @@ pub struct PlotParams {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::panic_in_result_fn)]
 pub fn entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>,
-	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	draw_buffer: &ThreadLocal<crate::DrawBufferRC>, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
+	entry: &Entry<T>, id: Id, sorting_idx: u32, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
+	plot_params: &PlotParams, draw_buffer: &ThreadLocal<crate::DrawBufferRC>,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) -> Result<(), Vec<(u64, String)>> {
 	// thread_local_get(tl_context).stack_overflow_guard.set(0);
 
@@ -101,7 +101,7 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 				_ => {},
 			}
 		},
-		EntryType::Points { points, style,.. } => {
+		EntryType::Points { points, style, .. } => {
 			let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
 			// main_context
 			// 	.write()
@@ -130,8 +130,8 @@ pub fn entry_create_plot_elements<T: EvalexprFloat>(
 			};
 			for (i, p) in points.iter().enumerate() {
 				if let Some((x, y)) = p.val {
-          let x = x.to_f64();
-          let y = y.to_f64();
+					let x = x.to_f64();
+					let y = y.to_f64();
 					let point_id = id.with(i);
 					let selected = selected_id == Some(id);
 					let radius = if selected { 6.5 } else { 4.5 };

@@ -7,9 +7,7 @@ use crate::error::EvalexprResultValue;
 use crate::flat_node::{cold, FlatOperator, IntegralNode};
 use crate::function::rust_function::builtin_function;
 use crate::math::integrate;
-use crate::{
-	EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Operator, Value, ValueType
-};
+use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value, ValueType};
 
 #[inline(always)]
 pub fn eval_flat_node<F: EvalexprFloat>(

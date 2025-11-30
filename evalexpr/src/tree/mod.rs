@@ -248,7 +248,6 @@ impl<NumericTypes: EvalexprFloat> Operator<NumericTypes> {
 ///
 /// The advantage of constructing the operator tree separately from the actual evaluation is that it can be
 /// evaluated arbitrarily often with different contexts.
-///
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
 	pub(crate) operator: Operator<NumericTypes>,
@@ -262,7 +261,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
-	///
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -274,7 +272,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier }
@@ -285,7 +282,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all read variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierRead { identifier } => Some(identifier.to_str()),
@@ -295,7 +291,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all write variable identifiers in this expression.
 	/// Each occurrence of a variable identifier is returned separately.
-	///
 	pub fn iter_write_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::VariableIdentifierWrite { identifier } => Some(identifier.to_str()),
@@ -305,7 +300,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 
 	/// Returns an iterator over all function identifiers in this expression.
 	/// Each occurrence of a function identifier is returned separately.
-	///
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node.operator() {
 			Operator::FunctionIdentifier { identifier } => Some(identifier.to_str()),
@@ -573,7 +567,7 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 // 	}
 // }
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
-	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
+	root: &mut Node<NumericTypes>, postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {
 	// println!("INSERT POSTFIX OPERATOR: root {root:#?}, op {postfix_op:#?}, {after_rbrace}");
 	// find rightmost position based on precedence

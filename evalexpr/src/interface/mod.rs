@@ -3,7 +3,7 @@ use crate::flat_node::{compile_to_flat, Stack};
 use crate::value::numeric_types::default_numeric_types::DefaultNumericTypes;
 use crate::value::TupleType;
 use crate::{
-	EMPTY_VALUE, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, optimize_flat_node, token, tree
+	optimize_flat_node, token, tree, EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Node, Value, EMPTY_VALUE
 };
 
 /// Evaluate the given expression string.
@@ -49,14 +49,12 @@ pub fn eval_with_context_mut<F: EvalexprFloat>(
 pub fn eval_optimized_with_context<F: EvalexprFloat>(
 	string: &str, context: &mut HashMapContext<F>,
 ) -> EvalexprResultValue<F> {
-  let optimized = build_optimized_flat_node(string, context)?;
+	let optimized = build_optimized_flat_node(string, context)?;
 
 	optimized.eval_with_context(&mut Stack::new(), context)
 }
 /// Build the flat node for the given string
-pub fn build_flat_node<F: EvalexprFloat>(
-	string: &str,
-) -> EvalexprResult<FlatNode<F>, F> {
+pub fn build_flat_node<F: EvalexprFloat>(string: &str) -> EvalexprResult<FlatNode<F>, F> {
 	let node = tree::tokens_to_operator_tree(token::tokenize(string)?)?;
 	compile_to_flat(node)
 }
@@ -65,25 +63,20 @@ pub fn build_flat_node<F: EvalexprFloat>(
 /// Takes mutable reference to context, but after returning the context will have saame values as
 /// before the call
 pub fn build_optimized_flat_node<F: EvalexprFloat>(
-	string: &str,
-  context: &mut HashMapContext<F>,
+	string: &str, context: &mut HashMapContext<F>,
 ) -> EvalexprResult<FlatNode<F>, F> {
 	let node = tree::tokens_to_operator_tree(token::tokenize(string)?)?;
 
 	let flat_node = compile_to_flat(node)?;
-  optimize_flat_node(&flat_node, context)
+	optimize_flat_node(&flat_node, context)
 }
 /// Build the operator tree for the given expression string.
-pub fn build_ast<F: EvalexprFloat>(
-	string: &str,
-) -> EvalexprResult<Node<F>, F> {
+pub fn build_ast<F: EvalexprFloat>(string: &str) -> EvalexprResult<Node<F>, F> {
 	tree::tokens_to_operator_tree(token::tokenize(string)?)
 }
 
 /// Build the flat node for the given Ast
-pub fn build_flat_node_from_ast<F: EvalexprFloat>(
-  ast:Node<F>,
-) -> EvalexprResult<FlatNode<F>, F> {
+pub fn build_flat_node_from_ast<F: EvalexprFloat>(ast: Node<F>) -> EvalexprResult<FlatNode<F>, F> {
 	compile_to_flat(ast)
 }
 
@@ -93,7 +86,6 @@ pub fn build_flat_node_from_ast<F: EvalexprFloat>(
 pub fn eval_float(string: &str) -> EvalexprResult<DefaultNumericTypes> {
 	eval_float_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
-
 
 /// Evaluate the given expression string into a boolean.
 ///
@@ -116,7 +108,6 @@ pub fn eval_empty(string: &str) -> EvalexprResult<EmptyType> {
 	eval_empty_with_context_mut(string, &mut HashMapContext::<DefaultNumericTypes>::new())
 }
 
-
 /// Evaluate the given expression string into a float with the given context.
 ///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
@@ -129,7 +120,6 @@ pub fn eval_float_with_context<F: EvalexprFloat>(
 		Err(error) => Err(error),
 	}
 }
-
 
 /// Evaluate the given expression string into a boolean with the given context.
 ///
@@ -170,7 +160,6 @@ pub fn eval_empty_with_context<F: EvalexprFloat>(
 	}
 }
 
-
 /// Evaluate the given expression string into a float with the given mutable context.
 ///
 /// *See the [crate doc](index.html) for more examples and explanations of the expression format.*
@@ -183,7 +172,6 @@ pub fn eval_float_with_context_mut<F: EvalexprFloat>(
 		Err(error) => Err(error),
 	}
 }
-
 
 /// Evaluate the given expression string into a boolean with the given mutable context.
 ///

@@ -488,21 +488,21 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
-      // if identifier.to_str() == "F"{
+			// if identifier.to_str() == "F"{
 			// println!("INLINING FUNC {} IDENT {} {}", entry.name,identifier, func.text);
-			 // println!("ops  {:?}", node);
-      // }
+			// println!("ops  {:?}", node);
+			// }
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
-      // if identifier.to_str() == "F"{
+			// if identifier.to_str() == "F"{
 			// println!("INLINED FUNC: {:#?}", inlined_node);
-      //   }
+			//   }
 			// let thread_local_context = thread_local_context.clone();
 			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-			// println!("EXPR FUNC {}: {} LEN {} {:#?}",entry.name, func.text,expr_function.ops_len(), expr_function);
-			// if identifier.to_str() == "F"{
+			// println!("EXPR FUNC {}: {} LEN {} {:#?}",entry.name, func.text,expr_function.ops_len(),
+			// expr_function); if identifier.to_str() == "F"{
 			//   panic!()
 			// }
 
@@ -521,7 +521,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 		},
 		EntryType::Points { identifier, points, .. } => {
 			let mut stack = Stack::<T>::with_capacity(0);
-			for (i, p) in points.iter_mut().enumerate() {
+			for p in points.iter_mut() {
 				match eval_point2(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 					Ok(Some(v)) => {
 						p.val = Some(v);
