@@ -23,6 +23,12 @@ mod display;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum EvalexprError<NumericTypes: EvalexprFloat = DefaultNumericTypes> {
+  /// The operator expected a Float, Float2 or Tuple, but got something else.
+  ExpectedFloatOrTuple {
+    /// The operator that was called.
+    operator: &'static str,
+    /// The actual value.
+    actual: Value<NumericTypes> },
 	/// The tuple lengths do not match
 	TuplesMismatchedLengths {
 		/// The length of the left tuple

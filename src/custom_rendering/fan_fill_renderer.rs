@@ -24,7 +24,7 @@ impl TriangleFanVertex {
 	pub fn new(x: f32, y: f32) -> Self { Self { x, y } }
 }
 
-pub struct CustomRenderer {
+pub struct FanFillRenderer {
 	texture_pool:          Vec<TextureResource>,
 	current_texture_index: usize,
 	stencil_texture:       Option<StencilTexture>,
@@ -43,7 +43,7 @@ struct StencilTexture {
 	height: u32,
 }
 
-impl CustomRenderer {
+impl FanFillRenderer {
 	pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
 		let wgpu_render_state = cc.wgpu_render_state.as_ref()?;
 		let device = &wgpu_render_state.device;

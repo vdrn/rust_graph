@@ -24,10 +24,12 @@ mod persistence;
 mod widgets;
 
 use app_ui::GraphConfig;
-use custom_rendering::CustomRenderer;
+use custom_rendering::fan_fill_renderer::FanFillRenderer;
 use draw_buffer::DrawBufferRC;
 use entry::{ConstantType, Entry, EntryType, PointEntry};
 use marching_squares::MarchingSquaresCache;
+use custom_rendering::mesh_renderer::init_mesh_renderer;
+use draw_buffer::{ ProcessedShapes};
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -48,7 +50,6 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use crate::draw_buffer::{ProcessedShape, ProcessedShapes};
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -159,7 +160,6 @@ struct UiState {
 	// data_aspect: f32,
 	reset_graph:            bool,
 	force_process_elements: bool,
-	force_create_elements:  bool,
 
 	cur_dir:             String,
 	serialization_error: Option<String>,
@@ -188,7 +188,7 @@ struct UiState {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	full_frame_scope: Option<puffin::ProfilerScope>,
 
-	custom_renderer:     Option<CustomRenderer>,
+	custom_renderer:     Option<FanFillRenderer>,
 	prev_plot_transform: Option<egui_plot::PlotTransform>,
 }
 // #[derive(Clone, Debug)]
@@ -235,6 +235,8 @@ impl Application {
 		if !conf.fullscreen {
 			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 		}
+
+		init_mesh_renderer(cc);
 
 		let mut next_id = 0;
 		#[rustfmt::skip]
@@ -310,9 +312,8 @@ impl Application {
 			},
 			ui: UiState {
 				force_process_elements: true,
-				force_create_elements: true,
 				processed_shapess: ProcessedShapes::new(),
-				custom_renderer: CustomRenderer::new(cc),
+				custom_renderer: FanFillRenderer::new(cc),
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 				full_frame_scope: None,
 				// animating: Arc::new(AtomicBool::new(true)),

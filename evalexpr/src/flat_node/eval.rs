@@ -962,6 +962,7 @@ pub fn math_binary<F: EvalexprFloat>(
 		(Value::Float2(l, r), Value::Float2(l2, r2)) => Ok(Value::Float2(op(l, l2), op(r, r2))),
 		(Value::Float(l), Value::Float2(l2, r2)) => Ok(Value::Float2(op(l, l2), op(l, r2))),
 		(Value::Float2(l, r), Value::Float(l2)) => Ok(Value::Float2(op(l, l2), op(r, l2))),
+		(Value::Empty, _) | (_, Value::Empty) => Ok(Value::Empty),
 		(left, right) => math_binary_inner(left, right, name, op),
 	}
 }
@@ -1035,11 +1036,7 @@ pub fn math_unary<F: EvalexprFloat>(
 			}
 			Ok(Value::Tuple(v))
 		},
-		value => Err(EvalexprError::wrong_type_combination(
-			name,
-			vec![(&value).into()],
-			vec![ValueType::Float, ValueType::Float2, ValueType::Tuple],
-		)),
+		value => Err(EvalexprError::ExpectedFloatOrTuple { operator: name, actual: value.clone() }),
 	}
 }
 pub fn add<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {

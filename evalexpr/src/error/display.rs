@@ -6,6 +6,9 @@ impl<NumericTypes: EvalexprFloat> fmt::Display for EvalexprError<NumericTypes> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		use crate::EvalexprError::*;
 		match self {
+      ExpectedFloatOrTuple { actual, operator } => {
+        write!(f, "Operator {operator} Expected a Float, Float2 or Tuple, but got {}", actual)
+      },
 			TuplesMismatchedLengths { left, right } => {
 				write!(
 					f,

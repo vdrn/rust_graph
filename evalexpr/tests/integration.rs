@@ -481,7 +481,7 @@ fn error_expected_numeric(actual: Value<DefaultNumericTypes>, name: &'static str
 }
 #[test]
 fn test_errors() {
-	assert_eq!(eval("-true"), Err(error_expected_numeric(Value::Boolean(true), "-")));
+	assert_eq!(eval("-true"), Err(EvalexprError::ExpectedFloatOrTuple { actual: Value::Boolean(true), operator: "-" }));
 	assert_eq!(eval("true-"), Err(EvalexprError::WrongOperatorArgumentAmount { actual: 1, expected: 2 }));
 	assert_eq!(eval("!(()true)"), Err(EvalexprError::AppendedToLeafNode));
 	// assert_eq!(

@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use alloc::sync::Arc;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
@@ -7,13 +7,10 @@ use eframe::egui::{
 use eframe::epaint::Color32;
 use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, VLine};
 use evalexpr::EvalexprFloat;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
-use crate::draw_buffer::{
-	DrawMeshType, PointInteraction, PointInteractionType, ProcessedShape, process_draw_buffers
-};
+use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
 use crate::entry::{
 	self, Entry, EntryType, point_dragging, prepare_entries, schedule_entry_create_plot_elements
 };
@@ -106,7 +103,7 @@ pub fn side_panel<T: EvalexprFloat>(
 					let mut remove = None;
 					let mut duplicate = None;
 					let mut animating = false;
-          let mut needs_redraw = false;
+					let mut needs_redraw = false;
 					// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 					egui_dnd::dnd(ui, "entries_dnd").show_vec(
 						&mut state.entries,
@@ -185,7 +182,7 @@ pub fn side_panel<T: EvalexprFloat>(
 																if fe_result.duplicate {
 																	duplicate_in_folder = Some(entry.id);
 																}
-                                needs_redraw |= fe_result.needs_redraw;
+																needs_redraw |= fe_result.needs_redraw;
 																animating |= fe_result.animating;
 																needs_recompilation |=
 																	fe_result.needs_recompilation;
@@ -230,7 +227,7 @@ pub fn side_panel<T: EvalexprFloat>(
 											if result.duplicate {
 												duplicate = Some(entry.id);
 											}
-                      needs_redraw |= result.needs_redraw;
+											needs_redraw |= result.needs_redraw;
 											animating |= result.animating;
 											needs_recompilation |= result.needs_recompilation;
 
@@ -355,7 +352,7 @@ pub fn side_panel<T: EvalexprFloat>(
 							&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors,
 						);
 					}
-					let changed_any = needs_recompilation || state.clear_cache || animating ;
+					let changed_any = needs_recompilation || state.clear_cache || animating;
 					if changed_any {
 						entry::optimize_entries(
 							&mut state.entries,
@@ -397,45 +394,9 @@ pub fn side_panel<T: EvalexprFloat>(
 pub fn graph_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame, changed: bool,
 ) {
-	let first_x = ui_state.plot_bounds.min()[0];
-	let last_x = ui_state.plot_bounds.max()[0];
-	let first_y = ui_state.plot_bounds.min()[1];
-	let last_y = ui_state.plot_bounds.max()[1];
-
-	// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
-	let plot_width = last_x - first_x;
-	let plot_height = last_y - first_y;
-
-	let mut points_to_draw = ui_state.conf.resolution.max(1);
-	let mut step_size = plot_width / points_to_draw as f64;
-	while points_to_draw > 2 && first_x + step_size == first_x {
-		points_to_draw /= 2;
-		step_size = plot_width / points_to_draw as f64;
-	}
-
-	let mut points_to_draw_y = ui_state.conf.resolution.max(1);
-	let mut step_size_y = plot_height / points_to_draw as f64;
-	while points_to_draw_y > 2 && first_y + step_size_y == first_y {
-		points_to_draw_y /= 2;
-		step_size_y = plot_height / points_to_draw_y as f64;
-	}
-	let plot_params = entry::PlotParams {
-		eps: if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon },
-		first_x,
-		last_x,
-		first_y,
-		last_y,
-		step_size,
-		step_size_y,
-		resolution: ui_state.conf.resolution,
-		prev_plot_transform: ui_state.prev_plot_transform,
-		invert_axes: ui_state.graph_config.invert_axes,
-	};
+	let plot_params = entry::PlotParams::new(ui_state);
 
 	scope!("graph");
-
-	// TODO: this is not enough for changedete4ction.
-	// we need resolution, invert_axes too!
 
 	let mouse_pos_in_graph =
 		if let (Some(pos), Some(trans)) = (ui_state.plot_mouese_pos, ui_state.prev_plot_transform) {
@@ -446,6 +407,28 @@ pub fn graph_panel<T: EvalexprFloat>(
 		};
 
 	egui::CentralPanel::default().show(ctx, |ui| {
+		let mut force_create_elements = false;
+
+		if let Some(plot_transform) = ui_state.prev_plot_transform {
+			let parent_rect = plot_transform.frame();
+			let screen_pos = parent_rect.min + egui::vec2(5.0, 5.0);
+			let prev_invert_axes = ui_state.graph_config.invert_axes;
+			Area::new(Id::new("Graph Config")).fixed_pos(screen_pos).show(ui.ctx(), |ui| {
+				MenuButton::new("⚙")
+					.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+					.ui(ui, |ui| {
+						ui_state.graph_config.ui(ui, &mut ui_state.conf);
+					});
+			});
+			// if prev_show_axes != ui_state.graph_config.show_axes {
+			// 	ui_state.force_process_elements = true;
+			// }
+			if prev_invert_axes != ui_state.graph_config.invert_axes {
+				ui_state.force_process_elements = true;
+				force_create_elements = true;
+			}
+		}
+
 		let mut received_new = false;
 		{
 			scope!("receive_draw_buffers");
@@ -478,26 +461,9 @@ pub fn graph_panel<T: EvalexprFloat>(
 				}
 			}
 		}
-		if ui_state.force_create_elements || changed || ui_state.reset_graph {
-			scope!("schedule_entry_create_plot_elements");
-			for (i, entry) in state.entries.iter_mut().enumerate() {
-				let main_context = &state.ctx;
-				schedule_entry_create_plot_elements(
-					entry,
-					i as u32 * 1000,
-					ui_state.selected_plot_line.map(|(id, _)| id),
-					main_context,
-					&plot_params,
-					&state.thread_local_context,
-				);
-			}
-		}
-		if ui_state.force_create_elements
-			|| changed
-			|| received_new
-			|| ui_state.reset_graph
-			|| ui_state.force_process_elements
-		{
+
+		// TODO: this is not enough for changedete4ction.
+		if changed || received_new || ui_state.reset_graph || ui_state.force_process_elements {
 			scope!("process_draw_buffers");
 			ui_state.processed_shapess.process(
 				ui,
@@ -507,19 +473,14 @@ pub fn graph_panel<T: EvalexprFloat>(
 				ui_state.selected_plot_line.map(|(id, _)| id),
 			);
 			ui.ctx().request_repaint();
-			// println!(
-			// 	"REQUEST REPAIN {} {changed} {received_new} {} {}",
-			// 	ui_state.force_process_elements, ui_state.reset_graph, ui_state.force_create_elements,
-			// );
 		}
 		ui_state.force_process_elements = false;
-		ui_state.force_create_elements = false;
 
 		let p_draw_buffer = {
 			scope!("process_draw_buffers");
 			process_draw_buffers(
 				&state.entries, ui_state.selected_plot_line, mouse_pos_in_graph, &plot_params,
-				&mut ui_state.eval_errors, &mut ui_state.draw_buffers,
+				&mut ui_state.draw_buffers,
 			)
 		};
 
@@ -527,7 +488,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let mut plot = Plot::new(plot_id).id(plot_id).legend(Legend::default().text_style(TextStyle::Body));
 
 		if ui_state.reset_graph {
-			ui_state.force_create_elements = true;
+			force_create_elements = true;
 			ui_state.reset_graph = false;
 			ui_state.graph_config = state.saved_graph_config.clone();
 		}
@@ -662,30 +623,42 @@ pub fn graph_panel<T: EvalexprFloat>(
 			}
 		});
 
-		let parent_rect = plot_res.transform.frame();
-		let screen_pos = parent_rect.min + egui::vec2(5.0, 5.0);
-		Area::new(Id::new("Graph Config")).fixed_pos(screen_pos).show(ui.ctx(), |ui| {
-			MenuButton::new("⚙")
-				.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-				.ui(ui, |ui| {
-					ui_state.graph_config.ui(ui, &mut ui_state.conf);
-				});
-		});
-
 		if plot_res.response.double_clicked() {
 			ui_state.reset_graph = true;
 		}
 
 		if ui_state.graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect) {
-			ui_state.force_create_elements = true;
+			force_create_elements = true;
 		}
 
 		if ui_state.plot_bounds != *plot_res.transform.bounds() {
 			ui.ctx().request_repaint();
 			ui_state.plot_bounds = *plot_res.transform.bounds();
 		}
+		if ui_state.prev_plot_transform.map(|t| *t.frame()) != Some(*plot_res.transform.frame()) {
+			ui_state.force_process_elements = true;
+			ui.ctx().request_repaint();
+		}
+
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos();
 		ui_state.prev_plot_transform = Some(plot_res.transform);
+
+		if force_create_elements || changed {
+			scope!("schedule_entry_create_plot_elements");
+			let plot_params = entry::PlotParams::new(ui_state);
+			let main_context = Arc::new(state.ctx.clone());
+			for (i, entry) in state.entries.iter_mut().enumerate() {
+				schedule_entry_create_plot_elements(
+					entry,
+					i as u32 * 1000,
+					ui_state.selected_plot_line.map(|(id, _)| id),
+					&main_context,
+					&plot_params,
+					&state.thread_local_context,
+				);
+			}
+			ui_state.force_process_elements = true;
+		}
 
 		if let Some(drag_result) = point_dragging(
 			&mut state.entries,
@@ -747,7 +720,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			);
 		}
 
-		if let Some(hovered_id) = plot_res.hovered_plot_item.or_else(|| p_draw_buffer.hovered_id) {
+		if let Some(hovered_id) = plot_res.hovered_plot_item.or(p_draw_buffer.hovered_id) {
 			if plot_res.response.clicked()
 				|| plot_res.response.drag_started()
 				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
@@ -847,7 +820,6 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 	needs_recompilation
 }
 
-fn default_true() -> bool { true }
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct GraphPlotBounds {
 	pub center:      [f64; 2],

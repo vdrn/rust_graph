@@ -2,7 +2,6 @@ use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
 use core::mem;
 use core::sync::atomic::AtomicBool;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
@@ -16,7 +15,7 @@ use crate::draw_buffer::{
 use crate::entry::{COLORS, ClonedEntry, Entry, EntryType, EquationType, NUM_COLORS, f64_to_value};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary};
-use crate::{ThreadLocalContext, marching_squares, thread_local_get};
+use crate::{ThreadLocalContext, UiState, marching_squares, thread_local_get};
 
 #[derive(Clone)]
 pub struct PlotParams {
@@ -31,8 +30,46 @@ pub struct PlotParams {
 	pub prev_plot_transform: Option<egui_plot::PlotTransform>,
 	pub invert_axes:         [bool; 2],
 }
+impl PlotParams {
+	pub fn new(ui_state: &UiState) -> Self {
+		let first_x = ui_state.plot_bounds.min()[0];
+		let last_x = ui_state.plot_bounds.max()[0];
+		let first_y = ui_state.plot_bounds.min()[1];
+		let last_y = ui_state.plot_bounds.max()[1];
+
+		// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
+		let plot_width = last_x - first_x;
+		let plot_height = last_y - first_y;
+
+		let mut points_to_draw = ui_state.conf.resolution.max(1);
+		let mut step_size = plot_width / points_to_draw as f64;
+		while points_to_draw > 2 && first_x + step_size == first_x {
+			points_to_draw /= 2;
+			step_size = plot_width / points_to_draw as f64;
+		}
+
+		let mut points_to_draw_y = ui_state.conf.resolution.max(1);
+		let mut step_size_y = plot_height / points_to_draw as f64;
+		while points_to_draw_y > 2 && first_y + step_size_y == first_y {
+			points_to_draw_y /= 2;
+			step_size_y = plot_height / points_to_draw_y as f64;
+		}
+		Self {
+			eps: if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon },
+			first_x,
+			last_x,
+			first_y,
+			last_y,
+			step_size,
+			step_size_y,
+			resolution: ui_state.conf.resolution,
+			prev_plot_transform: ui_state.prev_plot_transform,
+			invert_axes: ui_state.graph_config.invert_axes,
+		}
+	}
+}
 pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &mut Entry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
+	entry: &mut Entry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>,
 	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) {
 	let visible = entry.active;
@@ -68,20 +105,15 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 				})
 			} else {
 				entry.draw_buffer_scheduler.schedule({
-					let entry_cloned = ClonedEntry {
-						id:    entry.id.clone(),
-						name:  entry.name.clone(),
-						color: entry.color.clone(),
-						ty:    entry.ty.clone(),
-					};
-					let ctx = ctx.clone();
+					let entry_cloned =
+						ClonedEntry { id: entry.id, color: entry.color, ty: entry.ty.clone() };
+					let ctx = Arc::clone(ctx);
 					let plot_params = plot_params.clone();
 					let tl_context = Arc::clone(tl_context);
 
 					move |cancel_signal| {
 						entry_create_plot_elements_async(
-							&entry_cloned, sorting_idx, selected_id, &ctx, &plot_params, &tl_context,
-							cancel_signal,
+							&entry_cloned, sorting_idx, &ctx, &plot_params, &tl_context, cancel_signal,
 						)
 					}
 				});
@@ -92,8 +124,8 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			entry.draw_buffer_scheduler.execute({
 				|draw_buffer| {
 					entry_create_plot_elements_sync(
-						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, &ctx,
-						&plot_params, &tl_context, draw_buffer,
+						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, ctx,
+						plot_params, tl_context, draw_buffer,
 					)
 				}
 			});
@@ -101,9 +133,8 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 	}
 }
 pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
-	entry: &ClonedEntry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &evalexpr::HashMapContext<T>,
-	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
-	cancel_signal: &AtomicBool,
+	entry: &ClonedEntry<T>, sorting_idx: u32, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, cancel_signal: &AtomicBool,
 ) -> Option<ExecutionResult> {
 	let color = entry.color();
 	let id = Id::new(entry.id);
@@ -118,7 +149,6 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 		},
 		EntryType::Function {
 			func,
-			can_be_drawn,
 			identifier,
 			parametric,
 			parametric_fill,
@@ -165,8 +195,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 					return;
 				}
 				draw_buffer.meshes.push(DrawMesh {
-					sorting_index: sorting_idx,
-					ty:            DrawMeshType::EguiPlotMesh(EguiPlotMesh {
+					ty: DrawMeshType::EguiPlotMesh(EguiPlotMesh {
 						bounds: mesh.bounds,
 						mesh: RefCell::new(mesh),
 						color,
@@ -271,10 +300,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								}
 
 								if let Some((fm, _)) = fill_mesh {
-									draw_buffer.meshes.push(DrawMesh {
-										sorting_index: sorting_idx,
-										ty:            DrawMeshType::FillMesh(fm),
-									});
+									draw_buffer.meshes.push(DrawMesh { ty: DrawMeshType::FillMesh(fm) });
 								}
 							} else {
 								if func.args[0].to_str() == "y" {
@@ -341,7 +367,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-                  cancel_signal,
+									cancel_signal,
 								) {
 									Ok(finished) => {
 										if !finished {
@@ -361,7 +387,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-                  cancel_signal,
+									cancel_signal,
 								) {
 									Ok(finished) => {
 										if !finished {
@@ -388,7 +414,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								},
 								&mut add_line,
 								&mut add_egui_plot_mesh,
-                  cancel_signal,
+								cancel_signal,
 							) {
 								Ok(finished) => {
 									if !finished {
@@ -440,7 +466,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 
 					let text = Text::new(name.to_string(), PlotPoint { x, y }, label_text).color(color);
 
-					draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+					draw_buffer.texts.push(DrawText::new(text));
 				},
 				Err(e) => {
 					return Err((id, e));
@@ -542,7 +568,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 						)
 						.color(color);
 
-						draw_buffer.texts.push(DrawText::new(sorting_idx, text));
+						draw_buffer.texts.push(DrawText::new(text));
 					}
 
 					if style.show_lines {
@@ -600,10 +626,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 					));
 				}
 				if let Some((fill_mesh, _)) = fill_mesh {
-					draw_buffer.meshes.push(DrawMesh {
-						sorting_index: sorting_idx,
-						ty:            DrawMeshType::FillMesh(fill_mesh),
-					});
+					draw_buffer.meshes.push(DrawMesh { ty: DrawMeshType::FillMesh(fill_mesh) });
 				}
 				// plot_ui.line(line);
 			}
@@ -828,7 +851,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let (start, end) = match eval_point(&mut stack, ctx, range_start, range_end) {
 		Ok(Some((start, end))) => (start, end),
 		Err(e) => {
-			return (Err((id, e)));
+			return Err((id, e));
 		},
 		_ => {
 			return Ok(true);
@@ -1129,7 +1152,7 @@ fn draw_implicit<T: EvalexprFloat>(
 	resolution: usize, equation_type: EquationType, color: Color32,
 	call: impl Fn(&mut RefMut<Stack<T>>, f64, f64) -> Result<Value<T>, EvalexprError<T>> + Sync,
 	mut add_line: impl FnMut(Vec<PlotPoint>), mut add_mesh: impl FnMut(MeshBuilder),
-  interrupt_signal: &AtomicBool,
+	interrupt_signal: &AtomicBool,
 ) -> Result<bool, (u64, String)> {
 	let mins = (plot_params.first_x, plot_params.first_y);
 	let maxs = (plot_params.last_x, plot_params.last_y);
@@ -1189,6 +1212,11 @@ fn draw_implicit<T: EvalexprFloat>(
 						Err(EvalexprError::ExpectedFloat { actual }.to_string())
 					}
 				},
+				Err(EvalexprError::WrongTypeCombination { .. }) => {
+					// TODO : this isnt good
+					Ok(f64::NAN)
+				},
+
 				Err(e) => Err(e.to_string()),
 			}
 		},
@@ -1198,7 +1226,7 @@ fn draw_implicit<T: EvalexprFloat>(
 			tl_context.stack.borrow_mut()
 		},
 		&thread_local_get(tl_context).marching_squares_cache,
-    interrupt_signal
+		interrupt_signal,
 	);
 	let result = match result {
 		Some(Ok(result)) => result,

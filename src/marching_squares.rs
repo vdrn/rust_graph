@@ -1,4 +1,3 @@
-use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::AtomicBool;

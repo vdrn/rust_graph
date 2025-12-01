@@ -9,7 +9,7 @@ use eframe::egui::{
 
 use evalexpr::{EvalexprFloat, HashMapContext};
 
-use crate::custom_rendering::FillRule;
+use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
 	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES

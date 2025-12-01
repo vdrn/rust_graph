@@ -40,7 +40,8 @@ eframe = { version = "0.33",default-features=false, features=[
     "wayland",
     "web_screen_reader",
     "x11",
-"persistence", "wgpu" ] }
+"persistence", "wgpu"] }
+# profiling = {version="1.0", features=["profile-with-puffin"]}
 wgpu = { version = "*", features = [ "webgpu", "webgl"] }
 bytemuck = "1"
 cfg-if = "1"

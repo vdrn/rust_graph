@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32};
 use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
-use crate::custom_rendering::FillRule;
+use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBufferScheduler;
 
 mod drag_point;
@@ -54,17 +54,16 @@ pub struct Entry<T: EvalexprFloat> {
 	pub draw_buffer_scheduler: DrawBufferScheduler,
 }
 pub struct ClonedEntry<T: EvalexprFloat> {
-  pub id:                    u64,
-  pub name:                  String,
-  pub color:                 usize,
-  pub ty:                    EntryType<T>,
+	pub id:    u64,
+	pub color: usize,
+	pub ty:    EntryType<T>,
 }
-impl <T: EvalexprFloat> ClonedEntry<T> {
-  fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
+impl<T: EvalexprFloat> ClonedEntry<T> {
+	fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
 }
 
 impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		f.debug_struct("Entry")
 			.field("id", &self.id)
 			.field("name", &self.name)
@@ -78,10 +77,10 @@ impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
 impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
 	fn clone(&self) -> Self {
 		Self {
-			id:                    self.id.clone(),
+			id:                    self.id,
 			name:                  self.name.clone(),
-			active:                self.active.clone(),
-			color:                 self.color.clone(),
+			active:                self.active,
+			color:                 self.color,
 			ty:                    self.ty.clone(),
 			draw_buffer_scheduler: DrawBufferScheduler::new(),
 		}
