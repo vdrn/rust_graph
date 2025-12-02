@@ -1180,6 +1180,12 @@ fn draw_implicit<T: EvalexprFloat>(
 		},
 	}
 
+  let bounds_diag = ((maxs.0 - mins.0).powi(2) + (maxs.1 - mins.1).powi(2)).sqrt();
+
+//146_327
+  let eps = (T::EPSILON * bounds_diag * 100.0).max(T::EPSILON);
+//: 146_327
+
 	let params = marching_squares::MarchingSquaresParams {
 		resolution,
 		bounds_min: mins,
@@ -1187,6 +1193,7 @@ fn draw_implicit<T: EvalexprFloat>(
 		draw_lines,
 		draw_fill,
 		fill_color: color,
+		eps
 	};
 	let result = marching_squares::marching_squares(
 		params,
@@ -1233,6 +1240,8 @@ fn draw_implicit<T: EvalexprFloat>(
 		Some(Err(e)) => return Err((id, e)),
 		None => return Ok(false),
 	};
+  // let total_line = result.iter().map(|r| r.lines.len()).sum::<usize>();
+  // println!("total_lines: {total_line}");
 	for result in result {
 		for line in result.lines {
 			add_line(line);

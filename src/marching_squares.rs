@@ -67,6 +67,7 @@ pub enum MarchingSquaresFill {
 	Positive,
 }
 pub struct MarchingSquaresParams {
+  pub eps:f64,
 	pub resolution: usize,
 	pub bounds_min: (f64, f64),
 	pub bounds_max: (f64, f64),
@@ -132,7 +133,7 @@ pub fn marching_squares<C>(
 		}
 	}
 
-	let eps = f32::EPSILON as f64;
+	// let eps = f32::EPSILON as f64;
 
 	scope!("generate_polylines");
 
@@ -155,7 +156,7 @@ pub fn marching_squares<C>(
 			let end = start + chunk_size + if chunk_idx < remainder { 1 } else { 0 };
 
 			let mut ctx = thread_prepare();
-			let mut polyline_builder = PolylineBuilder::new(0.0001, eps);
+			let mut polyline_builder = PolylineBuilder::new(0.0001, params.eps);
 			let mut mesh_builder = MeshBuilder::new(params.fill_color);
 
 			// Cache for bottom-mid values from previous row
@@ -297,7 +298,7 @@ pub fn marching_squares<C>(
 									sub_dy,
 									[vals[0], bot_mid, center, left_mid],
 									&mut polyline_builder,
-									eps,
+									params.eps,
 								);
 							}
 							if let Some(fill_type) = params.draw_fill {
@@ -323,7 +324,7 @@ pub fn marching_squares<C>(
 									sub_dy,
 									[bot_mid, vals[1], right_mid, center],
 									&mut polyline_builder,
-									eps,
+									params.eps,
 								);
 							}
 							if let Some(fill_type) = params.draw_fill {
@@ -349,7 +350,7 @@ pub fn marching_squares<C>(
 									sub_dy,
 									[center, right_mid, vals[2], top_mid],
 									&mut polyline_builder,
-									eps,
+									params.eps,
 								);
 							}
 							if let Some(fill_type) = params.draw_fill {
@@ -375,7 +376,7 @@ pub fn marching_squares<C>(
 									sub_dy,
 									[left_mid, center, top_mid, vals[3]],
 									&mut polyline_builder,
-									eps,
+									params.eps,
 								);
 							}
 							if let Some(fill_type) = params.draw_fill {

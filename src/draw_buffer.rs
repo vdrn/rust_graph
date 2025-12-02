@@ -93,6 +93,9 @@ impl ProcessedShapes {
 				eframe::epaint::Tessellator::new(ppp, TessellationOptions::default(), [12, 12], vec![]);
 			self.tes_pixels_per_point = ppp;
 		}
+		if let Some(prev_plot_transform) = plot_params.prev_plot_transform {
+			self.tesselator.set_clip_rect(*prev_plot_transform.frame());
+		}
 
 		// self.tesselator.set_clip_rect.
 		self.lines.clear();
@@ -275,7 +278,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 
 	// };
 
-	let final_closest_point_to_mouse_for_selected: Mutex<Option<((f64, f64), f64)>> = Mutex::new(None);
+	let closest_point_to_mouse_for_selected: Mutex<Option<((f64, f64), f64)>> = Mutex::new(None);
 
 	let mut process_entry = |entry: &Entry<T>| {
 		let id = Id::new(entry.id);
@@ -303,6 +306,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 					let PlotGeometry::Points(plot_points) = line.line.geometry() else {
 						continue;
 					};
+					let pt_radius = line.width + 2.5;
 
 					// Find local optima
 					let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
@@ -348,12 +352,12 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 										PointInteraction {
 											x,
 											y: 0.0,
-											radius: line.width,
+											radius: pt_radius,
 											ty: PointInteractionType::Other(
 												OtherPointType::IntersectionWithXAxis,
 											),
 										},
-										Points::new("", [x, 0.0]).color(Color32::GRAY).radius(line.width),
+										Points::new("", [x, 0.0]).color(Color32::GRAY).radius(pt_radius),
 									));
 								}
 
@@ -372,12 +376,12 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 										PointInteraction {
 											x: 0.0,
 											y,
-											radius: line.width,
+											radius: pt_radius,
 											ty: PointInteractionType::Other(
 												OtherPointType::IntersectionWithYAxis,
 											),
 										},
-										Points::new("", [0.0, y]).color(Color32::GRAY).radius(line.width),
+										Points::new("", [0.0, y]).color(Color32::GRAY).radius(pt_radius),
 									));
 								}
 
@@ -391,12 +395,12 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 										PointInteraction {
 											x:      prev_1.0,
 											y:      prev_1.1,
-											radius: line.width,
+											radius: pt_radius,
 											ty:     PointInteractionType::Other(OtherPointType::Maxima),
 										},
 										Points::new("", [prev_1.0, prev_1.1])
 											.color(Color32::GRAY)
-											.radius(line.width),
+											.radius(pt_radius),
 									));
 								}
 								if greater_then(prev_0.1, prev_1.1, plot_params.eps)
@@ -409,12 +413,12 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 										PointInteraction {
 											x:      prev_1.0,
 											y:      prev_1.1,
-											radius: line.width,
+											radius: pt_radius,
 											ty:     PointInteractionType::Other(OtherPointType::Minima),
 										},
 										Points::new("", [prev_1.0, prev_1.1])
 											.color(Color32::GRAY)
-											.radius(line.width),
+											.radius(pt_radius),
 									));
 								}
 							}
@@ -427,8 +431,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 			}
 			if show_closest_point_to_mouse {
 				if let Some((closest_point, dist_sq, _)) = closest_point_to_mouse {
-					let mut final_closest_point_to_mouse =
-						final_closest_point_to_mouse_for_selected.lock().unwrap();
+					let mut final_closest_point_to_mouse = closest_point_to_mouse_for_selected.lock().unwrap();
 					if let Some(cur_closest_point) = *final_closest_point_to_mouse {
 						if dist_sq < cur_closest_point.1 {
 							*final_closest_point_to_mouse = Some((closest_point, dist_sq));
@@ -461,6 +464,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 								let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
 									continue;
 								};
+								let pt_radius = selected_line.width + 2.5;
 								for sel_seg in sel_points.windows(2) {
 									if let Some(point) = intersect_segs(
 										plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
@@ -471,14 +475,14 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 											PointInteraction {
 												x:      point.x,
 												y:      point.y,
-												radius: fline.width,
+												radius: pt_radius,
 												ty:     PointInteractionType::Other(
 													OtherPointType::Intersection,
 												),
 											},
 											Points::new("", [point.x, point.y])
 												.color(Color32::GRAY)
-												.radius(selected_line.width),
+												.radius(pt_radius),
 										));
 										pi += 1;
 									}
@@ -491,9 +495,9 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 		}
 
 		if let Some((_closest_point, dist_sq, id)) = closest_point_to_mouse {
-			if let Some((hovered_line_id, hovered_dist_sq)) = hovered_line {
-				if hovered_dist_sq < dist_sq {
-					hovered_line = Some((hovered_line_id, hovered_dist_sq));
+			if let Some((_, cur_dist_sq)) = hovered_line {
+				if dist_sq < cur_dist_sq  {
+					hovered_line = Some((id, dist_sq));
 				}
 			} else {
 				hovered_line = Some((id, dist_sq));
@@ -518,20 +522,23 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 		}
 	}
 
-	let closest_point_to_mouse = final_closest_point_to_mouse_for_selected.into_inner().unwrap();
-	if let Some(closest_point_to_mouse) = closest_point_to_mouse {
+	let closest_point_to_mouse_for_selected = closest_point_to_mouse_for_selected.into_inner().unwrap();
+	if let Some(closest_point_to_mouse_for_selected) = closest_point_to_mouse_for_selected {
 		draw_points.push(DrawPoint::new(
 			0,
 			0,
 			PointInteraction {
-				x:      closest_point_to_mouse.0.0,
-				y:      closest_point_to_mouse.0.1,
+				x:      closest_point_to_mouse_for_selected.0.0,
+				y:      closest_point_to_mouse_for_selected.0.1,
 				radius: 5.0,
 				ty:     PointInteractionType::Other(OtherPointType::Point),
 			},
-			Points::new("", [closest_point_to_mouse.0.0, closest_point_to_mouse.0.1])
-				.color(Color32::GRAY)
-				.radius(5.0),
+			Points::new(
+				"",
+				[closest_point_to_mouse_for_selected.0.0, closest_point_to_mouse_for_selected.0.1],
+			)
+			.color(Color32::GRAY)
+			.radius(5.0),
 		));
 	}
 
@@ -548,7 +555,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 	};
 
 	ProcessDrawBuffersResult {
-		closest_point_to_mouse_on_selected: closest_point_to_mouse,
+		closest_point_to_mouse_on_selected: closest_point_to_mouse_for_selected,
 		draw_points,
 		hovered_id,
 	}
@@ -556,7 +563,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 
 #[derive(Clone)]
 pub struct DrawMesh {
-	pub ty:            DrawMeshType,
+	pub ty: DrawMeshType,
 }
 #[derive(Default, Clone)]
 pub struct FillMesh {
@@ -893,6 +900,9 @@ impl DrawBufferScheduler {
 			}
 			if let Some(earliest_one) = &mut self.earliest_one {
 				if timestamp == earliest_one.timestamp {
+					self.earliest_one = None;
+				} else if timestamp > earliest_one.timestamp {
+					earliest_one.cancel_signal.store(true, Ordering::Relaxed);
 					self.earliest_one = None;
 				}
 			}
