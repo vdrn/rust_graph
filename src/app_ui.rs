@@ -388,7 +388,7 @@ pub fn side_panel<T: EvalexprFloat>(
 				.inner
 		})
 		.inner;
-	ui_state.eval_errors.clear();
+	// ui_state.eval_errors.clear();
 	changed
 }
 pub fn graph_panel<T: EvalexprFloat>(
@@ -439,7 +439,9 @@ pub fn graph_panel<T: EvalexprFloat>(
 							if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
 								received_new = true;
 								match received {
-									Ok(()) => {},
+									Ok(()) => {
+										ui_state.eval_errors.remove(&entry.id);
+									},
 									Err((id, error)) => {
 										ui_state.eval_errors.insert(id, error);
 									},
@@ -451,7 +453,9 @@ pub fn graph_panel<T: EvalexprFloat>(
 						if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
 							received_new = true;
 							match received {
-								Ok(()) => {},
+								Ok(()) => {
+									ui_state.eval_errors.remove(&entry.id);
+								},
 								Err((id, error)) => {
 									ui_state.eval_errors.insert(id, error);
 								},
@@ -645,6 +649,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		if force_create_elements || changed {
 			scope!("schedule_entry_create_plot_elements");
+      ui_state.eval_errors.clear();
 			let plot_params = entry::PlotParams::new(ui_state);
 			let main_context = Arc::new(state.ctx.clone());
 			for (i, entry) in state.entries.iter_mut().enumerate() {

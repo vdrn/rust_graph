@@ -73,6 +73,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 			.clicked()
 		{
 			entry.active = !entry.active;
+      result.needs_redraw = true;
 		}
 
 		let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
@@ -263,7 +264,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 					}
 					if func.args.len() == 1 && func.equation_type == EquationType::None {
 						ui.horizontal(|ui| {
-							ui.checkbox(parametric, "Parametric");
+							if ui.checkbox(parametric, "Parametric").changed(){
+                result.needs_redraw = true;
+              }
 							if *parametric && func.args.len() == 1 {
 								ui.label("Start:");
 								match expr_ui(range_start, ui, "", Some(30.0), clear_cache, false) {

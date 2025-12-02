@@ -74,6 +74,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 ) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
+    entry.draw_buffer_scheduler.clear_buffer();
 		return;
 	}
 	match &mut entry.ty {
@@ -804,10 +805,13 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					add_line(mem::take(&mut pp_buffer));
 				},
 				Ok(Value::Tuple(_) | Value::Float2(_, _)) => {
-					return Err((id, "Non-parametric function must return a single number.".to_string()));
+          return Ok(false);
+					// return Err((id, "Non-parametric function must return a single number.".to_string()));
 				},
 				Ok(Value::Boolean(_)) => {
-					return Err((id, "Non-parametric function must return a number.".to_string()));
+          return Ok(false);
+
+					// return Err((id, "Non-parametric function must return a number.".to_string()));
 				},
 				Err(e) => {
 					return Err((id, e.to_string()));
@@ -1027,11 +1031,11 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 							pp_buffer.push(PlotPoint::new(right.1, right.0));
 						},
 					}
-				}
 				prev_arg = curr_arg;
 				prev_angle = None;
 				prev_point = curr_result.map(|(_, v)| v);
 				continue;
+				}
 			}
 		}
 		match (prev_point, curr_result) {

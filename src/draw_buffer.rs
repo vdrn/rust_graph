@@ -854,6 +854,10 @@ impl DrawBufferScheduler {
 			},
 		}
 	}
+  pub fn clear_buffer(&mut self) {
+    self.current_draw_buffer.buffer.clear();
+    self.current_draw_buffer.timestamp = Instant::now();
+  }
 	pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
 		let started = Instant::now();
 		self.current_draw_buffer.buffer.clear();
