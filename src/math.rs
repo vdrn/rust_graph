@@ -384,3 +384,61 @@ pub fn pseudoangle(x: f64, y: f64) -> f64 {
 	// }
 	-y.signum() * (p + 1.0) + 2.0
 }
+
+pub fn aabb_segment_intersects(min: (f64, f64), max: (f64, f64), p0: (f64, f64), p1: (f64, f64)) -> bool {
+	let mut t0: f64 = 0.0;
+	let mut t1: f64 = 1.0;
+
+	let dx = p1.0 - p0.0;
+	let dy = p1.1 - p0.1;
+
+	if dx.abs() < 1e-10 {
+		// vertical segment - check if within X bounds
+		if p0.0 < min.0 || p0.0 > max.0 {
+			return false;
+		}
+	} else {
+		let inv_dx = 1.0 / dx;
+		let mut tx0 = (min.0 - p0.0) * inv_dx;
+		let mut tx1 = (max.0 - p0.0) * inv_dx;
+		if tx0 > tx1 {
+			core::mem::swap(&mut tx0, &mut tx1);
+		}
+		t0 = t0.max(tx0);
+		t1 = t1.min(tx1);
+		if t0 > t1 {
+			return false;
+		}
+	}
+
+	if dy.abs() < 1e-10 {
+		// horizontal seg: check is within Y bounds
+		if p0.1 < min.1 || p0.1 > max.1 {
+			return false;
+		}
+	} else {
+		let inv_dy = 1.0 / dy;
+		let mut ty0 = (min.1 - p0.1) * inv_dy;
+		let mut ty1 = (max.1 - p0.1) * inv_dy;
+		if ty0 > ty1 {
+			core::mem::swap(&mut ty0, &mut ty1);
+		}
+		t0 = t0.max(ty0);
+		t1 = t1.min(ty1);
+		if t0 > t1 {
+			return false;
+		}
+	}
+
+	true
+}
+pub fn aabb_segment_intersects_loose(
+	min: (f64, f64), max: (f64, f64), p0: (f64, f64), p1: (f64, f64),
+) -> bool {
+	let seg_min_x = p0.0.min(p1.0);
+	let seg_max_x = p0.0.max(p1.0);
+	let seg_min_y = p0.1.min(p1.1);
+	let seg_max_y = p0.1.max(p1.1);
+
+	(min.0 <= seg_max_x) & (min.1 <= seg_max_y) & (max.0 >= seg_min_x) & (max.1 >= seg_min_y)
+}

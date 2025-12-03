@@ -670,7 +670,6 @@ pub fn graph_panel<T: EvalexprFloat>(
 			ui_state.force_process_elements = true;
 		}
 
-    let mut dragging_point = false;
 		if let Some(drag_result) = point_dragging(
 			&mut state.entries,
 			&mut state.ctx,
@@ -679,7 +678,6 @@ pub fn graph_panel<T: EvalexprFloat>(
 			hovered_point.as_ref(),
 			&plot_params,
 		) {
-      dragging_point = true;
 			state.clear_cache = true;
 			ui_state.showing_custom_label = true;
 			let screen_x = plot_res.transform.position_from_point_x(drag_result.x);

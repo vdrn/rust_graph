@@ -1,12 +1,11 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
-use core::f32::consts::PI;
 use core::mem;
 use core::sync::atomic::AtomicBool;
 use std::marker::ConstParamTy;
 
-use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, Vec2, pos2, remap};
-use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, PlotTransform, Points, Polygon, Text};
+use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
+use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, PlotTransform, Points, Polygon};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
 
@@ -15,7 +14,9 @@ use crate::draw_buffer::{
 };
 use crate::entry::{COLORS, ClonedEntry, Entry, EntryType, EquationType, NUM_COLORS, f64_to_value};
 use crate::marching_squares::MeshBuilder;
-use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary};
+use crate::math::{
+	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
+};
 use crate::widgets::TextPlotItem;
 use crate::{ThreadLocalContext, UiState, marching_squares, thread_local_get};
 
@@ -129,7 +130,8 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 					entry_create_plot_elements_sync(
 						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, ctx,
 						plot_params, tl_context, draw_buffer,
-					)
+					);
+          Ok(())
 				}
 			});
 		},
@@ -434,7 +436,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: usize, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut DrawBuffer,
-) -> Result<(), (u64, String)> {
+) {
 	let color = COLORS[color % NUM_COLORS];
 	// println!("step_size: {deriv_step_x}");
 	let egui_id = Id::new(id);
@@ -612,7 +614,6 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 			}
 		},
 	}
-	Ok(())
 }
 
 pub fn eval_point2<T: EvalexprFloat>(
@@ -812,8 +813,8 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 }
 
 const P_CURVATURE_FACTOR_SCALE: f64 = 8.0;
-const P_SMALL_DISTANCE_SCALE: f64 = 35.0;
-const P_SMALL_DISTANCE_POW: f64 = 1.0;
+const P_SMALL_DISTANCE_SCALE: f64 = 18.0;
+const P_SMALL_DISTANCE_POW: f64 = 1.22;
 fn calculate_curvature_factor(pangle1: f64, pangle2: f64) -> f64 {
 	let mut angle_diff = (pangle2 - pangle1).abs();
 	if angle_diff > 2.0 {
@@ -830,7 +831,48 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	mut add_line: impl FnMut(Vec<PlotPoint>, bool),
 ) -> Result<bool, (u64, String)> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-	let mut pp_buffer = vec![];
+	let mut pp_buffer: Vec<PlotPoint> = Vec::with_capacity(plot_params.resolution);
+	#[inline(always)]
+	fn add_point(
+		pp_buffer: &mut Vec<PlotPoint>, p: PlotPoint, plot_params: &PlotParams,
+		add_line: &mut impl FnMut(Vec<PlotPoint>, bool),
+	) {
+		if let Some(last) = pp_buffer.last() {
+			let on_screen = aabb_segment_intersects_loose(
+				(plot_params.first_x, plot_params.first_y),
+				(plot_params.last_x, plot_params.last_y),
+				(last.x, last.y),
+				(p.x, p.y),
+			);
+			if !on_screen {
+				if pp_buffer.len() > 1 {
+					add_line(mem::take(pp_buffer), true);
+				} else {
+					pp_buffer.clear();
+				}
+			}
+		}
+		// if pp_buffer.len() > 1 {
+		// 	let last = pp_buffer[pp_buffer.len() - 1];
+		// 	let sec_last = pp_buffer[pp_buffer.len() - 2];
+
+		// 	let on_screen = aabb_segment_intersects_loose(
+		// 		(plot_params.first_x, plot_params.first_y),
+		// 		(plot_params.last_x, plot_params.last_y),
+		// 		(last.x, last.y),
+		// 		(sec_last.x, sec_last.y),
+		// 	);
+
+		// 	if !on_screen {
+		// 		let last = pp_buffer.pop().unwrap();
+		// 		pp_buffer.pop();
+		// 		add_line(mem::take(pp_buffer), true);
+		// 		pp_buffer.push(last);
+		// 		return;
+		// 	}
+		// }
+		pp_buffer.push(p);
+	}
 	let (start, end) = match eval_point(&mut stack, ctx, range_start, range_end) {
 		Ok(Some((start, end))) => (start, end),
 		Err(e) => {
@@ -862,7 +904,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// );
 
 	#[allow(clippy::integer_division)]
-	let max_subdivisions = (plot_params.resolution / 30).clamp(1, 50);
+	let max_subdivisions = (plot_params.resolution / 20).max(1);
 
 	// Determine function type from first evaluation
 	let first_value = match func.call(&mut stack, ctx, &[f64_to_value::<T>(start)]) {
@@ -920,7 +962,8 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let mut discontinuity_detector2 = None;
 	let mut prev_point = match eval_point_at(start) {
 		Ok(Some((arg, p))) => {
-			pp_buffer.push(p);
+			add_point(&mut pp_buffer, p, plot_params, &mut add_line);
+			// println!("Start p {p:?}");
 			if is_float2 {
 				discontinuity_detector =
 					Some(DiscontinuityDetector::new_with_initial(step_eps, plot_params.eps, (arg, p.y)));
@@ -956,6 +999,9 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let mut discontinuity_detector2 =
 		discontinuity_detector2.unwrap_or_else(|| DiscontinuityDetector::new(step_eps, plot_params.eps));
 
+	// let mut num_on_screen = 0;
+	// let mut num_off_screen = 0;
+	// let mut max_base_subdivisions = 0;
 	// let mut num_splits = Vec::with_capacity(plot_params.resolution * 2);
 	// let mut curvature_factors = Vec::with_capacity(plot_params.resolution * 2);
 	for i in 1..=plot_params.resolution {
@@ -964,59 +1010,13 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			Ok(r) => r,
 			Err(e) => return Err((id, e)),
 		};
+		// let debug = i < 3;
+		let debug = false;
+		if debug {
+			println!("i = {i} start p {curr_result:?}");
+		}
 		let mut cur_angle = None;
 
-		if let Some((curr_arg, curr_p)) = curr_result {
-			// Check for discontinuity
-			if is_float2 {
-				// TODO: this is BOTH wrong and bad.
-				// We detect the discontinuity, but the _left and _right bisection results are meaningless
-				// points (either (arg, y) or (arg,x), while we need (x,y))
-				// We either need to have custom disconinuity detector for Float2 case,
-				// or at least dont do useless bisection inside `detect(..)`
-				if let Some((_left, _right)) = discontinuity_detector
-					.detect(curr_arg, curr_p.y, |arg| eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y)))
-					.or_else(|| {
-						discontinuity_detector2.detect(curr_arg, curr_p.x, |arg| {
-							eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
-						})
-					}) {
-					add_line(mem::take(&mut pp_buffer), true);
-					pp_buffer.push(curr_p);
-
-					prev_arg = curr_arg;
-					prev_angle = None;
-					prev_point = curr_result.map(|(_, v)| v);
-					continue;
-				}
-			} else {
-				if let Some((left, right)) = match TY {
-					SimpleFunctionType::X => discontinuity_detector.detect(curr_p.x, curr_p.y, |arg| {
-						eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y))
-					}),
-					SimpleFunctionType::Y => discontinuity_detector.detect(curr_p.y, curr_p.x, |arg| {
-						eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
-					}),
-				} {
-					match TY {
-						SimpleFunctionType::X => {
-							pp_buffer.push(PlotPoint::new(left.0, left.1));
-							add_line(mem::take(&mut pp_buffer), true);
-							pp_buffer.push(PlotPoint::new(right.0, right.1));
-						},
-						SimpleFunctionType::Y => {
-							pp_buffer.push(PlotPoint::new(left.1, left.0));
-							add_line(mem::take(&mut pp_buffer), true);
-							pp_buffer.push(PlotPoint::new(right.1, right.0));
-						},
-					}
-					prev_arg = curr_arg;
-					prev_angle = None;
-					prev_point = curr_result.map(|(_, v)| v);
-					continue;
-				}
-			}
-		}
 		match (prev_point, curr_result) {
 			(Some(prev_p), Some((_, curr_p))) => {
 				// Check if segment is too long and needs subdivision
@@ -1025,16 +1025,25 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 				let a_dx = dx.abs();
 				let a_dy = dy.abs();
 
-				let margin_x = plot_width * 0.5 + a_dx * 2.0;
-				let margin_y = plot_height * 0.5 + a_dy * 2.0;
-				let on_screen = (prev_p.x >= plot_params.first_x - margin_x
-					&& prev_p.x <= plot_params.last_x + margin_x
-					&& prev_p.y >= plot_params.first_y - margin_y
-					&& prev_p.y <= plot_params.last_y + margin_y)
-					|| (curr_p.x >= plot_params.first_x - margin_x
-						&& curr_p.x <= plot_params.last_x + margin_x
-						&& curr_p.y >= plot_params.first_y - margin_y
-						&& curr_p.y <= plot_params.last_y + margin_y);
+				let margin_x = plot_width * 0.5;
+				let margin_y = plot_height * 0.5;
+				// let margin_x = 0.0;
+				// let margin_y = 0.0;
+				let on_screen = aabb_segment_intersects_loose(
+					(plot_params.first_x - margin_x, plot_params.first_y - margin_y),
+					(plot_params.last_x + margin_x, plot_params.last_y + margin_y),
+					(prev_p.x, prev_p.y),
+					(curr_p.x, curr_p.y),
+				);
+				// // TODO this is bad, we should do segment intersection instead
+				// let on_screen = (prev_p.x >= plot_params.first_x - margin_x
+				// 	&& prev_p.x <= plot_params.last_x + margin_x
+				// 	&& prev_p.y >= plot_params.first_y - margin_y
+				// 	&& prev_p.y <= plot_params.last_y + margin_y)
+				// 	|| (curr_p.x >= plot_params.first_x - margin_x
+				// 		&& curr_p.x <= plot_params.last_x + margin_x
+				// 		&& curr_p.y >= plot_params.first_y - margin_y
+				// 		&& curr_p.y <= plot_params.last_y + margin_y);
 
 				cur_angle = Some(pseudoangle(dx, dy));
 				if on_screen {
@@ -1042,10 +1051,13 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 						if a_dx > max_segment_x { (a_dx / max_segment_x).ceil() as usize } else { 1 };
 					let subdivisions_y =
 						if a_dy > max_segment_y { (a_dy / max_segment_y).ceil() as usize } else { 1 };
-					let mut subdivisions = subdivisions_x.max(subdivisions_y).min(max_subdivisions);
+					let mut base_subdivisions = subdivisions_x.max(subdivisions_y);
+					// max_base_subdivisions = max_base_subdivisions.max(base_subdivisions / 10);
+          #[allow(clippy::integer_division)]
+					let max_subdivisions = max_subdivisions.max(base_subdivisions / 10).min(plot_params.resolution/5);
 
 					// Adjust by curvature
-					if let Some(prev_angle) = prev_angle {
+					let adjusted_curvature = if let Some(prev_angle) = prev_angle {
 						let curvature_factor = calculate_curvature_factor(prev_angle, cur_angle.unwrap());
 
 						// 					let segment_length = (dx.powi(2) + dy.powi(2)).sqrt();
@@ -1053,35 +1065,140 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 						// segment_length).clamp(0.01, 1.0);
 
 						// 					let adjusted_curvature = curvature_factor * length_scale.sqrt();
-						let adjusted_curvature = curvature_factor;
-						subdivisions =
-							((subdivisions as f64 * adjusted_curvature) as usize).min(max_subdivisions);
+						// if debug {
+						// 	println!("base subdivisions {subdivisions} curvature {curvature_factor}");
+						// }
+						curvature_factor
 
 						// curvature_factors.push(adjusted_curvature);
+					} else {
+						// since we dont know how to calculate curvature, just use a conservative one
+						8.0
+					};
+					if debug {
+						println!("base subdivisions {base_subdivisions}");
+					}
+					base_subdivisions = (base_subdivisions as f64 * adjusted_curvature) as usize;
+					if debug {
+						println!("adjusted subdivisions {base_subdivisions}");
 					}
 
-					subdivisions = subdivisions.max(1);
+					base_subdivisions = base_subdivisions.clamp(1, max_subdivisions);
+					if debug {
+						println!("clamped subdivisions {base_subdivisions} ");
+					}
 
-					if subdivisions > 1 {
+					if base_subdivisions > 1 {
 						// Need to subdivide this segment
-						let t_step = (curr_arg - prev_arg) / subdivisions as f64;
-						for j in 1..subdivisions {
+						let t_step = (curr_arg - prev_arg) / base_subdivisions as f64;
+						for j in 1..base_subdivisions {
 							let t = prev_arg + t_step * j as f64;
-							match eval_point_at(t) {
-								Ok(Some((_, p))) => pp_buffer.push(p),
-								Ok(None) => {
-									// NaN in the middle
-									add_line(mem::take(&mut pp_buffer), true);
-								},
-								Err(e) => return Err((id, e)),
+							let curr_p = eval_point_at(t).map_err(|e| (id, e))?;
+							if debug {
+								println!("subdivission {j} curr_p {curr_p:?}");
 							}
+							// Ok(Some((_, p))) => pp_buffer.push(p),
+							// Ok(None) => {
+							// 	// NaN in the middle
+							// 	add_line(mem::take(&mut pp_buffer), true);
+							// },
+							// Err(e) => return Err((id, e)),
+							// };
+
+							if let Some((curr_arg, curr_p)) = curr_p {
+								// Check for discontinuity
+								if is_float2 {
+									// TODO: this is BOTH wrong and bad.
+									// We detect the discontinuity, but the _left and _right bisection results
+									// are meaningless points (either (arg, y) or (arg,x), while we
+									// need (x,y)) We either need to have custom disconinuity detector
+									// for Float2 case, or at least dont do useless bisection inside
+									// `detect(..)`
+									if let Some((_left, _right)) = discontinuity_detector
+										.detect(curr_arg, curr_p.y, |arg| {
+											eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y))
+										})
+										.or_else(|| {
+											discontinuity_detector2.detect(curr_arg, curr_p.x, |arg| {
+												eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
+											})
+										}) {
+										add_line(mem::take(&mut pp_buffer), true);
+										add_point(&mut pp_buffer, curr_p, plot_params, &mut add_line);
+
+										// prev_arg = curr_arg;
+										// prev_angle = None;
+										// prev_point = curr_result.map(|(_, v)| v);
+										continue;
+									}
+								} else {
+									if let Some((left, right)) = match TY {
+										SimpleFunctionType::X => {
+											discontinuity_detector.detect(curr_p.x, curr_p.y, |arg| {
+												eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.y))
+											})
+										},
+										SimpleFunctionType::Y => {
+											discontinuity_detector.detect(curr_p.y, curr_p.x, |arg| {
+												eval_point_at(arg).ok().and_then(|v| v.map(|p| p.1.x))
+											})
+										},
+									} {
+										match TY {
+											SimpleFunctionType::X => {
+												add_point(
+													&mut pp_buffer,
+													PlotPoint::new(left.0, left.1),
+													plot_params,
+													&mut add_line,
+												);
+												add_line(mem::take(&mut pp_buffer), true);
+												add_point(
+													&mut pp_buffer,
+													PlotPoint::new(right.0, right.1),
+													plot_params,
+													&mut add_line,
+												);
+											},
+											SimpleFunctionType::Y => {
+												add_point(
+													&mut pp_buffer,
+													PlotPoint::new(left.1, left.0),
+													plot_params,
+													&mut add_line,
+												);
+												add_line(mem::take(&mut pp_buffer), true);
+												add_point(
+													&mut pp_buffer,
+													PlotPoint::new(right.1, right.0),
+													plot_params,
+													&mut add_line,
+												);
+											},
+										}
+										// prev_arg = curr_arg;
+										// prev_angle = None;
+										// prev_point = curr_result.map(|(_, v)| v);
+										continue;
+									}
+								}
+							}
+							if let Some((_, p)) = curr_p {
+								add_point(&mut pp_buffer, p, plot_params, &mut add_line);
+							} else {
+								// NaN in the middle
+								add_line(mem::take(&mut pp_buffer), true);
+							};
+
+							// } else {
+							// }
 						}
 					}
 					// num_splits.push(subdivisions);
 				} else {
 					// num_splits.push(1);
 				}
-				pp_buffer.push(curr_p);
+				add_point(&mut pp_buffer, curr_p, plot_params, &mut add_line);
 			},
 			(Some(_), None) => {
 				// nan
@@ -1089,7 +1206,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			},
 			(None, Some((_, p))) => {
 				// coming back from NaN
-				pp_buffer.push(p);
+				add_point(&mut pp_buffer, p, plot_params, &mut add_line);
 			},
 			(None, None) => {
 				// Still NaN, nothing to do
@@ -1100,6 +1217,10 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		prev_arg = curr_arg;
 		prev_point = curr_result.map(|(_, p)| p);
 	}
+	// println!(
+	// 	"max_base_subdivisions {max_base_subdivisions} num_on_screen {num_on_screen} num_off_screen \
+	// 	 {num_off_screen}"
+	// );
 
 	// if num_splits.len() > 0 {
 	// num_splits.sort_unstable();

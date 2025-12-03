@@ -1,7 +1,7 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{
-	self, Align2, Area, Color32, DragValue, Frame, Id, Slider, SliderClamping, Stroke, TextStyle, Ui, Vec2, Widget, WidgetText
+	self, Align2, Area, Color32, DragValue, Frame, Id, Slider, SliderClamping, Stroke, TextStyle, Ui, Widget, WidgetText
 };
 use eframe::epaint::{Shape, TextShape};
 use egui_plot::{PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotTransform};
@@ -93,7 +93,7 @@ impl TextPlotItem {
 
 	/// Anchor position of the text. Default is `Align2::CENTER_CENTER`.
 	#[inline]
-	pub fn anchor(mut self, anchor: Align2) -> Self {
+	pub fn _anchor(mut self, anchor: Align2) -> Self {
 		self.anchor = anchor;
 		self
 	}
@@ -107,7 +107,7 @@ impl TextPlotItem {
 	/// make sure the name passed to [`Self::new`] is unique and stable for each item, or
 	/// set unique and stable ids explicitly via [`Self::id`].
 	#[inline]
-	pub fn with_name(mut self, name: impl ToString) -> Self {
+	pub fn _with_name(mut self, name: impl ToString) -> Self {
 		self.name = name.to_string();
 		self.id = Id::new(&self.name);
 		self
@@ -117,14 +117,14 @@ impl TextPlotItem {
 	///
 	/// If false, the item may still be highlighted via user interaction.
 	#[inline]
-	pub fn with_highlight(mut self, highlight: bool) -> Self {
+	pub fn _with_highlight(mut self, highlight: bool) -> Self {
 		self.highlight = highlight;
 		self
 	}
 
 	/// Allowed hovering this item in the plot. Default: `true`.
 	#[inline]
-	pub fn with_allow_hover(mut self, hovering: bool) -> Self {
+	pub fn _with_allow_hover(mut self, hovering: bool) -> Self {
 		self.allow_hover = hovering;
 		self
 	}
@@ -134,7 +134,7 @@ impl TextPlotItem {
 	/// By default the id is determined from the name passed to [`Self::new`], but it can be
 	/// explicitly set to a different value.
 	#[inline]
-	pub fn with_id(mut self, id: impl Into<Id>) -> Self {
+	pub fn _with_id(mut self, id: impl Into<Id>) -> Self {
 		self.id = id.into();
 		self
 	}
