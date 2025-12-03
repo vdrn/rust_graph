@@ -11,7 +11,7 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBufferScheduler;
 use crate::entry::{
-	EquationType, Expr, FunctionType, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
+	EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -57,7 +57,6 @@ impl ExprSer {
 			node: ast.and_then(|ast| evalexpr::build_flat_node_from_ast::<T>(ast).ok()),
 			equation_type,
 
-			inlined_node: None,
 			args: Vec::new(),
 			expr_function: None,
 			text: self.text,
@@ -79,8 +78,6 @@ pub enum EntryTypeSerialized {
 		style:               LineStyleConfig,
 		#[serde(default)]
 		implicit_resolution: usize,
-		#[serde(default = "default_true")]
-		selectable:          bool,
 		#[serde(default)]
 		parametric_fill:     bool,
 		#[serde(default)]
@@ -98,17 +95,7 @@ pub enum EntryTypeSerialized {
 	Points {
 		points: Vec<EntryPointSerialized>,
 		#[serde(default)]
-		style:  PointStyle,
-	},
-	Label {
-		#[serde(default)]
-		x:         ExprSer,
-		#[serde(default)]
-		y:         ExprSer,
-		#[serde(default)]
-		size:      ExprSer,
-		#[serde(default)]
-		underline: bool,
+		style:  PointStyleSerialized,
 	},
 	Folder {
 		#[serde(default)]
@@ -123,6 +110,87 @@ pub struct EntryPointSerialized {
 	y:         ExprSer,
 	#[serde(default)]
 	drag_type: PointDragType,
+}
+#[derive(Default, Serialize, Deserialize)]
+pub struct LabelConfigSerialized {
+	#[serde(default)]
+	text:   String,
+	#[serde(default)]
+	size:   LabelSize,
+	#[serde(default)]
+	pos:    LabelPosition,
+	#[serde(default)]
+	italic: bool,
+	#[serde(default)]
+	angle:  ExprSer,
+}
+impl LabelConfigSerialized {
+	fn from_label_config<T: EvalexprFloat>(label_config: &LabelConfig<T>) -> Self {
+		Self {
+			text:   label_config.text.clone(),
+			size:   label_config.size,
+			pos:    label_config.pos,
+			italic: label_config.italic,
+			angle:  ExprSer::from_expr(&label_config.angle),
+		}
+	}
+	fn into_label_config<T: EvalexprFloat>(self) -> LabelConfig<T> {
+		LabelConfig {
+			text:   self.text,
+			size:   self.size,
+			pos:    self.pos,
+			italic: self.italic,
+			angle:  self.angle.into_expr(false),
+		}
+	}
+}
+#[derive(Serialize, Default, Deserialize)]
+pub struct PointStyleSerialized {
+	#[serde(default)]
+	show_lines:             bool,
+	#[serde(default)]
+	show_arrows:            bool,
+	#[serde(default)]
+	show_points:            bool,
+	#[serde(default)]
+	line_style:             LineStyleConfig,
+	#[serde(default)]
+	label_config:           Option<LabelConfigSerialized>,
+	#[serde(default)]
+	fill:                   bool,
+	#[serde(default)]
+	fill_rule:              FillRule,
+	#[serde(default)]
+	connect_first_and_last: bool,
+}
+impl PointStyleSerialized {
+	fn from_point_style<T: EvalexprFloat>(point_style: &PointStyle<T>) -> Self {
+		Self {
+			show_lines:             point_style.show_lines,
+			show_arrows:            point_style.show_arrows,
+			show_points:            point_style.show_points,
+			line_style:             point_style.line_style.clone(),
+			label_config:           point_style
+				.label_config
+				.as_ref()
+				.map(LabelConfigSerialized::from_label_config),
+			fill:                   point_style.fill,
+			fill_rule:              point_style.fill_rule,
+			connect_first_and_last: point_style.connect_first_and_last,
+		}
+	}
+	fn into_point_style<T: EvalexprFloat>(self) -> PointStyle<T> {
+		PointStyle {
+			show_lines:             self.show_lines,
+			show_arrows:            self.show_arrows,
+			show_points:            self.show_points,
+			line_style:             self.line_style,
+			label_config:           self.label_config.map(|label_config| label_config.into_label_config()),
+			fill:                   self.fill,
+			fill_rule:              self.fill_rule,
+			connect_first_and_last: self.connect_first_and_last,
+		}
+	}
 }
 
 pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: GraphConfig) -> StateSerialized {
@@ -140,7 +208,6 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					style,
 					parametric,
 					implicit_resolution,
-					selectable,
 					parametric_fill,
 					fill_rule,
 					..
@@ -150,7 +217,6 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					range_start:         ExprSer::from_expr(range_start),
 					range_end:           ExprSer::from_expr(range_end),
 					style:               style.clone(),
-					selectable:          *selectable,
 					fill_rule:           *fill_rule,
 					implicit_resolution: *implicit_resolution,
 					parametric_fill:     *parametric_fill,
@@ -174,13 +240,10 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 						};
 						points_serialized.push(point_serialized);
 					}
-					EntryTypeSerialized::Points { points: points_serialized, style: style.clone() }
-				},
-				EntryType::Label { x, y, size, underline, .. } => EntryTypeSerialized::Label {
-					x:         ExprSer::from_expr(x),
-					y:         ExprSer::from_expr(y),
-					size:      ExprSer::from_expr(size),
-					underline: *underline,
+					EntryTypeSerialized::Points {
+						points: points_serialized,
+						style:  PointStyleSerialized::from_point_style(style),
+					}
 				},
 				EntryType::Folder { entries } => {
 					let ser_entries = entries_to_ser(entries, GraphConfig::default());
@@ -260,7 +323,6 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					range_end,
 					style,
 					implicit_resolution,
-					selectable,
 					fill_rule,
 					parametric_fill,
 				} => EntryType::Function {
@@ -269,7 +331,6 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					fill_rule,
 					identifier: istr_empty(),
 					func: func.into_expr(true),
-					selectable,
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,
 
@@ -305,13 +366,11 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 						};
 						points_deserialized.push(point_deserialized);
 					}
-					EntryType::Points { points: points_deserialized, style, identifier: istr_empty() }
-				},
-				EntryTypeSerialized::Label { x: text_x, y: text_y, size, underline } => EntryType::Label {
-					x: text_x.into_expr(false),
-					y: text_y.into_expr(false),
-					size: size.into_expr(false),
-					underline,
+					EntryType::Points {
+						points:     points_deserialized,
+						style:      PointStyleSerialized::into_point_style(style),
+						identifier: istr_empty(),
+					}
 				},
 				EntryTypeSerialized::Folder { entries } => {
 					let (entries, _) = entries_from_ser(

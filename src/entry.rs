@@ -106,7 +106,6 @@ pub struct Expr<T: EvalexprFloat> {
 	pub text:             String,
 	pub display_rational: bool,
 	pub node:             Option<FlatNode<T>>,
-	pub inlined_node:     Option<FlatNode<T>>,
 	pub expr_function:    Option<ExpressionFunction<T>>,
 	pub args:             Vec<IStr>,
 	pub equation_type:    EquationType,
@@ -118,7 +117,6 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 			text:             Default::default(),
 			display_rational: false,
 			node:             Default::default(),
-			inlined_node:     Default::default(),
 			args:             Default::default(),
 			expr_function:    Default::default(),
 			equation_type:    Default::default(),
@@ -132,13 +130,7 @@ impl<T: EvalexprFloat> Expr<T> {
 			// if unoptimized node is constant, no need to display it
 			return None;
 		}
-		if let Some(func) = &self.expr_function {
-			func.as_constant()
-		} else if let Some(inlined_node) = &self.inlined_node {
-			inlined_node.as_constant()
-		} else {
-			None
-		}
+		if let Some(func) = &self.expr_function { func.as_constant() } else { None }
 	}
 	fn from_text(text: &str) -> Self {
 		// TODO preprocess here too
@@ -146,7 +138,6 @@ impl<T: EvalexprFloat> Expr<T> {
 			node:             evalexpr::build_flat_node::<T>(text).ok(),
 			equation_type:    EquationType::None,
 			display_rational: false,
-			inlined_node:     None,
 			expr_function:    None,
 			text:             text.to_string(),
 			args:             Vec::new(),
@@ -176,7 +167,6 @@ pub enum FunctionType {
 pub enum EntryType<T: EvalexprFloat> {
 	Function {
 		can_be_drawn: bool,
-		selectable:   bool,
 		identifier:   IStr,
 		func:         Expr<T>,
 		style:        LineStyleConfig,
@@ -204,20 +194,14 @@ pub enum EntryType<T: EvalexprFloat> {
 	Points {
 		identifier: IStr,
 		points:     Vec<PointEntry<T>>,
-		style:      PointStyle,
-	},
-	Label {
-		x:         Expr<T>,
-		y:         Expr<T>,
-		size:      Expr<T>,
-		underline: bool,
+		style:      PointStyle<T>,
 	},
 	Folder {
 		entries: Vec<Entry<T>>,
 	},
 }
 
-#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
 pub enum LabelSize {
 	#[default]
 	Small,
@@ -225,7 +209,7 @@ pub enum LabelSize {
 	Large,
 }
 impl LabelSize {
-	pub fn size(&self) -> f32 {
+	pub fn size(self) -> f32 {
 		match self {
 			LabelSize::Small => 10.0,
 			LabelSize::Medium => 16.0,
@@ -233,7 +217,7 @@ impl LabelSize {
 		}
 	}
 }
-#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
 pub enum LabelPosition {
 	#[default]
 	Bottom,
@@ -244,9 +228,10 @@ pub enum LabelPosition {
 	TRight,
 	BLeft,
 	BRight,
+	Center,
 }
 impl LabelPosition {
-	fn symbol(&self) -> &'static str {
+	fn symbol(self) -> &'static str {
 		match self {
 			LabelPosition::Top => "⮉",
 			LabelPosition::Bottom => "⮋",
@@ -256,9 +241,10 @@ impl LabelPosition {
 			LabelPosition::TRight => "⬈",
 			LabelPosition::BLeft => "⬋",
 			LabelPosition::BRight => "⬊",
+			LabelPosition::Center => "o",
 		}
 	}
-	fn dir(&self) -> egui::Vec2 {
+	fn dir(self) -> egui::Vec2 {
 		match self {
 			LabelPosition::Top => egui::Vec2::new(0.0, 1.0),
 			LabelPosition::Bottom => egui::Vec2::new(0.0, -1.0),
@@ -268,45 +254,51 @@ impl LabelPosition {
 			LabelPosition::TRight => egui::Vec2::new(0.71, 0.71),
 			LabelPosition::BLeft => egui::Vec2::new(-0.71, -0.71),
 			LabelPosition::BRight => egui::Vec2::new(0.71, -0.71),
+			LabelPosition::Center => egui::Vec2::new(0.0, 0.0),
 		}
 	}
 }
 
-#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
-pub struct LabelConfig {
-	#[serde(default)]
-	size:   LabelSize,
-	#[serde(default)]
-	pos:    LabelPosition,
-	#[serde(default)]
-	italic: bool,
+#[derive(Clone, Debug)]
+pub struct LabelConfig<T: EvalexprFloat> {
+	pub text:   String,
+	pub size:   LabelSize,
+	pub pos:    LabelPosition,
+	pub italic: bool,
+	pub angle:  Expr<T>,
+}
+impl<T: EvalexprFloat> Default for LabelConfig<T> {
+	fn default() -> Self {
+		Self {
+			text:   String::new(),
+			size:   LabelSize::Small,
+			pos:    LabelPosition::Bottom,
+			italic: false,
+			angle:  Expr::default(),
+		}
+	}
 }
 
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub struct PointStyle {
-	show_lines:             bool,
-	#[serde(default)]
-	show_arrows:            bool,
-	show_points:            bool,
-	line_style:             LineStyleConfig,
-	#[serde(default)]
-	label_config:           Option<LabelConfig>,
-	#[serde(default)]
-	fill:                   bool,
-	#[serde(default)]
-	fill_rule:              FillRule,
-	#[serde(default)]
-	connect_first_and_last: bool,
+#[derive(Clone, Debug)]
+pub struct PointStyle<T: EvalexprFloat> {
+	pub show_lines:             bool,
+	pub show_arrows:            bool,
+	pub show_points:            bool,
+	pub line_style:             LineStyleConfig,
+	pub label_config:           Option<LabelConfig<T>>,
+	pub fill:                   bool,
+	pub fill_rule:              FillRule,
+	pub connect_first_and_last: bool,
 }
 
-impl Default for PointStyle {
+impl<T: EvalexprFloat> Default for PointStyle<T> {
 	fn default() -> Self {
 		Self {
 			show_lines:             true,
 			show_points:            true,
 			show_arrows:            false,
-			label_config:           Some(LabelConfig::default()),
-			line_style:             LineStyleConfig::default(),
+			label_config:           None,
+			line_style:             LineStyleConfig::new(false),
 			fill:                   false,
 			connect_first_and_last: false,
 			fill_rule:              FillRule::default(),
@@ -323,13 +315,27 @@ pub enum LineStyleType {
 }
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct LineStyleConfig {
+	#[serde(default)]
+	selectable:      bool,
 	line_width:      f32,
 	#[serde(default)]
 	line_style:      LineStyleType,
 	line_style_size: f32,
 }
 impl Default for LineStyleConfig {
-	fn default() -> Self { Self { line_width: 1.5, line_style: LineStyleType::Solid, line_style_size: 5.5 } }
+	fn default() -> Self {
+		Self {
+			selectable:      false,
+			line_width:      1.5,
+			line_style:      LineStyleType::Solid,
+			line_style_size: 5.5,
+		}
+	}
+}
+impl LineStyleConfig {
+	fn new(selectable: bool) -> Self {
+		Self { selectable, ..Self::default()}
+	}
 }
 impl LineStyleConfig {
 	fn egui_line_style(&self) -> egui_plot::LineStyle {
@@ -353,7 +359,6 @@ impl<T: EvalexprFloat> Entry<T> {
 				}
 			},
 			EntryType::Points { .. } => "◊",
-			EntryType::Label { .. } => "📃",
 			EntryType::Folder { .. } => {
 				if self.active {
 					"📂"
@@ -368,7 +373,6 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Function { .. } => "λ   Function",
 			EntryType::Constant { .. } => "⏵ Constant",
 			EntryType::Points { .. } => "◊ Points",
-			EntryType::Label { .. } => "📃 Label",
 			EntryType::Folder { .. } => "📂 Folder",
 		}
 	}
@@ -377,7 +381,6 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Function { .. } => "Function",
 			EntryType::Constant { .. } => "Constant",
 			EntryType::Points { .. } => "Points",
-			EntryType::Label { .. } => "Label",
 			EntryType::Folder { .. } => "Folder",
 		}
 	}
@@ -391,7 +394,6 @@ impl<T: EvalexprFloat> Entry<T> {
 			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
-				selectable:   true,
 				can_be_drawn: true,
 
 				func:                Expr::from_text(text),
@@ -401,7 +403,7 @@ impl<T: EvalexprFloat> Entry<T> {
 				range_end:           Expr::from_text("2"),
 				ty:                  FunctionType::Expression,
 				fill_rule:           FillRule::default(),
-				style:               LineStyleConfig::default(),
+				style:               LineStyleConfig::new(true),
 				implicit_resolution: DEFAULT_IMPLICIT_RESOLUTION,
 			},
 		}
@@ -434,21 +436,6 @@ impl<T: EvalexprFloat> Entry<T> {
 				identifier: istr_empty(),
 				points:     vec![PointEntry::default()],
 				style:      PointStyle::default(),
-			},
-		}
-	}
-	pub fn new_label(id: u64) -> Self {
-		Self {
-			id,
-			color: id as usize % NUM_COLORS,
-			active: true,
-			name: String::new(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
-			ty: EntryType::Label {
-				x:         Expr::default(),
-				y:         Expr::default(),
-				size:      Expr::default(),
-				underline: false,
 			},
 		}
 	}

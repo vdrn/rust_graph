@@ -19,6 +19,7 @@ use crate::entry::{Entry, EntryType};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
+use crate::widgets::TextPlotItem;
 
 pub struct ProcessedShapes {
 	tesselator:           eframe::epaint::Tessellator,
@@ -773,10 +774,10 @@ impl DrawPolygonGroup {
 }
 #[derive(Clone)]
 pub struct DrawText {
-	pub text: egui_plot::Text,
+	pub text: TextPlotItem,
 }
 impl DrawText {
-	pub fn new(text: egui_plot::Text) -> Self { Self { text } }
+	pub fn new(text: TextPlotItem) -> Self { Self { text } }
 }
 
 /// SAFETY: Not Sync because of `ExplicitGenerator` callbacks, but we dont use those.

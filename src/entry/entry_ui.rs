@@ -73,7 +73,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 			.clicked()
 		{
 			entry.active = !entry.active;
-      result.needs_redraw = true;
+			result.needs_redraw = true;
 		}
 
 		let name_was_ok = !RESERVED_NAMES.contains(&entry.name.trim());
@@ -107,7 +107,9 @@ pub fn entry_ui<T: EvalexprFloat>(
 				}
 			});
 			ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
-				entry_style(ui, entry);
+				if entry_style(ui, entry) {
+					result.needs_redraw = true;
+				}
 			});
 		});
 		// entry edit
@@ -119,7 +121,8 @@ pub fn entry_ui<T: EvalexprFloat>(
 	result
 }
 
-fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
+fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) -> bool {
+	let mut changed = false;
 	let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
 		.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
 	style_button.button = style_button.button.fill(entry.color());
@@ -135,21 +138,24 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 						.on_hover_text("Change Color")
 						.clicked()
 					{
+						changed = true;
 						entry.color = i;
 					}
 				}
 			});
 			match &mut entry.ty {
-				EntryType::Function { style, parametric, parametric_fill, fill_rule, selectable, .. } => {
-					ui.checkbox(selectable, "Selectable");
+				EntryType::Function { style, parametric, parametric_fill, fill_rule, .. } => {
 					ui.separator();
 
-					line_style_config_ui(style, ui);
+					changed |= line_style_config_ui(style, ui);
 					ui.separator();
 					if *parametric {
-						ui.checkbox(parametric_fill, "Fill").on_hover_text("Fill the inside area the curve.");
+						changed |= ui
+							.checkbox(parametric_fill, "Fill")
+							.on_hover_text("Fill the inside area the curve.")
+							.clicked();
 						if *parametric_fill {
-							fill_rule_btn_ui(ui, fill_rule);
+							changed |= fill_rule_btn_ui(ui, fill_rule);
 						}
 					}
 
@@ -162,6 +168,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 							}
 							if ui.button("Reset").clicked() {
 								*style = Default::default();
+								changed = true;
 								ui.close();
 							}
 						},
@@ -171,6 +178,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 					ui.separator();
 					let mut show_label = style.label_config.is_some();
 					if ui.checkbox(&mut show_label, "Show label").changed() {
+						changed = true;
 						if show_label {
 							style.label_config = Some(LabelConfig::default());
 						} else {
@@ -178,26 +186,32 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 						}
 					}
 					if let Some(label_config) = &mut style.label_config {
-						label_config_ui(label_config, ui);
+						changed |= label_config_ui(label_config, ui);
 					}
 					ui.separator();
-					ui.checkbox(&mut style.show_lines, "Show Lines");
+					changed |= ui.checkbox(&mut style.show_lines, "Show Lines").clicked();
 					if style.show_lines {
-						ui.checkbox(&mut style.connect_first_and_last, "Connect first and last point");
+						changed |= ui
+							.checkbox(&mut style.connect_first_and_last, "Connect first and last point")
+							.clicked();
 						ui.label("Line Style:");
-						ui.checkbox(&mut style.show_arrows, "Show Arrows");
-						line_style_config_ui(&mut style.line_style, ui);
+						changed |= ui.checkbox(&mut style.show_arrows, "Show Arrows").clicked();
+            ui.separator();
+						changed |= line_style_config_ui(&mut style.line_style, ui);
 					} else {
 						style.show_arrows = false;
 					}
 					ui.separator();
-					ui.checkbox(&mut style.fill, "Fill").on_hover_text("Fill the area between the points.");
+					changed |= ui
+						.checkbox(&mut style.fill, "Fill")
+						.on_hover_text("Fill the area between the points.")
+						.clicked();
 					if style.fill {
-						fill_rule_btn_ui(ui, &mut style.fill_rule);
+						changed |= fill_rule_btn_ui(ui, &mut style.fill_rule);
 					}
 
 					ui.separator();
-					ui.checkbox(&mut style.show_points, "Show Not Draggable Points");
+					changed |= ui.checkbox(&mut style.show_points, "Show Not Draggable Points").clicked();
 
 					egui::Sides::new().show(
 						ui,
@@ -208,18 +222,19 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) {
 							}
 							if ui.button("Reset").clicked() {
 								*style = Default::default();
+								changed = true;
 								ui.close();
 							}
 						},
 					);
 				},
 				EntryType::Constant { .. } => {},
-				EntryType::Label { .. } => {},
 				EntryType::Folder { .. } => {},
 			}
 		})
 		.0
 		.on_hover_text("Edit Apprearance");
+	changed
 }
 fn entry_type_ui<T: EvalexprFloat>(
 	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
@@ -263,10 +278,10 @@ fn entry_type_ui<T: EvalexprFloat>(
 						});
 					}
 					if func.args.len() == 1 && func.equation_type == EquationType::None {
-						ui.horizontal(|ui| {
-							if ui.checkbox(parametric, "Parametric").changed(){
-                result.needs_redraw = true;
-              }
+						ui.horizontal_wrapped(|ui| {
+							if ui.checkbox(parametric, "Parametric").changed() {
+								result.needs_redraw = true;
+							}
 							if *parametric && func.args.len() == 1 {
 								ui.label("Start:");
 								match expr_ui(range_start, ui, "", Some(30.0), clear_cache, false) {
@@ -311,41 +326,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 				});
 			});
 		},
-		EntryType::Label { x, y, size, underline } => {
-			ui.horizontal(|ui| {
-				match expr_ui(x, ui, "point_x", Some(80.0), clear_cache, false) {
-					Ok(changed) => {
-						result.parsed |= changed;
-						// result.needs_recompilation |= changed;
-					},
-					Err(e) => {
-						result.error = Some(format!("Parsing error: {e}"));
-					},
-				}
-				match expr_ui(y, ui, "point_y", Some(80.0), clear_cache, false) {
-					Ok(changed) => {
-						result.parsed |= changed;
-						// result.needs_recompilation |= changed;
-					},
-					Err(e) => {
-						result.error = Some(format!("Parsing error: {e}"));
-					},
-				}
-				match expr_ui(size, ui, "size", Some(80.0), clear_cache, false) {
-					Ok(changed) => {
-						result.parsed |= changed;
-						// result.needs_recompilation |= changed;
-					},
-					Err(e) => {
-						result.error = Some(format!("Parsing error: {e}"));
-					},
-				}
-				if ui.checkbox(underline, "Underline").changed() {
-					result.needs_redraw = true;
-				}
-			});
-		},
-		EntryType::Points { points, .. } => {
+		EntryType::Points { points, style, .. } => {
 			let mut remove_point = None;
 			ui.vertical(|ui| {
 				for (pi, point) in points.iter_mut().enumerate() {
@@ -448,10 +429,23 @@ fn entry_type_ui<T: EvalexprFloat>(
 				}
 				if let Some(pi) = remove_point {
 					points.remove(pi);
+					result.needs_recompilation = true;
 				}
 				ui.horizontal(|ui| {
 					if ui.button("Add Point").clicked() {
 						points.push(PointEntry::default());
+					}
+					let mut show_label = style.label_config.is_some();
+					if ui.checkbox(&mut show_label, "Show label").changed() {
+						result.needs_redraw = true;
+						if show_label {
+							style.label_config = Some(LabelConfig::default());
+						} else {
+							style.label_config = None;
+						}
+					}
+					if let Some(label_config) = &mut style.label_config {
+						result.needs_redraw |= TextEdit::singleline(&mut label_config.text).ui(ui).changed();
 					}
 				});
 			});
@@ -711,9 +705,13 @@ fn expr_ui<T: EvalexprFloat>(
 		let mut changed = false;
 		let original_spacing = ui.style().spacing.item_spacing;
 		ui.style_mut().spacing.item_spacing = vec2(0.0, 0.0);
-		let mut text_edit = TextEdit::multiline(&mut expr.text)
-			.desired_rows(1)
-			.desired_width(desired_width.unwrap_or_else(|| ui.available_width()));
+		let mut text_edit = if let Some(desired_width) = desired_width {
+			TextEdit::singleline(&mut expr.text).desired_width(desired_width).clip_text(false)
+		} else {
+			TextEdit::multiline(&mut expr.text).desired_rows(1).desired_width(ui.available_width())
+		};
+		// .min_size(vec2(desired_width.unwrap_or_else(|| ui.available_width()),0.0));
+		// .desired_width(desired_width.unwrap_or_else(|| ui.available_width()));
 
 		// let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
 		// 	let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
@@ -742,7 +740,6 @@ fn expr_ui<T: EvalexprFloat>(
 				let mut ast = evalexpr::build_ast::<T>(&expr.text).map_err(|e| e.to_string())?;
 
 				expr.node = None;
-				expr.inlined_node = None;
 				expr.equation_type = EquationType::None;
 
 				if preprocess {
@@ -773,82 +770,126 @@ fn expr_ui<T: EvalexprFloat>(
 	.inner
 }
 
-fn label_config_ui(label_config: &mut LabelConfig, ui: &mut egui::Ui) {
-	ui.checkbox(&mut label_config.italic, "Italic");
+fn label_config_ui<T: EvalexprFloat>(label_config: &mut LabelConfig<T>, ui: &mut egui::Ui) -> bool {
+	let mut changed = false;
+	ui.horizontal(|ui| {
+		ui.label("Text:");
+		changed |= ui.text_edit_singleline(&mut label_config.text).changed();
+	});
+	changed |= ui.checkbox(&mut label_config.italic, "Italic").clicked();
 	ui.horizontal(|ui| {
 		SubMenuButton::new(format!("Size {:?}", label_config.size)).ui(ui, |ui| {
 			use LabelSize as LS;
-			ui.selectable_value(
-				&mut label_config.size,
-				LS::Small,
-				RichText::new("Small").size(LS::Small.size()),
-			);
-			ui.selectable_value(
-				&mut label_config.size,
-				LS::Medium,
-				RichText::new("Medium").size(LS::Medium.size()),
-			);
-			ui.selectable_value(
-				&mut label_config.size,
-				LS::Large,
-				RichText::new("Large").size(LS::Large.size()),
-			);
+			changed |= ui
+				.selectable_value(
+					&mut label_config.size,
+					LS::Small,
+					RichText::new("Small").size(LS::Small.size()),
+				)
+				.changed();
+			changed |= ui
+				.selectable_value(
+					&mut label_config.size,
+					LS::Medium,
+					RichText::new("Medium").size(LS::Medium.size()),
+				)
+				.changed();
+			changed |= ui
+				.selectable_value(
+					&mut label_config.size,
+					LS::Large,
+					RichText::new("Large").size(LS::Large.size()),
+				)
+				.changed();
 		});
 	});
 	ui.horizontal(|ui| {
 		use LabelPosition as LP;
 		SubMenuButton::new(format!("Position {}", label_config.pos.symbol())).ui(ui, |ui| {
-			ui.selectable_value(&mut label_config.pos, LP::Top, format!("Top {}", LP::Top.symbol()));
-			ui.selectable_value(&mut label_config.pos, LP::Bottom, format!("Bottom {}", LP::Bottom.symbol()));
-			ui.selectable_value(&mut label_config.pos, LP::Left, format!("Left {}", LP::Left.symbol()));
-			ui.selectable_value(&mut label_config.pos, LP::Right, format!("Right {}", LP::Right.symbol()));
-			ui.selectable_value(&mut label_config.pos, LP::TLeft, format!("Top Left {}", LP::TLeft.symbol()));
-			ui.selectable_value(
-				&mut label_config.pos,
-				LP::TRight,
-				format!("Top Right {}", LP::TRight.symbol()),
-			);
-			ui.selectable_value(
-				&mut label_config.pos,
-				LP::BLeft,
-				format!("Bottom Left {}", LP::BLeft.symbol()),
-			);
-			ui.selectable_value(
-				&mut label_config.pos,
-				LP::BRight,
-				format!("Bottom Right {}", LP::BRight.symbol()),
-			);
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::Top, format!("Top {}", LP::Top.symbol()))
+				.changed();
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::Bottom, format!("Bottom {}", LP::Bottom.symbol()))
+				.changed();
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::Left, format!("Left {}", LP::Left.symbol()))
+				.changed();
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::Right, format!("Right {}", LP::Right.symbol()))
+				.changed();
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::TLeft, format!("Top Left {}", LP::TLeft.symbol()))
+				.changed();
+			changed |= ui
+				.selectable_value(
+					&mut label_config.pos,
+					LP::TRight,
+					format!("Top Right {}", LP::TRight.symbol()),
+				)
+				.changed();
+			changed |= ui
+				.selectable_value(
+					&mut label_config.pos,
+					LP::BLeft,
+					format!("Bottom Left {}", LP::BLeft.symbol()),
+				)
+				.changed();
+			changed |= ui
+				.selectable_value(
+					&mut label_config.pos,
+					LP::BRight,
+					format!("Bottom Right {}", LP::BRight.symbol()),
+				)
+				.changed();
+			changed |= ui
+				.selectable_value(&mut label_config.pos, LP::Center, format!("Center {}", LP::Center.symbol()))
+				.changed();
 		});
 	});
+	match expr_ui(&mut label_config.angle, ui, "Angle", Some(80.0), false, false) {
+		Ok(ch) => {
+			changed |= ch;
+		},
+		Err(_) => {},
+	}
+
+	changed
 }
 
-fn line_style_config_ui(config: &mut LineStyleConfig, ui: &mut egui::Ui) {
-	Slider::new(&mut config.line_width, 0.1..=10.0).text("Line Width").ui(ui);
+fn line_style_config_ui(config: &mut LineStyleConfig, ui: &mut egui::Ui) -> bool {
+	let mut changed = false;
+	changed |= ui.checkbox(&mut config.selectable, "Lines Selectable").clicked();
+	ui.separator();
+	changed |= Slider::new(&mut config.line_width, 0.1..=10.0).text("Line Width").ui(ui).changed();
 	ui.separator();
 	ui.horizontal(|ui| {
-		ui.selectable_value(&mut config.line_style, LineStyleType::Solid, "Solid");
-		ui.selectable_value(&mut config.line_style, LineStyleType::Dotted, "Dotted");
-		ui.selectable_value(&mut config.line_style, LineStyleType::Dashed, "Dashed");
+		changed |= ui.selectable_value(&mut config.line_style, LineStyleType::Solid, "Solid").changed();
+		changed |= ui.selectable_value(&mut config.line_style, LineStyleType::Dotted, "Dotted").changed();
+		changed |= ui.selectable_value(&mut config.line_style, LineStyleType::Dashed, "Dashed").changed();
 	});
 	match &mut config.line_style {
 		LineStyleType::Solid => {},
 		LineStyleType::Dotted => {
-			ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Spacing"));
+			changed |= ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Spacing")).changed();
 		},
 		LineStyleType::Dashed => {
-			ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Length"));
+			changed |= ui.add(Slider::new(&mut config.line_style_size, 0.1..=20.0).text("Length")).changed();
 		},
 	}
+	changed
 }
-fn fill_rule_btn_ui(ui: &mut egui::Ui, fill_rule: &mut FillRule) {
+fn fill_rule_btn_ui(ui: &mut egui::Ui, fill_rule: &mut FillRule) -> bool {
 	let txt = if *fill_rule == FillRule::EvenOdd { "Even-Odd" } else { "Non-Zero" };
+	let mut changed = false;
 	ui.horizontal(|ui| {
 		ui.label("Fill Rule:");
 		ui.menu_button(txt, |ui| {
 			ui.horizontal(|ui| {
-				ui.selectable_value(fill_rule, FillRule::EvenOdd, "Even-Odd");
-				ui.selectable_value(fill_rule, FillRule::NonZero, "Non-Zero");
+				changed |= ui.selectable_value(fill_rule, FillRule::EvenOdd, "Even-Odd").changed();
+				changed |= ui.selectable_value(fill_rule, FillRule::NonZero, "Non-Zero").changed();
 			});
 		});
 	});
+	changed
 }

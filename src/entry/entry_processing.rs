@@ -180,7 +180,6 @@ fn prepare_entry<T: EvalexprFloat>(
 				}
 			}
 		},
-		EntryType::Label { .. } => {},
 		EntryType::Constant { .. } => {
 			prepare_constant(entry, ctx)?;
 		},
@@ -488,36 +487,15 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
-			// if identifier.to_str() == "F"{
-			// println!("INLINING FUNC {} IDENT {} {}", entry.name,identifier, func.text);
-			// println!("ops  {:?}", node);
-			// }
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
-			// if identifier.to_str() == "F"{
-			// println!("INLINED FUNC: {:#?}", inlined_node);
-			//   }
-			// let thread_local_context = thread_local_context.clone();
-			// let ty = *ty;
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-			// println!("EXPR FUNC {}: {} LEN {} {:#?}",entry.name, func.text,expr_function.ops_len(),
-			// expr_function); if identifier.to_str() == "F"{
-			//   panic!()
-			// }
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());
 			}
 			func.expr_function = Some(expr_function);
-		},
-		EntryType::Label { size, .. } => {
-			let Some(node) = size.node.clone() else {
-				return Ok(());
-			};
-			let expr_function = ExpressionFunction::new(node, &[istr("x"), istr("y")], &mut Some(ctx))
-				.map_err(|e| (entry.id, e.to_string()))?;
-			size.expr_function = Some(expr_function);
 		},
 		EntryType::Points { identifier, points, .. } => {
 			let mut stack = Stack::<T>::with_capacity(0);

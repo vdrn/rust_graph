@@ -562,8 +562,13 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
-			plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
-			plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
+
+			if ui_state.graph_config.show_grid[0] {
+				plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
+			}
+			if ui_state.graph_config.show_grid[1] {
+				plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
+			}
 			for mesh in ui_state.processed_shapess.draw_meshes.iter() {
 				match &mesh.ty {
 					DrawMeshType::EguiPlotMesh(mesh) => {
@@ -623,7 +628,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				plot_ui.points(draw_point.points);
 			}
 			for draw_text in ui_state.processed_shapess.draw_texts.iter() {
-				plot_ui.text(draw_text.text.clone());
+				plot_ui.add(draw_text.text.clone());
 			}
 		});
 
@@ -649,7 +654,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		if force_create_elements || changed {
 			scope!("schedule_entry_create_plot_elements");
-      ui_state.eval_errors.clear();
+			ui_state.eval_errors.clear();
 			let plot_params = entry::PlotParams::new(ui_state);
 			let main_context = Arc::new(state.ctx.clone());
 			for (i, entry) in state.entries.iter_mut().enumerate() {
@@ -665,6 +670,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			ui_state.force_process_elements = true;
 		}
 
+    let mut dragging_point = false;
 		if let Some(drag_result) = point_dragging(
 			&mut state.entries,
 			&mut state.ctx,
@@ -673,6 +679,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			hovered_point.as_ref(),
 			&plot_params,
 		) {
+      dragging_point = true;
 			state.clear_cache = true;
 			ui_state.showing_custom_label = true;
 			let screen_x = plot_res.transform.position_from_point_x(drag_result.x);
@@ -725,7 +732,10 @@ pub fn graph_panel<T: EvalexprFloat>(
 			);
 		}
 
-		if let Some(hovered_id) = plot_res.hovered_plot_item.or(p_draw_buffer.hovered_id) {
+		if let Some(hovered_id) = plot_res.hovered_plot_item.or(p_draw_buffer.hovered_id) && hovered_point.is_none(){
+      // if dragging_point  {
+					// ui_state.selected_plot_line = None;
+      // }
 			if plot_res.response.clicked()
 				|| plot_res.response.drag_started()
 				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
@@ -805,11 +815,6 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 			entries.push(new_points);
 			*next_id += 1;
 			needs_recompilation = true;
-		}
-		let new_label = Entry::new_label(*next_id);
-		if ui.button(new_label.symbol_with_name()).clicked() {
-			entries.push(new_label);
-			*next_id += 1;
 		}
 		if can_add_folder {
 			let new_folder = Entry::new_folder(*next_id);

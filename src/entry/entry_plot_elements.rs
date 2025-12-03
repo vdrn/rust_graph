@@ -1,10 +1,11 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
+use core::f32::consts::PI;
 use core::mem;
 use core::sync::atomic::AtomicBool;
 use std::marker::ConstParamTy;
 
-use eframe::egui::{self, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
+use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, Vec2, pos2, remap};
 use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, PlotTransform, Points, Polygon, Text};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
@@ -15,6 +16,7 @@ use crate::draw_buffer::{
 use crate::entry::{COLORS, ClonedEntry, Entry, EntryType, EquationType, NUM_COLORS, f64_to_value};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{DiscontinuityDetector, pseudoangle, zoom_in_x_on_nan_boundary};
+use crate::widgets::TextPlotItem;
 use crate::{ThreadLocalContext, UiState, marching_squares, thread_local_get};
 
 #[derive(Clone)]
@@ -74,7 +76,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 ) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
-    entry.draw_buffer_scheduler.clear_buffer();
+		entry.draw_buffer_scheduler.clear_buffer();
 		return;
 	}
 	match &mut entry.ty {
@@ -142,10 +144,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 
 	let mut draw_buffer = DrawBuffer::empty();
 	match &entry.ty {
-		EntryType::Folder { .. }
-		| EntryType::Constant { .. }
-		| EntryType::Label { .. }
-		| EntryType::Points { .. } => {
+		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Points { .. } => {
 			unreachable!()
 		},
 		EntryType::Function {
@@ -158,7 +157,6 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 			style,
 			fill_rule,
 			implicit_resolution,
-			selectable,
 			..
 		} => {
 			let stack_len = thread_local_get(tl_context).stack.borrow().len();
@@ -185,7 +183,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 					style.egui_line_style(),
 					Line::new(&display_name, PlotPoints::Owned(line))
 						.id(id)
-						.allow_hover(*selectable)
+						.allow_hover(style.selectable)
 						.width(width)
 						.style(style.egui_line_style())
 						.color(color),
@@ -445,36 +443,6 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Function { .. } => {
 			unreachable!()
 		},
-		EntryType::Label { x, y, size, underline, .. } => {
-			let mut stack = thread_local_get(tl_context).stack.borrow_mut();
-
-			match eval_point(&mut stack, ctx, x.node.as_ref(), y.node.as_ref()) {
-				Ok(Some((x, y))) => {
-					let size = if let Some(size) = &size.node {
-						match size.eval_float_with_context(&mut stack, ctx) {
-							Ok(size) => size.to_f64() as f32,
-							Err(e) => {
-								return Err((id, e.to_string()));
-							},
-						}
-					} else {
-						12.0
-					};
-					let mut label_text = RichText::new(name.to_string()).size(size);
-					if *underline {
-						label_text = label_text.underline()
-					}
-
-					let text = Text::new(name.to_string(), PlotPoint { x, y }, label_text).color(color);
-
-					draw_buffer.texts.push(DrawText::new(text));
-				},
-				Err(e) => {
-					return Err((id, e));
-				},
-				_ => {},
-			}
-		},
 		EntryType::Points { points, style, .. } => {
 			// main_context
 			// 	.write()
@@ -550,24 +518,34 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 					}
 					if let Some(label_config) = &style.label_config
 						&& i == points_len - 1
-						&& !name.trim().is_empty()
+						&& !label_config.text.trim().is_empty()
 					{
+						let mut stack = thread_local_get(tl_context).stack.borrow_mut();
+						let angle = label_config
+							.angle
+							.node
+							.as_ref()
+							.and_then(|expr| expr.eval_float_with_context(&mut stack, ctx).ok())
+							.map(|angle| angle.to_f64() as f32)
+							.unwrap_or(0.0);
 						let size = label_config.size.size();
-						let mut label = RichText::new(name.to_string()).size(size);
+						let text = label_config.text.trim();
+						let mut label = RichText::new(text).size(size);
 						if label_config.italic {
 							label = label.italics();
 						}
 
 						let dir = label_config.pos.dir();
-						let text = Text::new(
-							name.to_string(),
+						let text = TextPlotItem::new(
+							text,
 							PlotPoint {
-								x: x + (dir.x * size * arrow_scale.x) as f64,
-								y: y + (dir.y * size * arrow_scale.y) as f64,
+								x: x + (dir.x * size * arrow_scale.x * 0.8) as f64,
+								y: y + (dir.y * size * arrow_scale.y * 0.8) as f64,
 							},
 							label,
 						)
-						.color(color);
+						.with_angle(angle, Align2::CENTER_CENTER)
+						.with_color(color);
 
 						draw_buffer.texts.push(DrawText::new(text));
 					}
@@ -610,6 +588,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 					.color(color)
 					.id(egui_id)
 					.width(style.line_style.line_width)
+					.allow_hover(style.line_style.selectable)
 					.style(style.line_style.egui_line_style());
 				draw_buffer.lines.push(DrawLine::new(
 					sorting_idx,
@@ -805,11 +784,11 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					add_line(mem::take(&mut pp_buffer));
 				},
 				Ok(Value::Tuple(_) | Value::Float2(_, _)) => {
-          return Ok(false);
+					return Ok(false);
 					// return Err((id, "Non-parametric function must return a single number.".to_string()));
 				},
 				Ok(Value::Boolean(_)) => {
-          return Ok(false);
+					return Ok(false);
 
 					// return Err((id, "Non-parametric function must return a number.".to_string()));
 				},
@@ -1031,10 +1010,10 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 							pp_buffer.push(PlotPoint::new(right.1, right.0));
 						},
 					}
-				prev_arg = curr_arg;
-				prev_angle = None;
-				prev_point = curr_result.map(|(_, v)| v);
-				continue;
+					prev_arg = curr_arg;
+					prev_angle = None;
+					prev_point = curr_result.map(|(_, v)| v);
+					continue;
 				}
 			}
 		}
@@ -1184,11 +1163,11 @@ fn draw_implicit<T: EvalexprFloat>(
 		},
 	}
 
-  let bounds_diag = ((maxs.0 - mins.0).powi(2) + (maxs.1 - mins.1).powi(2)).sqrt();
+	let bounds_diag = ((maxs.0 - mins.0).powi(2) + (maxs.1 - mins.1).powi(2)).sqrt();
 
-//146_327
-  let eps = (T::EPSILON * bounds_diag * 100.0).max(T::EPSILON);
-//: 146_327
+	//146_327
+	let eps = (T::EPSILON * bounds_diag * 100.0).max(T::EPSILON);
+	//: 146_327
 
 	let params = marching_squares::MarchingSquaresParams {
 		resolution,
@@ -1197,7 +1176,7 @@ fn draw_implicit<T: EvalexprFloat>(
 		draw_lines,
 		draw_fill,
 		fill_color: color,
-		eps
+		eps,
 	};
 	let result = marching_squares::marching_squares(
 		params,
@@ -1244,8 +1223,8 @@ fn draw_implicit<T: EvalexprFloat>(
 		Some(Err(e)) => return Err((id, e)),
 		None => return Ok(false),
 	};
-  // let total_line = result.iter().map(|r| r.lines.len()).sum::<usize>();
-  // println!("total_lines: {total_line}");
+	// let total_line = result.iter().map(|r| r.lines.len()).sum::<usize>();
+	// println!("total_lines: {total_line}");
 	for result in result {
 		for line in result.lines {
 			add_line(line);
