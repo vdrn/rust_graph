@@ -107,9 +107,9 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 					let plot_params = plot_params.clone();
 					let tl_context = Arc::clone(tl_context);
 
-					move |cancel_signal| {
+					move || {
 						entry_create_plot_elements_async(
-							&entry_cloned, sorting_idx, &ctx, &plot_params, &tl_context, cancel_signal,
+							&entry_cloned, sorting_idx, &ctx, &plot_params, &tl_context,
 						)
 					}
 				});
@@ -131,8 +131,8 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 }
 pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 	entry: &ClonedEntry<T>, sorting_idx: u32, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, cancel_signal: &AtomicBool,
-) -> Option<ExecutionResult> {
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
+) -> ExecutionResult {
 	let color = entry.color();
 	let id = Id::new(entry.id);
 
@@ -206,10 +206,10 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 						Ok(v) => match v {
 							Value::Float(v) => v,
 							Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
-								return Some(Ok(draw_buffer));
+								return Ok(draw_buffer);
 							},
 						},
-						Err(e) => return Some(Err((entry.id, e.to_string()))),
+						Err(e) => return Err((entry.id, e.to_string())),
 					};
 					add_line(vec![
 						PlotPoint::new(plot_params.first_x, value.to_f64()),
@@ -255,7 +255,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								};
 
 								if func.args[0].to_str() == "y" {
-									match draw_parametric_function::<T, { SimpleFunctionType::Y }>(
+									draw_parametric_function::<T, { SimpleFunctionType::Y }>(
 										tl_context,
 										ctx,
 										plot_params,
@@ -264,16 +264,9 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
 										&mut add_parametric_line,
-									) {
-										Ok(finished) => {
-											if !finished {
-												return None;
-											}
-										},
-										Err(err) => return Some(Err(err)),
-									}
+									)?;
 								} else {
-									match draw_parametric_function::<T, { SimpleFunctionType::X }>(
+									draw_parametric_function::<T, { SimpleFunctionType::X }>(
 										tl_context,
 										ctx,
 										plot_params,
@@ -282,14 +275,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 										range_start.node.as_ref(),
 										range_end.node.as_ref(),
 										&mut add_parametric_line,
-									) {
-										Ok(finished) => {
-											if !finished {
-												return None;
-											}
-										},
-										Err(err) => return Some(Err(err)),
-									}
+									)?;
 								}
 
 								if let Some((fm, _)) = fill_mesh {
@@ -297,27 +283,13 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								}
 							} else {
 								if func.args[0].to_str() == "y" {
-									match draw_simple_function::<T, { SimpleFunctionType::Y }>(
+									draw_simple_function::<T, { SimpleFunctionType::Y }>(
 										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-									) {
-										Ok(finished) => {
-											if !finished {
-												return None;
-											}
-										},
-										Err(err) => return Some(Err(err)),
-									}
+									)?;
 								} else {
-									match draw_simple_function::<T, { SimpleFunctionType::X }>(
+									draw_simple_function::<T, { SimpleFunctionType::X }>(
 										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-									) {
-										Ok(finished) => {
-											if !finished {
-												return None;
-											}
-										},
-										Err(err) => return Some(Err(err)),
-									}
+									)?;
 								}
 							}
 						},
@@ -330,10 +302,10 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									| Value::Boolean(_)
 									| Value::Tuple(_)
 									| Value::Empty => {
-										return Some(Ok(draw_buffer));
+										return Ok(draw_buffer);
 									},
 								},
-								Err(e) => return Some(Err((entry.id, e.to_string()))),
+								Err(e) => return Err((entry.id, e.to_string())),
 							};
 
 							if func.args[0].to_str() == "x" {
@@ -350,7 +322,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 						},
 						equation_type => {
 							if func.args[0].to_str() == "y" {
-								match draw_implicit(
+								draw_implicit(
 									tl_context,
 									plot_params,
 									entry.id,
@@ -360,17 +332,9 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-									cancel_signal,
-								) {
-									Ok(finished) => {
-										if !finished {
-											return None;
-										}
-									},
-									Err(err) => return Some(Err(err)),
-								}
+								)?;
 							} else {
-								match draw_implicit(
+								draw_implicit(
 									tl_context,
 									plot_params,
 									entry.id,
@@ -380,22 +344,14 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-									cancel_signal,
-								) {
-									Ok(finished) => {
-										if !finished {
-											return None;
-										}
-									},
-									Err(err) => return Some(Err(err)),
-								}
+								)?;
 							}
 						},
 					}
 				} else if func.args.len() == 2 {
 					if func.args[0].to_str() == "x" && func.args[1].to_str() == "y" {
 						if func.equation_type != EquationType::None {
-							match draw_implicit(
+							draw_implicit(
 								tl_context,
 								plot_params,
 								entry.id,
@@ -407,22 +363,14 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								},
 								&mut add_line,
 								&mut add_egui_plot_mesh,
-								cancel_signal,
-							) {
-								Ok(finished) => {
-									if !finished {
-										return None;
-									}
-								},
-								Err(err) => return Some(Err(err)),
-							};
+							)?;
 						}
 					}
 				}
 			}
 		},
 	}
-	Some(Ok(draw_buffer))
+	Ok(draw_buffer)
 }
 pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: usize, sorting_idx: u32, selected_id: Option<Id>,
@@ -651,7 +599,7 @@ enum SimpleFunctionType {
 fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<PlotPoint>),
-) -> Result<bool, (u64, String)> {
+) -> Result<(), (u64, String)> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer = vec![];
 	let mut prev_sampling_point: Option<(f64, f64)> = None;
@@ -673,7 +621,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		let value = match constant {
 			Value::Float(v) => v,
 			Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
-				return Ok(true);
+				return Ok(());
 			},
 		};
 		match TY {
@@ -789,11 +737,11 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					add_line(mem::take(&mut pp_buffer));
 				},
 				Ok(Value::Tuple(_) | Value::Float2(_, _)) => {
-					return Ok(false);
+					return Ok(());
 					// return Err((id, "Non-parametric function must return a single number.".to_string()));
 				},
 				Ok(Value::Boolean(_)) => {
-					return Ok(false);
+					return Ok(());
 
 					// return Err((id, "Non-parametric function must return a number.".to_string()));
 				},
@@ -813,7 +761,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// println!("fn {} num points", pp_buffer.len());
 	add_line(pp_buffer);
 
-	Ok(true)
+	Ok(( ))
 }
 
 const P_CURVATURE_FACTOR_SCALE: f64 = 8.0;
@@ -833,7 +781,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
 	id: u64, func: &ExpressionFunction<T>, range_start: Option<&FlatNode<T>>, range_end: Option<&FlatNode<T>>,
 	mut add_line: impl FnMut(Vec<PlotPoint>, bool),
-) -> Result<bool, (u64, String)> {
+) -> Result<(), (u64, String)> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer: Vec<PlotPoint> = Vec::with_capacity(plot_params.resolution);
 	#[inline(always)]
@@ -883,7 +831,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			return Err((id, e));
 		},
 		_ => {
-			return Ok(true);
+			return Ok(());
 		},
 	};
 	if start > end {
@@ -892,7 +840,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let range = end - start;
 	let step = range / plot_params.resolution as f64;
 	if start + step == end {
-		return Ok(true);
+		return Ok(());
 	}
 
 	let plot_width = plot_params.last_x - plot_params.first_x;
@@ -1252,7 +1200,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// 	);
 	// }
 	add_line(pp_buffer, false);
-	Ok(true)
+	Ok(())
 }
 #[allow(clippy::too_many_arguments)]
 fn draw_implicit<T: EvalexprFloat>(
@@ -1260,8 +1208,7 @@ fn draw_implicit<T: EvalexprFloat>(
 	resolution: usize, equation_type: EquationType, color: Color32,
 	call: impl Fn(&mut RefMut<Stack<T>>, f64, f64) -> Result<Value<T>, EvalexprError<T>> + Sync,
 	mut add_line: impl FnMut(Vec<PlotPoint>), mut add_mesh: impl FnMut(MeshBuilder),
-	interrupt_signal: &AtomicBool,
-) -> Result<bool, (u64, String)> {
+) -> Result<(), (u64, String)> {
 	let mins = (plot_params.first_x, plot_params.first_y);
 	let maxs = (plot_params.last_x, plot_params.last_y);
 
@@ -1284,7 +1231,7 @@ fn draw_implicit<T: EvalexprFloat>(
 			draw_fill = Some(marching_squares::MarchingSquaresFill::Positive);
 		},
 		EquationType::None => {
-			return Ok(true);
+			return Ok(());
 		},
 	}
 
@@ -1341,12 +1288,10 @@ fn draw_implicit<T: EvalexprFloat>(
 			tl_context.stack.borrow_mut()
 		},
 		&thread_local_get(tl_context).marching_squares_cache,
-		interrupt_signal,
 	);
 	let result = match result {
-		Some(Ok(result)) => result,
-		Some(Err(e)) => return Err((id, e)),
-		None => return Ok(false),
+		Ok(result) => result,
+		Err(e) => return Err((id, e)),
 	};
 	// let total_line = result.iter().map(|r| r.lines.len()).sum::<usize>();
 	// println!("total_lines: {total_line}");
@@ -1357,7 +1302,7 @@ fn draw_implicit<T: EvalexprFloat>(
 		add_mesh(result.mesh);
 	}
 
-	Ok(true)
+	Ok(())
 }
 
 pub fn gpu_position_from_point(plot_trans: &PlotTransform, invert_axes: [bool; 2], point: &PlotPoint) -> Pos2 {

@@ -1,5 +1,7 @@
+use smallvec::SmallVec;
+
 use crate::error::{expect_function_argument_amount, expect_operator_argument_amount};
-use crate::flat_node::{FlatOperator, IntegralNode};
+use crate::flat_node::{FlatOperator, IntegralNode, MapExprOp, MapOp};
 use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value};
 /// Helper function to extract exactly one child node
 fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<Node<F>, F> {
@@ -412,10 +414,10 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 						return Ok(());
 					},
 					other => {
-            if let Ok(index) = other.parse::<u32>() {
-              ops.push(FlatOperator::AccessIndex { index });
-              return Ok(());
-            }
+						if let Ok(index) = other.parse::<u32>() {
+							ops.push(FlatOperator::AccessIndex { index });
+							return Ok(());
+						}
 						// If we dont error here, behavior would be confusing as t.z would read the value of z
 						// and index by it.
 						return Err(EvalexprError::CustomMessage(format!("Unknown field {identifier}")));
@@ -511,6 +513,85 @@ fn compile_special_function<F: EvalexprFloat>(
 				variable: *variable_name,
 			})));
 
+			Ok(CompileNativeResult::Compiled)
+		},
+		"Map" | "map" => {
+			let len = node.children.len();
+			let mut expr = None;
+			let mut value_name = None;
+			let mut index_name = None;
+			let mut total_name = None;
+			match len {
+				2 => {
+					// (tuple, func_name)
+					let func_name = node.children.pop().unwrap();
+					let Operator::VariableIdentifierRead { identifier } = func_name.operator() else {
+						return Err(EvalexprError::CustomMessage(
+							"If called with 2 arguments, second argument of map function needs to be a name \
+							 of a mapper function"
+								.to_string(),
+						));
+					};
+					let tuple_expr = node.children.pop().unwrap();
+					compile_to_flat_inner(tuple_expr, ops)?;
+
+					ops.push(FlatOperator::Map(MapOp::Func { name: *identifier }));
+					return Ok(CompileNativeResult::Compiled);
+				},
+				3 => {
+					expr = Some(node.children.pop().unwrap());
+					value_name = Some(node.children.pop().unwrap());
+					// (tuple, value_name, expr)
+				},
+				4 => {
+					expr = Some(node.children.pop().unwrap());
+					index_name = Some(node.children.pop().unwrap());
+					value_name = Some(node.children.pop().unwrap());
+					// (tuple, value_name, index_name, expr)
+				},
+				5 => {
+					expr = Some(node.children.pop().unwrap());
+					total_name = Some(node.children.pop().unwrap());
+					index_name = Some(node.children.pop().unwrap());
+					value_name = Some(node.children.pop().unwrap());
+					// (tuple, value_name, index_name,total_name, expr)
+				},
+				_ => {
+					return Err(EvalexprError::wrong_function_argument_amount_range(len, 2..=5));
+				},
+			}
+			let expr = expr.unwrap();
+			let exp_node = compile_to_flat(expr)?;
+			let value_name = value_name.unwrap();
+			let Operator::VariableIdentifierRead { identifier: value_name } = value_name.operator() else {
+				return Err(EvalexprError::CustomMessage(
+					"Second argument of map function needs to be a variable name".to_string(),
+				));
+			};
+			let mut args = SmallVec::new();
+			args.push(*value_name);
+
+			if let Some(index_name) = index_name {
+				let Operator::VariableIdentifierRead { identifier: index_name } = index_name.operator() else {
+					return Err(EvalexprError::CustomMessage(
+						"Third argument of map function needs to be a index name".to_string(),
+					));
+				};
+				args.push(*index_name);
+				if let Some(total_name) = total_name {
+					let Operator::VariableIdentifierRead { identifier: total_name } = total_name.operator()
+					else {
+						return Err(EvalexprError::CustomMessage(
+							"Fourth argument of map function needs to be a total name".to_string(),
+						));
+					};
+					args.push(*total_name);
+				}
+			}
+
+			let tuple_expr = node.children.pop().unwrap();
+			compile_to_flat_inner(tuple_expr, ops)?;
+			ops.push(FlatOperator::Map(MapOp::Expr(Box::new(MapExprOp { vars: args, expr: exp_node }))));
 			Ok(CompileNativeResult::Compiled)
 		},
 		_ => Ok(CompileNativeResult::NotNative(node)),

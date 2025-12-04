@@ -4,7 +4,7 @@ use eframe::egui::containers::menu::{MenuButton, MenuConfig, SubMenuButton};
 use eframe::egui::text::CCursorRange;
 use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
-	self, Align, Button, Color32, DragValue, Label, PopupCloseBehavior, RichText, Slider, TextEdit, Widget, vec2
+	self, Align, Button, Color32, DragValue, Label, PopupCloseBehavior, RichText, Slider, TextEdit, TextWrapMode, Widget, vec2
 };
 
 use evalexpr::{EvalexprFloat, HashMapContext};
@@ -260,6 +260,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					if let Some(computed_const) = func.computed_const() {
 						ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
 							Label::new(computed_const.human_display(func.display_rational))
+								.wrap_mode(TextWrapMode::Truncate)
 								.selectable(true)
 								.ui(ui);
 
@@ -454,53 +455,51 @@ fn entry_type_ui<T: EvalexprFloat>(
 				}
 
 				ui.horizontal(|ui| {
-          let mut is_single_expr = true;
+					let mut is_single_expr = true;
 					if let PointsType::Separate(points) = points_ty {
-            is_single_expr = false;
+						is_single_expr = false;
 						if ui.button("Add Point").clicked() {
 							points.push(PointEntry::default());
 						}
 					}
-          if ui.checkbox(&mut is_single_expr, "Single Expression").clicked(){
-            result.needs_recompilation = true;
-            match points_ty{
-              PointsType::Separate(points) => {
-                let mut expr_from_points = String::new();
-                for (i, p) in points.iter().enumerate() {
-                  if i > 0 {
-                    expr_from_points.push_str(", ");
-                  }
-                  expr_from_points.push('(');
-                  expr_from_points.push_str(&p.x.text);
-                  expr_from_points.push_str(", ");
-                  expr_from_points.push_str(&p.y.text);
-                  expr_from_points.push(')');
-                }
-                *points_ty = PointsType::SingleExpr {
-                  expr: Expr::from_text(&expr_from_points),
-                  val: Vec::new(),
-                };
-
-              },
-              PointsType::SingleExpr { expr:_, val } => {
-                let value_as_points = val.iter().map(|v|{
-                  PointEntry{
-                    x: Expr::from_text(&format!("{}", v.0)),
-                    y: Expr::from_text(&format!("{}", v.1)),
-                    drag: PointDrag{
-                      drag_point: None,
-                      drag_type: PointDragType::NoDrag,
-                      both_drag_dirs_available: true,
-                    },
-                    val: Some((v.0,v.1))
-                  }
-
-                }).collect();
-                *points_ty = PointsType::Separate(value_as_points);
-              }
-            }
-
-          }
+					if ui.checkbox(&mut is_single_expr, "Single Expression").clicked() {
+						result.needs_recompilation = true;
+						match points_ty {
+							PointsType::Separate(points) => {
+								let mut expr_from_points = String::new();
+								for (i, p) in points.iter().enumerate() {
+									if i > 0 {
+										expr_from_points.push_str(", ");
+									}
+									expr_from_points.push('(');
+									expr_from_points.push_str(&p.x.text);
+									expr_from_points.push_str(", ");
+									expr_from_points.push_str(&p.y.text);
+									expr_from_points.push(')');
+								}
+								*points_ty = PointsType::SingleExpr {
+									expr: Expr::from_text(&expr_from_points),
+									val:  Vec::new(),
+								};
+							},
+							PointsType::SingleExpr { expr: _, val } => {
+								let value_as_points = val
+									.iter()
+									.map(|v| PointEntry {
+										x:    Expr::from_text(&format!("{}", v.0)),
+										y:    Expr::from_text(&format!("{}", v.1)),
+										drag: PointDrag {
+											drag_point:               None,
+											drag_type:                PointDragType::NoDrag,
+											both_drag_dirs_available: true,
+										},
+										val:  Some((v.0, v.1)),
+									})
+									.collect();
+								*points_ty = PointsType::Separate(value_as_points);
+							},
+						}
+					}
 
 					let mut show_label = style.label_config.is_some();
 					if ui.checkbox(&mut show_label, "Show label").changed() {
@@ -555,7 +554,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 						// result.animating = true;
 					}
 
-          let new_value = T::from_f64(v);
+					let new_value = T::from_f64(v);
 					if original_value != new_value {
 						*value = new_value;
 						result.animating = true;

@@ -4,14 +4,14 @@ use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::error::EvalexprResultValue;
-use crate::flat_node::{cold, FlatOperator, IntegralNode};
+use crate::flat_node::{cold, FlatOperator, IntegralNode, MapOp};
 use crate::function::rust_function::builtin_function;
 use crate::math::integrate;
 use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value, ValueType};
 
 #[inline(always)]
 pub fn eval_flat_node<F: EvalexprFloat>(
-	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, F)],
+	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 ) -> EvalexprResultValue<F> {
 	let stack_size = stack.len();
 	let prev_num_args = stack.num_args;
@@ -239,7 +239,7 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 
 #[inline(always)]
 fn eval_priv_inner<F: EvalexprFloat>(
-	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, F)],
+	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 ) -> EvalexprResultValue<F> {
 	let base_index = stack.len();
 	for op in &node.ops {
@@ -715,11 +715,12 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::Sum { variable, expr } => {
 				let tuple = stack.pop_unchecked().as_tuple()?;
 				let mut result = F::ZERO;
-				let mut o_override_vars: SmallVec<[(IStr, F); 5]> = smallvec::smallvec![(*variable, F::ZERO)];
-				o_override_vars.extend_from_slice(override_vars);
+				let mut o_override_vars: SmallVec<[(IStr, Value<F>); 5]> =
+					smallvec::smallvec![(*variable, Value::Float(F::ZERO))];
+				o_override_vars.extend(override_vars.iter().cloned());
 
 				for value in tuple {
-					o_override_vars[0].1 = value.as_float()?;
+					o_override_vars[0].1 = value;
 					let current = eval_priv_inner(expr, stack, context, &o_override_vars)?.as_float()?;
 					result = result + current;
 				}
@@ -728,11 +729,12 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::Product { variable, expr } => {
 				let tuple = stack.pop_unchecked().as_tuple()?;
 				let mut result = F::ONE;
-				let mut o_override_vars: SmallVec<[(IStr, F); 5]> = smallvec::smallvec![(*variable, F::ZERO)];
-				o_override_vars.extend_from_slice(override_vars);
+				let mut o_override_vars: SmallVec<[(IStr, Value<F>); 5]> =
+					smallvec::smallvec![(*variable, Value::Float(F::ZERO))];
+				o_override_vars.extend(override_vars.iter().cloned());
 
 				for value in tuple {
-					o_override_vars[0].1 = value.as_float()?;
+					o_override_vars[0].1 = value;
 					let current = eval_priv_inner(expr, stack, context, &o_override_vars)?.as_float()?;
 					result = result * current;
 				}
@@ -800,6 +802,67 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let field = stack.pop_unchecked();
 				let value = stack.pop_unchecked();
 				stack.push(access(value, field)?);
+			},
+			FlatOperator::Map(map_op) => {
+				let tuple = stack.pop_unchecked();
+				use thin_vec::thin_vec;
+				let mut tuple = match tuple {
+					Value::Tuple(tuple) => tuple,
+					Value::Float2(x, y) => thin_vec![Value::Float(x), Value::Float(y)],
+					_ => return Err(EvalexprError::expected_tuple(tuple)),
+				};
+				match map_op {
+					MapOp::Expr(expr) => {
+						let total = tuple.len();
+						let mut o_override_vars: SmallVec<[(IStr, Value<F>); 3]> =
+							expr.vars.iter().map(|v| (*v, Value::Float(F::ZERO))).collect();
+
+						if let Some(total_arg) = o_override_vars.get_mut(2) {
+							total_arg.1 = Value::Float(F::from_usize(total));
+						}
+
+						for (i, value) in tuple.iter_mut().enumerate() {
+							o_override_vars[0].1 = value.clone();
+							if let Some(index_arg) = o_override_vars.get_mut(1) {
+								index_arg.1 = Value::Float(F::from_usize(i));
+							}
+							let mapped = eval_priv_inner(&expr.expr, stack, context, &o_override_vars)?;
+							*value = mapped;
+						}
+
+						stack.push(tuple_to_value(tuple));
+					},
+					MapOp::Func { name } => {
+						if let Some(expr_function) = context.expr_functions.get(name) {
+							let mut args: SmallVec<[Value<F>; 3]> = smallvec::smallvec![Value::Float(F::ZERO)];
+							let total = tuple.len();
+							match expr_function.args.len() {
+								1 => {},
+								2 => {
+									args.push(Value::Float(F::ZERO));
+								},
+								3 => {
+									args.push(Value::Float(F::ZERO));
+									args.push(Value::Float(F::from_usize(total)));
+								},
+								_ => {
+									unreachable!()
+								},
+							}
+							for (i, value) in tuple.iter_mut().enumerate() {
+								args[0] = value.clone();
+								if let Some(index_arg) = args.get_mut(1) {
+									*index_arg = Value::Float(F::from_usize(i));
+								}
+								let mapped = expr_function.call(stack, context, &args)?;
+								*value = mapped;
+							}
+							stack.push(tuple_to_value(tuple));
+						} else {
+							return Err(EvalexprError::FunctionIdentifierNotFound(name.to_string()));
+						}
+					},
+				}
 			},
 		}
 	}
@@ -927,11 +990,11 @@ pub fn eval_range_with_step<F: EvalexprFloat>(
 
 #[inline(always)]
 fn read_var<F: EvalexprFloat>(
-	identifier: &IStr, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, F)],
+	identifier: &IStr, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 ) -> EvalexprResult<Value<F>, F> {
 	for (var, val) in override_vars {
 		if *identifier == *var {
-			return Ok(Value::Float(*val));
+			return Ok(val.clone());
 		}
 	}
 	Ok(if let Some(val) = context.get_value(*identifier).cloned() {
@@ -1193,4 +1256,16 @@ pub fn factorial<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, 
 }
 pub fn gcd<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
 	math_binary(left, right, "gcd", |l, r| l.gcd(&r))
+}
+
+pub fn tuple_to_value<F: EvalexprFloat>(tuple: ThinVec<Value<F>>) -> Value<F> {
+	match tuple.len() {
+		2 => {
+			if let (Ok(x), Ok(y)) = (tuple[0].as_float(), tuple[1].as_float()) {
+				return Value::Float2(x, y);
+			}
+		},
+		_ => {},
+	}
+	Value::Tuple(tuple)
 }

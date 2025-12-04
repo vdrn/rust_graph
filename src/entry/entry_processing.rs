@@ -205,6 +205,7 @@ fn prepare_entry<T: EvalexprFloat>(
 				let first_ast_node =
 					if name_ast.children().is_empty() { &name_ast } else { &name_ast.children()[0] };
 
+        // println!("first ast node {:#?}", first_ast_node);
 				match first_ast_node.operator() {
 					evalexpr::Operator::VariableIdentifierRead { .. } | evalexpr::Operator::RootNode => {
 						*ty = FunctionType::Expression;

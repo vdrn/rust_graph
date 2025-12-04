@@ -10,6 +10,7 @@ mod variable_inlining;
 
 use eval::{eval_flat_node, eval_flat_node_mut};
 pub(crate) use function_inlining::inline_functions;
+use smallvec::SmallVec;
 use variable_inlining::inline_variables_and_fold;
 
 pub use compile::compile_to_flat;
@@ -239,7 +240,19 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	AccessIndex {
 		index: u32,
 	},
-	Access
+	Access,
+	Map(MapOp<F>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapExprOp<F: EvalexprFloat> {
+	vars: SmallVec<[IStr; 3]>,
+	expr: FlatNode<F>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapOp<F: EvalexprFloat> {
+	Expr(Box<MapExprOp<F>>),
+	Func { name: IStr },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntegralNode<F: EvalexprFloat> {
@@ -313,7 +326,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	///
 	/// Fails, if one of the operators in the expression tree fails.
 	pub fn eval_with_context_and_override(
-		&self, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, F)],
+		&self, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 	) -> EvalexprResultValue<F> {
 		eval_flat_node(self, stack, context, override_vars)
 	}
@@ -323,7 +336,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	///
 	/// Fails, if one of the operators in the expression tree fails.
 	pub fn eval_float_with_context_and_override(
-		&self, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, F)],
+		&self, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 	) -> EvalexprResult<F, F> {
 		match self.eval_with_context_and_override(stack, context, override_vars) {
 			Ok(Value::Float(float)) => Ok(float),
@@ -464,6 +477,18 @@ impl<F: EvalexprFloat> FlatNode<F> {
 						_ => true,
 					}));
 				},
+				FlatOperator::Map(map_op) => match map_op {
+					MapOp::Expr(expr) => {
+						ops.extend(expr.expr.iter().filter(|op| match op {
+							FlatOperator::ReadVar { identifier } => !expr.vars.contains(identifier),
+							_ => true,
+						}));
+					},
+					MapOp::Func { .. } => {
+						ops.push(op);
+					},
+					_ => {},
+				},
 				FlatOperator::Integral(int) => match int.as_ref() {
 					IntegralNode::UnpreparedExpr { expr, variable } => {
 						ops.extend(expr.iter().filter(|op| match op {
@@ -491,6 +516,14 @@ impl<F: EvalexprFloat> FlatNode<F> {
 				FlatOperator::Product { expr, .. } | FlatOperator::Sum { expr, .. } => {
 					expr.iter_mut(f);
 				},
+				FlatOperator::Map(map_op) => match map_op {
+					MapOp::Expr(expr) => {
+						expr.expr.iter_mut(f);
+					},
+					_ => {
+            f(op);
+          },
+				},
 				op => {
 					f(op);
 				},
@@ -504,6 +537,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 			FlatOperator::ReadVar { identifier }
 			| FlatOperator::WriteVar { identifier }
 			| FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),
+			FlatOperator::Map(MapOp::Func { name }) => Some(name.to_str()),
 			_ => None,
 		})
 	}
@@ -514,6 +548,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 			FlatOperator::ReadVar { identifier } | FlatOperator::WriteVar { identifier } => {
 				Some(identifier.to_str())
 			},
+			FlatOperator::Map(MapOp::Func { name }) => Some(name.to_str()),
 			_ => None,
 		})
 	}
@@ -522,6 +557,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub fn iter_read_variable_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::ReadVar { identifier } => Some(identifier.to_str()),
+			FlatOperator::Map(MapOp::Func { name }) => Some(name.to_str()),
 			_ => None,
 		})
 	}
@@ -538,6 +574,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub fn iter_function_identifiers(&self) -> impl Iterator<Item = &str> {
 		self.iter().filter_map(|node| match node {
 			FlatOperator::FunctionCall { identifier, .. } => Some(identifier.to_str()),
+			FlatOperator::Map(MapOp::Func { name }) => Some(name.to_str()),
 			_ => None,
 		})
 	}

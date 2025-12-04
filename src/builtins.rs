@@ -48,6 +48,7 @@ const BUILTIN_FUNCTION_NAMES:&[&str] = &[
   "fact", "factorial",
   "gcd",
   "range",
+  "map","Map"
 ];
 
 #[rustfmt::skip]

@@ -410,6 +410,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::AccessX | FlatOperator::AccessY => 1,
 		FlatOperator::AccessIndex { .. } => 1,
     FlatOperator::Access => 2,
+    FlatOperator::Map(_)=>1,
 	}
 }
 fn get_operator_range<F: EvalexprFloat>(

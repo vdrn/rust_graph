@@ -1,10 +1,11 @@
+use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::error::EvalexprResultValue;
 use crate::flat_node::eval::{self, access_index, eval_range, eval_range_with_step};
 use crate::flat_node::subexpression_elemination::{get_n_previous_exprs, range_as_const};
-use crate::flat_node::{FlatOperator, IntegralNode};
-use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
+use crate::flat_node::{FlatOperator, IntegralNode, MapExprOp, MapOp};
+use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
 
 /// Inlines variables and folds the expression tree
 pub fn inline_variables_and_fold<F: EvalexprFloat>(
@@ -93,6 +94,115 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				} else {
 					let new_expr = inline_variables_and_fold(expr, context)?;
 					new_ops.push(FlatOperator::Product { expr: Box::new(new_expr), variable: *variable });
+				}
+			},
+			FlatOperator::Map(map_op) => {
+				if let Some(tuple_param) = pop_last_if_const_as_tuple(&mut new_ops)? {
+					let tuple_len = tuple_param.len();
+					if tuple_len > 20 {
+						new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param) });
+					} else {
+						match map_op {
+							MapOp::Expr(expr) => {
+								let prev_arg_values = expr
+									.vars
+									.iter()
+									.map(|v| context.get_value(*v).cloned())
+									.collect::<SmallVec<[Option<Value<F>>; 4]>>();
+
+								for (i, value) in tuple_param.into_iter().enumerate() {
+									context.set_value(expr.vars[0], value)?;
+									match expr.vars.len() {
+										1 => {},
+										2 => {
+											context.set_value(expr.vars[1], Value::Float(F::from_usize(i)))?;
+										},
+										3 => {
+											context.set_value(expr.vars[1], Value::Float(F::from_usize(i)))?;
+											context.set_value(
+												expr.vars[2],
+												Value::Float(F::from_usize(tuple_len)),
+											)?;
+										},
+										_ => {
+											unreachable!()
+										},
+									}
+
+									let mut inlined_expr = inline_variables_and_fold(&expr.expr, context)?;
+									new_ops.append(&mut inlined_expr.ops);
+								}
+
+								for (i, value) in prev_arg_values.into_iter().enumerate() {
+									if let Some(value) = value {
+										context.set_value(expr.vars[i], value)?;
+									} else {
+										context.remove_value(expr.vars[i])?;
+									}
+								}
+
+								new_ops.push(FlatOperator::Tuple { len: tuple_len as u32 });
+								rerun_inlning = true;
+								continue;
+							},
+							MapOp::Func { name } => {
+								if let Some(expr_function) = context.expr_functions.get(name) {
+									for (i, value) in tuple_param.into_iter().enumerate() {
+										match expr_function.args.len() {
+											1 => {
+												new_ops.push(FlatOperator::PushConst { value });
+											},
+											2 => {
+												new_ops.push(FlatOperator::PushConst { value });
+												new_ops.push(FlatOperator::PushConst {
+													value: Value::Float(F::from_usize(i)),
+												});
+											},
+											3 => {
+												new_ops.push(FlatOperator::PushConst { value });
+												new_ops.push(FlatOperator::PushConst {
+													value: Value::Float(F::from_usize(i)),
+												});
+												new_ops.push(FlatOperator::PushConst {
+													value: Value::Float(F::from_usize(tuple_len)),
+												});
+											},
+											l => {
+												return Err(
+													EvalexprError::wrong_function_argument_amount_range(
+														l,
+														1..=3,
+													),
+												);
+											},
+										}
+										new_ops.push(FlatOperator::FunctionCall {
+											identifier: *name,
+											arg_num:    expr_function.args.len() as u32,
+										});
+									}
+									new_ops.push(FlatOperator::Tuple { len: tuple_len as u32 });
+									rerun_inlning = true;
+									continue;
+								} else {
+									// fn not found, skip inlining
+									new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param) });
+								}
+							},
+						}
+					}
+				}
+				match map_op {
+					MapOp::Expr(expr) => {
+						let new_expr = inline_variables_and_fold(&expr.expr, context)?;
+						new_ops.push(FlatOperator::Map(MapOp::Expr(Box::new(MapExprOp {
+							vars: expr.vars.clone(),
+							expr: new_expr,
+						}))));
+					},
+					MapOp::Func { name } => {
+						new_ops.push(FlatOperator::Map(MapOp::Func { name: *name }));
+					},
 				}
 			},
 			FlatOperator::Add => {
@@ -441,6 +551,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
+
 			FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
 			| FlatOperator::Eq
@@ -661,6 +772,29 @@ fn pop_last_if_const_tuple<F: EvalexprFloat>(
 			unreachable!()
 		};
 		return Ok(Some(value.into_tuple()?));
+	};
+
+	Ok(None)
+}
+fn pop_last_if_const_as_tuple<F: EvalexprFloat>(
+	ops: &mut Vec<FlatOperator<F>>,
+) -> EvalexprResult<Option<ThinVec<Value<F>>>, F> {
+	if let Some(FlatOperator::PushConst { .. }) = ops.last() {
+		let Some(FlatOperator::PushConst { value }) = ops.pop() else {
+			unreachable!()
+		};
+		use thin_vec::thin_vec;
+		return match value {
+			Value::Tuple(tuple) => {
+				return Ok(Some(tuple));
+			},
+			Value::Float2(x, y) => {
+				return Ok(Some(thin_vec![Value::Float(x), Value::Float(y)]));
+			},
+			Value::Float(_) => Ok(Some(thin_vec![value])),
+			Value::Boolean(_) => Ok(Some(thin_vec![value])),
+			Value::Empty => Ok(Some(thin_vec![])),
+		};
 	};
 
 	Ok(None)

@@ -795,7 +795,6 @@ pub struct FilledDrawBuffer {
 pub struct ScheduledCalc {
 	id:            u64,
 	timestamp:     Instant,
-	cancel_signal: Arc<AtomicBool>,
 }
 // pub struct DrawBufferScheduler {
 // 	pub current_draw_buffer: FilledDrawBuffer,
@@ -985,7 +984,7 @@ pub struct DrawBufferScheduler {
 	pub cur_error:           Option<(u64, String)>,
 
 	pub scheduled: Option<ScheduledCalc>,
-	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send>)>,
+	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce() -> ExecutionResult + Send>)>,
 	pub average:   (Duration, usize),
 
 	sx: mpsc::SyncSender<(u64, Instant, ExecutionResult)>,
@@ -1009,11 +1008,10 @@ impl DrawBufferScheduler {
 		}
 	}
 	pub fn schedule(
-		&mut self, id: u64, work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static,
+		&mut self, id: u64, work: impl FnOnce() -> ExecutionResult + Send + 'static,
 	) {
 		let started = Instant::now();
-		let cancel_signal = Arc::new(AtomicBool::new(false));
-		let scheduled_calc = ScheduledCalc { id, timestamp: started, cancel_signal };
+		let scheduled_calc = ScheduledCalc { id, timestamp: started, };
 
 		if self.scheduled.is_none() {
 			self.spawn_as_latest(scheduled_calc, work, false);
@@ -1023,14 +1021,14 @@ impl DrawBufferScheduler {
 	}
 	fn spawn_as_latest(
 		&mut self, calc: ScheduledCalc,
-		work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static, is_deffered: bool,
+		work: impl FnOnce() -> ExecutionResult + Send + 'static, is_deffered: bool,
 	) {
 		let sx = self.sx.clone();
 		let calc_clone = calc.clone();
 		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
 
 		rayon::spawn(move || {
-			let result = work(&calc_clone.cancel_signal).expect("we're not using the cancel signal");
+			let result = work();
 
 			let _send_res = sx.send((calc_clone.id, calc_clone.timestamp, result));
 		});

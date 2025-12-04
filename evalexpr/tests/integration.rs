@@ -133,13 +133,18 @@ fn test_fold_to_const_expr_and_func(
 	test_eval_and_fold_to_const_with_context(string, ctx, expected.clone());
 
 	// test as function
-	let expr = build_optimized_flat_node(string, ctx).unwrap();
-	let func = ExpressionFunction::new(expr, &fn_args, &mut Some(ctx)).unwrap();
+  add_func_to_ctx(ctx, "func", &fn_args, string);
 	// indirectly call the function to check more code paths
-	ctx.set_expression_function(istr("func"), func);
 	test_eval_and_fold_to_const_with_context(&format!("func({fn_arg_values})"), ctx, expected);
 }
 
+fn add_func_to_ctx(ctx: &mut HashMapContext<DefaultNumericTypes>, name: &str, args:&[IStr], body:&str){
+	let expr = build_optimized_flat_node(body, ctx).unwrap();
+	let func = ExpressionFunction::new(expr, args, &mut Some(ctx)).unwrap();
+	// indirectly call the function to check more code paths
+	ctx.set_expression_function(istr(name), func);
+
+}
 #[test]
 fn test_sum_operator() {
 	let mut ctx = HashMapContext::<DefaultNumericTypes>::new();
@@ -156,6 +161,24 @@ fn test_sum_operator() {
 		&mut ctx,
 		Ok(expected),
 	);
+}
+
+#[test]
+fn test_map() {
+	let mut ctx = HashMapContext::<DefaultNumericTypes>::new();
+  let result1 = Ok(Value::Tuple(thin_vec![Value::Float(1.0), Value::Float(4.0), Value::Float(9.0)]));
+  let result2 = Ok(Value::Tuple(thin_vec![Value::Float(0.0), Value::Float(4.0), Value::Float(18.0)]));
+  let result3 = Ok(Value::Tuple(thin_vec![Value::Float(3.0), Value::Float(7.0), Value::Float(21.0)]));
+	test_eval_and_fold_to_const_with_context("map(1..3, v, v*v)", &ctx, result1.clone());
+	test_eval_and_fold_to_const_with_context("map(1..3, v,i,  v*v*i)", &ctx, result2.clone());
+	test_eval_and_fold_to_const_with_context("map(1..3, v,i,c,  v*v*i + c)", &ctx, result3.clone());
+  add_func_to_ctx(&mut ctx, "f1", &[istr("v")], "v*v");
+  add_func_to_ctx(&mut ctx, "f2", &[istr("v"),istr("i")], "v*v*i");
+  add_func_to_ctx(&mut ctx, "f3", &[istr("v"),istr("i"),istr("c")], "v*v*i + c");
+  test_eval_and_fold_to_const_with_context("map(1..3, f1)", &ctx, result1.clone());
+  test_eval_and_fold_to_const_with_context("map(1..3, f2)", &ctx, result2.clone());
+  test_eval_and_fold_to_const_with_context("map(1..3, f3)", &ctx, result3.clone());
+
 }
 
 #[test]

@@ -85,8 +85,8 @@ pub struct MarchingSquaresResult {
 
 pub fn marching_squares<C>(
 	params: MarchingSquaresParams, f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync,
-	thread_prepare: impl Fn() -> C + Sync, cache: &MarchingSquaresCache, interupt_signal: &AtomicBool,
-) -> Option<Result<Vec<MarchingSquaresResult>, String>> {
+	thread_prepare: impl Fn() -> C + Sync, cache: &MarchingSquaresCache, 
+) -> Result<Vec<MarchingSquaresResult>, String> {
 	scope!("marching_squares");
 	let (x_min, y_min) = params.bounds_min;
 	let (x_max, y_max) = params.bounds_max;
@@ -102,9 +102,6 @@ pub fn marching_squares<C>(
 		grid = cache.get_grid(params.resolution);
 
 		grid.par_iter_mut().enumerate().for_each(|(i, grid_i)| {
-			if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
-				return;
-			}
 			scope!("grid_calc_par");
 			let mut ctx = thread_prepare();
 
@@ -123,14 +120,10 @@ pub fn marching_squares<C>(
 				}
 			}
 		});
-		if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
-			cache.return_grid(grid);
-			return None;
-		}
 
 		if let Some(error) = error.get_mut().unwrap().take() {
 			cache.return_grid(grid);
-			return Some(Err(error));
+			return Err(error);
 		}
 	}
 
@@ -168,9 +161,6 @@ pub fn marching_squares<C>(
 			let y_start = y_min + start as f64 * dy;
 			let y_end = y_min + end as f64 * dy;
 			for i in start..end {
-				if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
-					return Default::default();
-				}
 
 				let mut prev_right_mid = (f64::NAN, false);
 				let y = y_min + i as f64 * dy;
@@ -412,14 +402,10 @@ pub fn marching_squares<C>(
 			}
 		})
 		.collect();
-	if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
-		cache.return_grid(grid);
-		return None;
-	}
 
 	if let Some(error) = error.get_mut().unwrap().take() {
 		cache.return_grid(grid);
-		return Some(Err(error));
+		return Err(error);
 	}
 
 	cache.return_grid(grid);
@@ -450,7 +436,7 @@ pub fn marching_squares<C>(
 	// 	return Err(error);
 	// }
 	// println!("merged: {:?}", merged.len());
-	Some(Ok(chunk_results))
+	Ok(chunk_results)
 }
 /// edge might contain discontinuity rather than a zero crossing
 fn is_edge_discontinuous(
