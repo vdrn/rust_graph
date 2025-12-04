@@ -12,7 +12,7 @@ use evalexpr::{EvalexprFloat, HashMapContext};
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointEntry, RESERVED_NAMES
+	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, RESERVED_NAMES
 };
 use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
@@ -196,7 +196,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) -> boo
 							.clicked();
 						ui.label("Line Style:");
 						changed |= ui.checkbox(&mut style.show_arrows, "Show Arrows").clicked();
-            ui.separator();
+						ui.separator();
 						changed |= line_style_config_ui(&mut style.line_style, ui);
 					} else {
 						style.show_arrows = false;
@@ -326,115 +326,182 @@ fn entry_type_ui<T: EvalexprFloat>(
 				});
 			});
 		},
-		EntryType::Points { points, style, .. } => {
+		EntryType::Points { points_ty, style, .. } => {
 			let mut remove_point = None;
 			ui.vertical(|ui| {
-				for (pi, point) in points.iter_mut().enumerate() {
-					ui.horizontal(|ui| {
-						match expr_ui(&mut point.x, ui, "point_x", Some(80.0), clear_cache, false) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-						match expr_ui(&mut point.y, ui, "point_y", Some(80.0), clear_cache, false) {
-							Ok(changed) => {
-								result.parsed |= changed;
-								result.needs_recompilation |= changed;
-							},
-							Err(e) => {
-								result.error = Some(format!("Parsing error: {e}"));
-							},
-						}
-						let mut drag_type_changed = false;
-						if !point.both_drag_dirs_available && point.drag_type == PointDragType::Both {
-							point.both_drag_dirs_available = false;
-							drag_type_changed = true;
-						}
+				match points_ty {
+					PointsType::Separate(points) => {
+						for (pi, point) in points.iter_mut().enumerate() {
+							ui.horizontal(|ui| {
+								match expr_ui(&mut point.x, ui, "point_x", Some(80.0), clear_cache, false) {
+									Ok(changed) => {
+										result.parsed |= changed;
+										result.needs_recompilation |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+								match expr_ui(&mut point.y, ui, "point_y", Some(80.0), clear_cache, false) {
+									Ok(changed) => {
+										result.parsed |= changed;
+										result.needs_recompilation |= changed;
+									},
+									Err(e) => {
+										result.error = Some(format!("Parsing error: {e}"));
+									},
+								}
+								let mut drag_type_changed = false;
+								if !point.drag.both_drag_dirs_available
+									&& point.drag.drag_type == PointDragType::Both
+								{
+									point.drag.both_drag_dirs_available = false;
+									drag_type_changed = true;
+								}
 
-						let drag_menu_text = match &point.drag_point {
-							Some(d) => match d {
-								DragPoint::BothCoordLiterals => {
-									format!("{}(x,y)", point.drag_type.symbol())
-								},
-								DragPoint::XLiteral => format!("{}(x,_)", point.drag_type.symbol()),
-								DragPoint::YLiteral => format!("{}(_,y)", point.drag_type.symbol()),
-								DragPoint::XConstant(x) => {
-									format!("{}({},_)", point.drag_type.symbol(), x)
-								},
-								DragPoint::YConstant(y) => {
-									format!("{}(_, {})", point.drag_type.symbol(), y)
-								},
-								DragPoint::XLiteralYConstant(y) => {
-									format!("{}(x, {})", point.drag_type.symbol(), y)
-								},
-								DragPoint::YLiteralXConstant(x) => {
-									format!("{}({}, y)", point.drag_type.symbol(), x)
-								},
-								DragPoint::BothCoordConstants(x, y) => {
-									format!("{}({}, {})", point.drag_type.symbol(), x, y,)
-								},
-								DragPoint::SameConstantBothCoords(x) => {
-									format!("{}({})", point.drag_type.symbol(), x)
-								},
-							},
-							None => point.drag_type.symbol().to_string(),
-						};
-						ui.menu_button(drag_menu_text, |ui| {
-							drag_type_changed |= ui
-								.selectable_value(
-									&mut point.drag_type,
-									PointDragType::NoDrag,
-									PointDragType::NoDrag.name(),
-								)
-								.changed();
-							if point.both_drag_dirs_available {
-								drag_type_changed |= ui
-									.selectable_value(
-										&mut point.drag_type,
-										PointDragType::Both,
-										PointDragType::Both.name(),
-									)
-									.changed();
-							}
-							drag_type_changed |= ui
-								.selectable_value(
-									&mut point.drag_type,
-									PointDragType::X,
-									PointDragType::X.name(),
-								)
-								.changed();
-							drag_type_changed |= ui
-								.selectable_value(
-									&mut point.drag_type,
-									PointDragType::Y,
-									PointDragType::Y.name(),
-								)
-								.changed();
-						})
-						.response
-						.on_hover_text("Choose dragging behavior.");
-						if drag_type_changed {
-							result.parsed = true;
+								let drag_menu_text = match &point.drag.drag_point {
+									Some(d) => match d {
+										DragPoint::BothCoordLiterals => {
+											format!("{}(x,y)", point.drag.drag_type.symbol())
+										},
+										DragPoint::XLiteral => {
+											format!("{}(x,_)", point.drag.drag_type.symbol())
+										},
+										DragPoint::YLiteral => {
+											format!("{}(_,y)", point.drag.drag_type.symbol())
+										},
+										DragPoint::XConstant(x) => {
+											format!("{}({},_)", point.drag.drag_type.symbol(), x)
+										},
+										DragPoint::YConstant(y) => {
+											format!("{}(_, {})", point.drag.drag_type.symbol(), y)
+										},
+										DragPoint::XLiteralYConstant(y) => {
+											format!("{}(x, {})", point.drag.drag_type.symbol(), y)
+										},
+										DragPoint::YLiteralXConstant(x) => {
+											format!("{}({}, y)", point.drag.drag_type.symbol(), x)
+										},
+										DragPoint::BothCoordConstants(x, y) => {
+											format!("{}({}, {})", point.drag.drag_type.symbol(), x, y,)
+										},
+										DragPoint::SameConstantBothCoords(x) => {
+											format!("{}({})", point.drag.drag_type.symbol(), x)
+										},
+									},
+									None => point.drag.drag_type.symbol().to_string(),
+								};
+								ui.menu_button(drag_menu_text, |ui| {
+									drag_type_changed |= ui
+										.selectable_value(
+											&mut point.drag.drag_type,
+											PointDragType::NoDrag,
+											PointDragType::NoDrag.name(),
+										)
+										.changed();
+									if point.drag.both_drag_dirs_available {
+										drag_type_changed |= ui
+											.selectable_value(
+												&mut point.drag.drag_type,
+												PointDragType::Both,
+												PointDragType::Both.name(),
+											)
+											.changed();
+									}
+									drag_type_changed |= ui
+										.selectable_value(
+											&mut point.drag.drag_type,
+											PointDragType::X,
+											PointDragType::X.name(),
+										)
+										.changed();
+									drag_type_changed |= ui
+										.selectable_value(
+											&mut point.drag.drag_type,
+											PointDragType::Y,
+											PointDragType::Y.name(),
+										)
+										.changed();
+								})
+								.response
+								.on_hover_text("Choose dragging behavior.");
+								if drag_type_changed {
+									result.parsed = true;
+									result.needs_recompilation = true;
+								}
+
+								if ui.button("❌").on_hover_text("Remove Point").clicked() {
+									remove_point = Some(pi);
+								}
+							});
+						}
+						if let Some(pi) = remove_point {
+							points.remove(pi);
 							result.needs_recompilation = true;
 						}
+					},
+					PointsType::SingleExpr { expr, val } => {
+						ui.horizontal(|ui| match expr_ui(expr, ui, "Points", None, clear_cache, false) {
+							Ok(changed) => {
+								result.parsed |= changed;
+								result.needs_recompilation |= changed;
+							},
+							Err(e) => {
+								result.error = Some(format!("Parsing error: {e}"));
+							},
+						});
+					},
+				}
 
-						if ui.button("❌").on_hover_text("Remove Point").clicked() {
-							remove_point = Some(pi);
-						}
-					});
-				}
-				if let Some(pi) = remove_point {
-					points.remove(pi);
-					result.needs_recompilation = true;
-				}
 				ui.horizontal(|ui| {
-					if ui.button("Add Point").clicked() {
-						points.push(PointEntry::default());
+          let mut is_single_expr = true;
+					if let PointsType::Separate(points) = points_ty {
+            is_single_expr = false;
+						if ui.button("Add Point").clicked() {
+							points.push(PointEntry::default());
+						}
 					}
+          if ui.checkbox(&mut is_single_expr, "Single Expression").clicked(){
+            result.needs_recompilation = true;
+            match points_ty{
+              PointsType::Separate(points) => {
+                let mut expr_from_points = String::new();
+                for (i, p) in points.iter().enumerate() {
+                  if i > 0 {
+                    expr_from_points.push_str(", ");
+                  }
+                  expr_from_points.push('(');
+                  expr_from_points.push_str(&p.x.text);
+                  expr_from_points.push_str(", ");
+                  expr_from_points.push_str(&p.y.text);
+                  expr_from_points.push(')');
+                }
+                *points_ty = PointsType::SingleExpr {
+                  expr: Expr::from_text(&expr_from_points),
+                  val: Vec::new(),
+                };
+
+              },
+              PointsType::SingleExpr { expr:_, val } => {
+                let value_as_points = val.iter().map(|v|{
+                  PointEntry{
+                    x: Expr::from_text(&format!("{}", v.0)),
+                    y: Expr::from_text(&format!("{}", v.1)),
+                    drag: PointDrag{
+                      drag_point: None,
+                      drag_type: PointDragType::NoDrag,
+                      both_drag_dirs_available: true,
+                    },
+                    val: Some((v.0,v.1))
+                  }
+
+                }).collect();
+                *points_ty = PointsType::Separate(value_as_points);
+              }
+            }
+
+          }
+
 					let mut show_label = style.label_config.is_some();
 					if ui.checkbox(&mut show_label, "Show label").changed() {
 						result.needs_redraw = true;
@@ -485,11 +552,12 @@ fn entry_type_ui<T: EvalexprFloat>(
 
 					if full_width_slider(ui, &mut v, range, *step, T::EPSILON) {
 						entry.active = false;
-						result.animating = true;
+						// result.animating = true;
 					}
 
-					if original_value.to_f64() != v {
-						*value = T::from_f64(v);
+          let new_value = T::from_f64(v);
+					if original_value != new_value {
+						*value = new_value;
 						result.animating = true;
 					}
 				});

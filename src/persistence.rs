@@ -11,7 +11,7 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBufferScheduler;
 use crate::entry::{
-	EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDragType, PointStyle, preprocess_ast
+	EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
 
@@ -33,7 +33,7 @@ pub struct EntrySerialized {
 	color:   usize,
 	ty:      EntryTypeSerialized,
 }
-#[derive(Serialize, PartialEq, Deserialize, Default)]
+#[derive(Clone, Serialize, PartialEq, Deserialize, Default)]
 pub struct ExprSer {
 	#[serde(default)]
 	text:             String,
@@ -93,9 +93,13 @@ pub enum EntryTypeSerialized {
 		range_end:   ExprSer,
 	},
 	Points {
-		points: Vec<EntryPointSerialized>,
+		// TODO: remove `points` and unwrap Option around `points_ty`
 		#[serde(default)]
-		style:  PointStyleSerialized,
+		points:    Vec<EntryPointSerialized>,
+		#[serde(default)]
+		points_ty: Option<EntryPointTypeSerialized>,
+		#[serde(default)]
+		style:     PointStyleSerialized,
 	},
 	Folder {
 		#[serde(default)]
@@ -111,6 +115,12 @@ pub struct EntryPointSerialized {
 	#[serde(default)]
 	drag_type: PointDragType,
 }
+#[derive(Serialize, Deserialize)]
+pub enum EntryPointTypeSerialized {
+	Separate { points: Vec<EntryPointSerialized> },
+	SingleExpr { expr: ExprSer },
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct LabelConfigSerialized {
 	#[serde(default)]
@@ -230,20 +240,30 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 						range_end:   ExprSer::from_expr(range_end),
 					}
 				},
-				EntryType::Points { points, style, identifier: _ } => {
-					let mut points_serialized = Vec::new();
-					for point in points {
-						let point_serialized = EntryPointSerialized {
-							x:         ExprSer::from_expr(&point.x),
-							y:         ExprSer::from_expr(&point.y),
-							drag_type: point.drag_type,
-						};
-						points_serialized.push(point_serialized);
-					}
-					EntryTypeSerialized::Points {
-						points: points_serialized,
-						style:  PointStyleSerialized::from_point_style(style),
-					}
+				EntryType::Points { points_ty, style, identifier: _ } => match points_ty {
+					PointsType::Separate(points) => {
+						let mut points_serialized = Vec::new();
+						for point in points {
+							let point_serialized = EntryPointSerialized {
+								x:         ExprSer::from_expr(&point.x),
+								y:         ExprSer::from_expr(&point.y),
+								drag_type: point.drag.drag_type,
+							};
+							points_serialized.push(point_serialized);
+						}
+						EntryTypeSerialized::Points {
+							points_ty: Some(EntryPointTypeSerialized::Separate { points: points_serialized }),
+							points:    Vec::new(),
+							style:     PointStyleSerialized::from_point_style(style),
+						}
+					},
+					PointsType::SingleExpr { expr, .. } => EntryTypeSerialized::Points {
+						points_ty: Some(EntryPointTypeSerialized::SingleExpr {
+							expr: ExprSer::from_expr(expr),
+						}),
+						points:    Vec::new(),
+						style:     PointStyleSerialized::from_point_style(style),
+					},
 				},
 				EntryType::Folder { entries } => {
 					let ser_entries = entries_to_ser(entries, GraphConfig::default());
@@ -353,23 +373,44 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 						range_end: range_end.into_expr(false),
 					}
 				},
-				EntryTypeSerialized::Points { points, style } => {
-					let mut points_deserialized = Vec::new();
-					for point in points {
-						let point_deserialized = PointEntry {
-							x:                        point.x.into_expr(false),
-							y:                        point.y.into_expr(false),
-							drag_point:               None,
-							drag_type:                point.drag_type,
-							both_drag_dirs_available: true,
-							val:                      None,
+				EntryTypeSerialized::Points { points, points_ty, style } => {
+					let points = if points_ty.is_none() {
+						Some(&points)
+					} else if let Some(EntryPointTypeSerialized::Separate { points }) = &points_ty {
+						Some(points)
+					} else {
+						None
+					};
+					if let Some(points) = points {
+						let mut points_deserialized = Vec::new();
+						for point in points {
+							let point_deserialized = PointEntry {
+								x:    point.x.clone().into_expr(false),
+								y:    point.y.clone().into_expr(false),
+								drag: PointDrag {
+									drag_point:               None,
+									drag_type:                point.drag_type,
+									both_drag_dirs_available: true,
+								},
+								val:  None,
+							};
+							points_deserialized.push(point_deserialized);
+						}
+						EntryType::Points {
+							points_ty: PointsType::Separate(points_deserialized),
+
+							style:      PointStyleSerialized::into_point_style(style),
+							identifier: istr_empty(),
+						}
+					} else {
+						let Some(EntryPointTypeSerialized::SingleExpr { expr }) = points_ty else {
+							unreachable!()
 						};
-						points_deserialized.push(point_deserialized);
-					}
-					EntryType::Points {
-						points:     points_deserialized,
-						style:      PointStyleSerialized::into_point_style(style),
-						identifier: istr_empty(),
+						EntryType::Points {
+							points_ty:  PointsType::SingleExpr { expr: expr.into_expr(false), val: vec![] },
+							style:      PointStyleSerialized::into_point_style(style),
+							identifier: istr_empty(),
+						}
 					}
 				},
 				EntryTypeSerialized::Folder { entries } => {

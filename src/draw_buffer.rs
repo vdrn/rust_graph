@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
+use core::time::Duration;
 use std::sync::{Mutex, mpsc};
 use std::time::Instant;
 
@@ -497,7 +498,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 
 		if let Some((_closest_point, dist_sq, id)) = closest_point_to_mouse {
 			if let Some((_, cur_dist_sq)) = hovered_line {
-				if dist_sq < cur_dist_sq  {
+				if dist_sq < cur_dist_sq {
 					hovered_line = Some((id, dist_sq));
 				}
 			} else {
@@ -790,20 +791,205 @@ pub struct FilledDrawBuffer {
 	timestamp: Instant,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ScheduledCalc {
+	id:            u64,
 	timestamp:     Instant,
 	cancel_signal: Arc<AtomicBool>,
 }
+// pub struct DrawBufferScheduler {
+// 	pub current_draw_buffer: FilledDrawBuffer,
+// 	pub cur_error:           Option<(u64, String)>,
+// 	pub average:             (Duration, usize),
+
+// 	pub earliest_one: Option<ScheduledCalc>,
+// 	pub latest_one:   Option<ScheduledCalc>,
+// 	pub deferred:     Option<(ScheduledCalc, Box<dyn FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send>)>,
+
+// 	sx: mpsc::SyncSender<(u64, Instant, Option<ExecutionResult>)>,
+// 	rx: mpsc::Receiver<(u64, Instant, Option<ExecutionResult>)>,
+// }
+// impl DrawBufferScheduler {
+// 	pub fn new() -> Self {
+// 		let (sx, rx) = mpsc::sync_channel(4);
+// 		Self {
+// 			current_draw_buffer: FilledDrawBuffer {
+// 				buffer:    DrawBuffer::empty(),
+// 				timestamp: Instant::now(),
+// 			},
+// 			cur_error: None,
+// 			average: (Duration::ZERO, 0),
+
+// 			earliest_one: None,
+// 			latest_one: None,
+// 			deferred: None,
+// 			sx,
+// 			rx,
+// 		}
+// 	}
+// 	pub fn schedule(
+// 		&mut self, id: u64, work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static,
+// 	) {
+// 		let started = Instant::now();
+// 		let cancel_signal = Arc::new(AtomicBool::new(false));
+// 		let scheduled_calc = ScheduledCalc { id, timestamp: started, cancel_signal };
+
+// 		match (self.earliest_one.take(), self.latest_one.take()) {
+// 			(None, None) => {
+// 				self.spawn_as_latest(scheduled_calc, work, false);
+// 			},
+// 			(None, Some(latest)) => {
+// 				self.earliest_one = Some(latest);
+// 				self.spawn_as_latest(scheduled_calc, work, false);
+// 			},
+// 			(Some(earliest), Some(latest)) => {
+// 				self.earliest_one = Some(earliest);
+// 				latest.cancel_signal.store(true, Ordering::Relaxed);
+// 				// NOTE: We cannot just spawn the work here, we have to wait for the thread to actually
+// 				// finish. Reason: Rayon's workstealing
+// 				self.deferred = Some((scheduled_calc, Box::new(work)));
+// 			},
+// 			(Some(earliest), None) => {
+// 				self.earliest_one = Some(earliest);
+// 				self.spawn_as_latest(scheduled_calc, work, false);
+// 			},
+// 		}
+// 	}
+// 	fn spawn_as_latest(
+// 		&mut self, calc: ScheduledCalc,
+// 		work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static, is_deffered: bool,
+// 	) {
+// 		let sx = self.sx.clone();
+// 		let calc_clone = calc.clone();
+// 		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
+
+// 		rayon::spawn(move || {
+// 			let result = work(&calc_clone.cancel_signal);
+
+// 			let _send_res = sx.send((calc_clone.id, calc_clone.timestamp, result));
+// 		});
+
+// 		self.latest_one = Some(calc);
+// 	}
+// 	pub fn clear_buffer(&mut self) {
+// 		self.current_draw_buffer.buffer.clear();
+// 		self.current_draw_buffer.timestamp = Instant::now();
+// 		if let Some(earliest) = self.earliest_one.take() {
+// 			earliest.cancel_signal.store(true, Ordering::Relaxed);
+// 		}
+// 		if let Some(latest) = self.latest_one.take() {
+// 			latest.cancel_signal.store(true, Ordering::Relaxed);
+// 		}
+// 	}
+// 	pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
+// 		let started = Instant::now();
+// 		self.current_draw_buffer.buffer.clear();
+// 		self.current_draw_buffer.timestamp = started;
+// 		match work(&mut self.current_draw_buffer.buffer) {
+// 			Ok(_) => {},
+// 			Err(err) => {
+// 				self.cur_error = Some(err);
+// 				self.current_draw_buffer.buffer.clear();
+// 			},
+// 		}
+// 	}
+
+// 	fn draw_buffer_mut(&mut self) -> Result<&mut DrawBuffer, (u64, String)> {
+// 		if let Some(err) = &self.cur_error {
+// 			Err(err.clone())
+// 		} else {
+// 			Ok(&mut self.current_draw_buffer.buffer)
+// 		}
+// 	}
+// 	fn draw_buffer(&self) -> Result<&DrawBuffer, (u64, String)> {
+// 		if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(&self.current_draw_buffer.buffer) }
+// 	}
+// 	/// returns (has_outstanding, maybe_new_result)
+// 	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
+// 		let mut received = false;
+//     let mut ido = None;
+// 		while let Ok((id, timestamp, opt_result)) = self.rx.try_recv() {
+//       ido = Some(id);
+// 			// println!("got {id} {:?} is_canceled {}", timestamp.elapsed(), opt_result.is_none());
+// 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
+// 			// self.latest_one);
+// 			let mut was_canceled = true;
+// 			if let Some(result) = opt_result {
+// 				was_canceled = false;
+// 				if timestamp > self.current_draw_buffer.timestamp {
+// 					received = true;
+// 					match result {
+// 						Ok(buffer) => {
+// 							self.average.1 += 1;
+// 							self.average.0 += timestamp.elapsed();
+// 							self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer };
+// 							self.cur_error = None;
+// 						},
+// 						Err(err) => {
+// 							self.cur_error = Some(err);
+// 							self.current_draw_buffer =
+// 								FilledDrawBuffer { timestamp, buffer: DrawBuffer::empty() };
+// 						},
+// 					}
+// 				}
+// 			}
+
+// 			if let Some(latest_one) = &mut self.latest_one {
+// 				if timestamp == latest_one.timestamp {
+// 					// println!("got latest one {id} {:?} {:?}", timestamp.elapsed(), timestamp);
+// 					self.latest_one = None;
+// 				}
+// 			}
+// 			if let Some(earliest_one) = &mut self.earliest_one {
+// 				if timestamp == earliest_one.timestamp {
+// 					self.earliest_one = None;
+// 					// println!("got earliest one one {id} {:?} {:?}", timestamp.elapsed(), timestamp);
+// 				} else if timestamp > earliest_one.timestamp && !was_canceled {
+// 					// println!(
+// 					// 	"got newer earliest one {id} {:?} {:?} timestamp of earliest one {:?}",
+// 					// 	timestamp.elapsed(),
+// 					// 	timestamp,
+// 					// 	earliest_one.timestamp
+// 					// );
+
+// 					earliest_one.cancel_signal.store(true, Ordering::Relaxed);
+// 					self.earliest_one = None;
+// 				}
+// 			}
+// 		}
+
+// 		if self.latest_one.is_none() {
+// 			if let Some((calc, work)) = self.deferred.take() {
+// 				self.spawn_as_latest(calc, work, true);
+// 			}
+// 		}
+
+// 		let has_outstanding = self.latest_one.is_some() || self.earliest_one.is_some();
+// 		(
+// 			has_outstanding,
+// 			if received {
+// 				println!("average {ido:?}: {:?}", self.average.0 / self.average.1 as u32);
+// 				Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
+// 			} else {
+// 				None
+// 			},
+// 		)
+// 	}
+// }
+// impl Drop for DrawBufferScheduler {
+// 	fn drop(&mut self) { self.clear_buffer(); }
+// }
+
 pub struct DrawBufferScheduler {
 	pub current_draw_buffer: FilledDrawBuffer,
 	pub cur_error:           Option<(u64, String)>,
 
-	pub earliest_one: Option<ScheduledCalc>,
-	pub latest_one:   Option<ScheduledCalc>,
+	pub scheduled: Option<ScheduledCalc>,
+	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send>)>,
+	pub average:   (Duration, usize),
 
-	sx: mpsc::SyncSender<(Instant, ExecutionResult)>,
-	rx: mpsc::Receiver<(Instant, ExecutionResult)>,
+	sx: mpsc::SyncSender<(u64, Instant, ExecutionResult)>,
+	rx: mpsc::Receiver<(u64, Instant, ExecutionResult)>,
 }
 impl DrawBufferScheduler {
 	pub fn new() -> Self {
@@ -815,50 +1001,55 @@ impl DrawBufferScheduler {
 			},
 			cur_error: None,
 
-			earliest_one: None,
-			latest_one: None,
+			scheduled: None,
+			average: (Duration::ZERO, 0),
+			deferred: None,
 			sx,
 			rx,
 		}
 	}
-	pub fn schedule(&mut self, work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static) {
+	pub fn schedule(
+		&mut self, id: u64, work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static,
+	) {
 		let started = Instant::now();
 		let cancel_signal = Arc::new(AtomicBool::new(false));
-		let scheduled_calc = ScheduledCalc { timestamp: started, cancel_signal };
-		rayon::spawn({
-			let scheduled_calc = scheduled_calc.clone();
-			let sx = self.sx.clone();
-			move || {
-				let result = work(&scheduled_calc.cancel_signal);
-				if let Some(result) = result {
-					let _res = sx.send((scheduled_calc.timestamp, result));
-				}
-			}
-		});
+		let scheduled_calc = ScheduledCalc { id, timestamp: started, cancel_signal };
 
-		match (self.earliest_one.take(), self.latest_one.take()) {
-			(None, None) => {
-				self.latest_one = Some(scheduled_calc);
-			},
-			(None, Some(latest)) => {
-				self.earliest_one = Some(latest);
-				self.latest_one = Some(scheduled_calc);
-			},
-			(Some(earliest), Some(latest)) => {
-				self.earliest_one = Some(earliest);
-				latest.cancel_signal.store(true, Ordering::Relaxed);
-				self.latest_one = Some(scheduled_calc);
-			},
-			(Some(earliest), None) => {
-				self.earliest_one = Some(earliest);
-				self.latest_one = Some(scheduled_calc);
-			},
+		if self.scheduled.is_none() {
+			self.spawn_as_latest(scheduled_calc, work, false);
+		} else {
+			self.deferred = Some((scheduled_calc, Box::new(work)));
 		}
 	}
-  pub fn clear_buffer(&mut self) {
-    self.current_draw_buffer.buffer.clear();
-    self.current_draw_buffer.timestamp = Instant::now();
-  }
+	fn spawn_as_latest(
+		&mut self, calc: ScheduledCalc,
+		work: impl FnOnce(&AtomicBool) -> Option<ExecutionResult> + Send + 'static, is_deffered: bool,
+	) {
+		let sx = self.sx.clone();
+		let calc_clone = calc.clone();
+		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
+
+		rayon::spawn(move || {
+			let result = work(&calc_clone.cancel_signal).expect("we're not using the cancel signal");
+
+			let _send_res = sx.send((calc_clone.id, calc_clone.timestamp, result));
+		});
+
+		self.scheduled = Some(calc);
+	}
+	pub fn clear_buffer(&mut self) {
+		self.current_draw_buffer.buffer.clear();
+		self.current_draw_buffer.timestamp = Instant::now();
+		// if let Some(scheduled) = self.scheduled.take() {
+		//   scheduled.cancel_signal.store(true, Ordering::Relaxed);
+		// }
+		// if let Some(earliest) = self.earliest_one.take() {
+		// 	earliest.cancel_signal.store(true, Ordering::Relaxed);
+		// }
+		// if let Some(latest) = self.latest_one.take() {
+		// 	latest.cancel_signal.store(true, Ordering::Relaxed);
+		// }
+	}
 	pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
 		let started = Instant::now();
 		self.current_draw_buffer.buffer.clear();
@@ -882,13 +1073,21 @@ impl DrawBufferScheduler {
 	fn draw_buffer(&self) -> Result<&DrawBuffer, (u64, String)> {
 		if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(&self.current_draw_buffer.buffer) }
 	}
-	pub fn try_receive(&mut self) -> Option<Result<(), (u64, String)>> {
+	/// returns (has_outstanding, maybe_new_result)
+	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
 		let mut received = false;
-		while let Ok((timestamp, result)) = self.rx.try_recv() {
+		// let mut ido = None;
+		while let Ok((id, timestamp, result)) = self.rx.try_recv() {
+			// ido = Some(id);
+			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
+			// self.latest_one);
 			if timestamp > self.current_draw_buffer.timestamp {
 				received = true;
 				match result {
 					Ok(buffer) => {
+						self.average.1 += 1;
+						self.average.0 += timestamp.elapsed();
+
 						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer };
 						self.cur_error = None;
 					},
@@ -898,25 +1097,33 @@ impl DrawBufferScheduler {
 					},
 				}
 			}
-			if let Some(latest_one) = &mut self.latest_one {
-				if timestamp == latest_one.timestamp {
-					self.latest_one = None;
-				}
-			}
-			if let Some(earliest_one) = &mut self.earliest_one {
-				if timestamp == earliest_one.timestamp {
-					self.earliest_one = None;
-				} else if timestamp > earliest_one.timestamp {
-					earliest_one.cancel_signal.store(true, Ordering::Relaxed);
-					self.earliest_one = None;
+			if let Some(scheduled) = &self.scheduled {
+				if timestamp == scheduled.timestamp {
+					self.scheduled = None;
 				}
 			}
 		}
 
-		if received {
-			Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
-		} else {
-			None
+		let has_outstanding = self.scheduled.is_some();
+		(
+			has_outstanding,
+			if received {
+				// println!("average {ido:?}: {:?}", self.average.0 / self.average.1 as u32);
+
+				Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
+			} else {
+				None
+			},
+		)
+	}
+
+	pub fn schedule_deffered_if_idle(&mut self) -> bool {
+		if self.scheduled.is_none() {
+			if let Some((calc, work)) = self.deferred.take() {
+				self.spawn_as_latest(calc, work, true);
+				return true;
+			}
 		}
+		false
 	}
 }

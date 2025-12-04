@@ -1,7 +1,7 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{self, Color32};
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, ThinVec, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
 use crate::custom_rendering::fan_fill_renderer::FillRule;
@@ -193,7 +193,7 @@ pub enum EntryType<T: EvalexprFloat> {
 	},
 	Points {
 		identifier: IStr,
-		points:     Vec<PointEntry<T>>,
+		points_ty:     PointsType<T>,
 		style:      PointStyle<T>,
 	},
 	Folder {
@@ -333,9 +333,7 @@ impl Default for LineStyleConfig {
 	}
 }
 impl LineStyleConfig {
-	fn new(selectable: bool) -> Self {
-		Self { selectable, ..Self::default()}
-	}
+	fn new(selectable: bool) -> Self { Self { selectable, ..Self::default() } }
 }
 impl LineStyleConfig {
 	fn egui_line_style(&self) -> egui_plot::LineStyle {
@@ -434,7 +432,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			draw_buffer_scheduler: DrawBufferScheduler::new(),
 			ty: EntryType::Points {
 				identifier: istr_empty(),
-				points:     vec![PointEntry::default()],
+        points_ty: PointsType::Separate(vec![PointEntry::default()]),
 				style:      PointStyle::default(),
 			},
 		}
@@ -478,26 +476,37 @@ impl PointDragType {
 	}
 }
 #[derive(Clone, Debug)]
-pub struct PointEntry<T: EvalexprFloat> {
-	pub x:                        Expr<T>,
-	pub y:                        Expr<T>,
+pub struct PointDrag {
 	pub drag_point:               Option<DragPoint>,
 	pub drag_type:                PointDragType,
 	pub both_drag_dirs_available: bool,
-	pub val:                      Option<(T, T)>,
+}
+#[derive(Clone, Debug)]
+pub struct PointEntry<T: EvalexprFloat> {
+	pub x:    Expr<T>,
+	pub y:    Expr<T>,
+	pub drag: PointDrag,
+	pub val:  Option<(T, T)>,
 }
 
 impl<T: EvalexprFloat> Default for PointEntry<T> {
 	fn default() -> Self {
 		Self {
-			x:                        Expr::default(),
-			y:                        Expr::default(),
-			drag_point:               None,
-			drag_type:                PointDragType::default(),
-			both_drag_dirs_available: true,
-			val:                      None,
+			x:    Expr::default(),
+			y:    Expr::default(),
+			drag: PointDrag {
+				drag_point:               None,
+				drag_type:                PointDragType::default(),
+				both_drag_dirs_available: true,
+			},
+			val:  None,
 		}
 	}
+}
+#[derive(Clone, Debug)]
+pub enum PointsType<T: EvalexprFloat> {
+	Separate(Vec<PointEntry<T>>),
+	SingleExpr { expr: Expr<T>, val:Vec<(T,T)> }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

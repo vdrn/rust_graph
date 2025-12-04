@@ -12,7 +12,9 @@ use thread_local::ThreadLocal;
 use crate::draw_buffer::{
 	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult, FillMesh, OtherPointType, PointInteraction, PointInteractionType
 };
-use crate::entry::{COLORS, ClonedEntry, Entry, EntryType, EquationType, NUM_COLORS, f64_to_value};
+use crate::entry::{
+	COLORS, ClonedEntry, DragPoint, Entry, EntryType, EquationType, NUM_COLORS, PointsType, f64_to_value
+};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{
 	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
@@ -84,31 +86,21 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 		EntryType::Constant { .. } => {},
 		EntryType::Folder { entries } => {
 			for (ei, entry) in entries.iter_mut().enumerate() {
-				if entry.active {
-					schedule_entry_create_plot_elements(
-						entry,
-						sorting_idx + ei as u32,
-						selected_id,
-						ctx,
-						plot_params,
-						tl_context,
-					);
-				} else {
-					entry.draw_buffer_scheduler.execute(|draw_buffer| {
-						draw_buffer.clear();
-						Ok(())
-					})
-				}
+				schedule_entry_create_plot_elements(
+					entry,
+					sorting_idx + ei as u32,
+					selected_id,
+					ctx,
+					plot_params,
+					tl_context,
+				);
 			}
 		},
 		EntryType::Function { can_be_drawn, .. } => {
 			if !*can_be_drawn {
-				entry.draw_buffer_scheduler.execute(|draw_buffer| {
-					draw_buffer.clear();
-					Ok(())
-				})
+				entry.draw_buffer_scheduler.clear_buffer();
 			} else {
-				entry.draw_buffer_scheduler.schedule({
+				entry.draw_buffer_scheduler.schedule(entry.id, {
 					let entry_cloned =
 						ClonedEntry { id: entry.id, color: entry.color, ty: entry.ty.clone() };
 					let ctx = Arc::clone(ctx);
@@ -131,7 +123,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, ctx,
 						plot_params, tl_context, draw_buffer,
 					);
-          Ok(())
+					Ok(())
 				}
 			});
 		},
@@ -445,7 +437,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Function { .. } => {
 			unreachable!()
 		},
-		EntryType::Points { points, style, .. } => {
+		EntryType::Points { points_ty, style, .. } => {
 			// main_context
 			// 	.write()
 			// 	.unwrap()
@@ -461,7 +453,19 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 				(plot_params.last_x - plot_params.first_x) as f32,
 				(plot_params.last_y - plot_params.first_y) as f32,
 			) * 0.002;
-			let points_len = points.len();
+			let (points_len, points_iter): (
+				usize,
+				Box<dyn Iterator<Item = (usize, Option<((T, T), Option<DragPoint>)>)>>,
+			) = match points_ty {
+				PointsType::Separate(points) => (
+					points.len(),
+					Box::new(points.iter().map(|p| p.val.map(|v| (v, p.drag.drag_point.clone()))).enumerate()),
+				),
+				PointsType::SingleExpr { expr: _, val } => {
+					(val.len(), Box::new(val.iter().map(|p| Some((*p, None))).enumerate()))
+				},
+			};
+
 			let mut fill_mesh = if style.fill
 				&& points_len > 2
 				&& let Some(plot_trans) = &plot_params.prev_plot_transform
@@ -471,8 +475,8 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 			} else {
 				None
 			};
-			for (i, p) in points.iter().enumerate() {
-				if let Some((x, y)) = p.val {
+			for (i, p) in points_iter {
+				if let Some(((x, y), drag_point)) = p {
 					let x = x.to_f64();
 					let y = y.to_f64();
 					let point_id = egui_id.with(i);
@@ -488,7 +492,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 						);
 						fill_mesh.add_vertex(screen_point.x, screen_point.y);
 					}
-					if style.show_points || p.drag_point.is_some() {
+					if style.show_points || drag_point.is_some() {
 						draw_buffer.points.push(DrawPoint::new(
 							sorting_idx,
 							i as u32,
@@ -500,7 +504,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 							},
 							Points::new(name.to_string(), [x, y]).color(color).radius(radius),
 						));
-						if p.drag_point.is_some() {
+						if drag_point.is_some() {
 							let selectable_point = PointInteraction {
 								ty: PointInteractionType::Draggable { i: (egui_id, i as u32) },
 								x,
@@ -1053,8 +1057,8 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 						if a_dy > max_segment_y { (a_dy / max_segment_y).ceil() as usize } else { 1 };
 					let mut base_subdivisions = subdivisions_x.max(subdivisions_y);
 					// max_base_subdivisions = max_base_subdivisions.max(base_subdivisions / 10);
-          #[allow(clippy::integer_division)]
-					let max_subdivisions = max_subdivisions.max(base_subdivisions / 10).min(plot_params.resolution/5);
+					#[allow(clippy::integer_division)]
+					let max_subdivisions = max_subdivisions.max(base_subdivisions / 10).min(plot_params.resolution / 5);
 
 					// Adjust by curvature
 					let adjusted_curvature = if let Some(prev_angle) = prev_angle {

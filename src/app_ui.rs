@@ -431,38 +431,26 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		let mut received_new = false;
 		{
+			let mut request_repaint = false;
 			scope!("receive_draw_buffers");
-			for entry in state.entries.iter_mut() {
-				match &mut entry.ty {
-					EntryType::Folder { entries } => {
-						for entry in entries.iter_mut() {
-							if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
-								received_new = true;
-								match received {
-									Ok(()) => {
-										ui_state.eval_errors.remove(&entry.id);
-									},
-									Err((id, error)) => {
-										ui_state.eval_errors.insert(id, error);
-									},
-								}
-							}
-						}
-					},
-					_ => {
-						if let Some(received) = entry.draw_buffer_scheduler.try_receive() {
-							received_new = true;
-							match received {
-								Ok(()) => {
-									ui_state.eval_errors.remove(&entry.id);
-								},
-								Err((id, error)) => {
-									ui_state.eval_errors.insert(id, error);
-								},
-							}
-						}
-					},
+			for_each_entry_mut(&mut state.entries, |entry| {
+				let (has_outstanding, maybe_received) = entry.draw_buffer_scheduler.try_receive();
+				request_repaint |= has_outstanding;
+				if let Some(received) = maybe_received {
+					request_repaint |= has_outstanding;
+					received_new = true;
+					match received {
+						Ok(()) => {
+							ui_state.eval_errors.remove(&entry.id);
+						},
+						Err((id, error)) => {
+							ui_state.eval_errors.insert(id, error);
+						},
+					}
 				}
+			});
+			if request_repaint {
+				ui.ctx().request_repaint();
 			}
 		}
 
@@ -653,6 +641,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		ui_state.prev_plot_transform = Some(plot_res.transform);
 
 		if force_create_elements || changed {
+			// println!("Scheduling element creation because force {force_create_elements} changed {changed}");
 			scope!("schedule_entry_create_plot_elements");
 			ui_state.eval_errors.clear();
 			let plot_params = entry::PlotParams::new(ui_state);
@@ -668,6 +657,14 @@ pub fn graph_panel<T: EvalexprFloat>(
 				);
 			}
 			ui_state.force_process_elements = true;
+		} else {
+			let mut request_repaint = false;
+			for_each_entry_mut(&mut state.entries, |entry| {
+				request_repaint |= entry.draw_buffer_scheduler.schedule_deffered_if_idle();
+			});
+			if request_repaint {
+				ui.ctx().request_repaint();
+			}
 		}
 
 		if let Some(drag_result) = point_dragging(
@@ -730,10 +727,12 @@ pub fn graph_panel<T: EvalexprFloat>(
 			);
 		}
 
-		if let Some(hovered_id) = plot_res.hovered_plot_item.or(p_draw_buffer.hovered_id) && hovered_point.is_none(){
-      // if dragging_point  {
-					// ui_state.selected_plot_line = None;
-      // }
+		if let Some(hovered_id) = plot_res.hovered_plot_item.or(p_draw_buffer.hovered_id)
+			&& hovered_point.is_none()
+		{
+			// if dragging_point  {
+			// ui_state.selected_plot_line = None;
+			// }
 			if plot_res.response.clicked()
 				|| plot_res.response.drag_started()
 				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
@@ -991,5 +990,17 @@ at which point they are fully opaque.";
 				ui.close();
 			}
 		});
+	}
+}
+
+fn for_each_entry_mut<T: EvalexprFloat>(entries: &mut [Entry<T>], mut f: impl FnMut(&mut Entry<T>)) {
+	for entry in entries.iter_mut() {
+		if let EntryType::Folder { entries } = &mut entry.ty {
+			for entry in entries.iter_mut() {
+				f(entry);
+			}
+		} else {
+			f(entry);
+		}
 	}
 }

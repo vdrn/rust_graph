@@ -3,7 +3,7 @@ use egui_plot::PlotResponse;
 use evalexpr::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack};
 
 use crate::draw_buffer::{self, PointInteractionType};
-use crate::entry::{DragPoint, Entry, EntryType, PlotParams, f64_to_value};
+use crate::entry::{DragPoint, Entry, EntryType, PlotParams, PointsType, f64_to_value};
 use crate::math::{minimize, solve_secant};
 
 pub struct DragPointResult {
@@ -35,11 +35,15 @@ pub fn point_dragging<T: EvalexprFloat>(
 	let Some(entry) = get_entry_mut_by_id(entries, i.0) else {
 		return result;
 	};
-	let EntryType::Points { points, .. } = &mut entry.ty else {
+	let EntryType::Points { points_ty, .. } = &mut entry.ty else {
 		return None;
 	};
+  let PointsType::Separate(points) = points_ty else {
+    return None;
+  };
 
-	let point = &mut points[i.1 as usize];
+	let point = 
+    &mut points[i.1 as usize];
 	let point_x = dragging_point_i.x;
 	let point_y = dragging_point_i.y;
 
@@ -47,7 +51,7 @@ pub fn point_dragging<T: EvalexprFloat>(
 		result = Some(DragPointResult { x: x.to_f64(), y: y.to_f64(), name: entry.name.clone() });
 	}
 
-	let (Some(drag_point_type), Some(screen_pos)) = (point.drag_point.clone(), plot_res.response.hover_pos())
+	let (Some(drag_point_type), Some(screen_pos)) = (point.drag.drag_point.clone(), plot_res.response.hover_pos())
 	else {
 		return result;
 	};

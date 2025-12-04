@@ -411,7 +411,11 @@ fn compile_to_flat_inner<F: EvalexprFloat>(
 						ops.push(FlatOperator::AccessY);
 						return Ok(());
 					},
-					_ => {
+					other => {
+            if let Ok(index) = other.parse::<u32>() {
+              ops.push(FlatOperator::AccessIndex { index });
+              return Ok(());
+            }
 						// If we dont error here, behavior would be confusing as t.z would read the value of z
 						// and index by it.
 						return Err(EvalexprError::CustomMessage(format!("Unknown field {identifier}")));

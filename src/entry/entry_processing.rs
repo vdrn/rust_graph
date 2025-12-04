@@ -1,12 +1,12 @@
 use evalexpr::{
-	EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, Stack, ThinVec, istr, istr_empty
+	EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, Stack, ThinVec, Value, istr, istr_empty
 };
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::builtins::is_builtin;
 use crate::entry::entry_plot_elements::eval_point2;
-use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType};
+use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType};
 use crate::scope;
 
 pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {
@@ -83,101 +83,113 @@ fn prepare_entry<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			//handled in outer scope
 		},
-		EntryType::Points { points, identifier, .. } => {
+		EntryType::Points { points_ty, identifier, .. } => {
 			*identifier = istr(entry.name.as_str().trim());
 
 			if let Some(builtin_type) = is_builtin(*identifier) {
 				*identifier = istr_empty();
 				return Err(format!("Cannot use builtin {} as name: {}", builtin_type, identifier));
 			}
-			for point in points {
-				let (Some(x), Some(y)) = (&point.x.node, &point.y.node) else {
-					point.drag_point = None;
+			match points_ty {
+				PointsType::Separate(points) => {
+					for point in points {
+						let (Some(x), Some(y)) = (&point.x.node, &point.y.node) else {
+							point.drag.drag_point = None;
 
-					return Ok(());
-				};
-				let x_state = analyze_node(x);
-				let y_state = analyze_node(y);
+							return Ok(());
+						};
+						let x_state = analyze_node(x);
+						let y_state = analyze_node(y);
 
-				let both_dirs_available = x_state.constants.iter().all(|c| !y_state.constants.contains(c));
-				if !both_dirs_available
-					&& point.both_drag_dirs_available
-					&& !matches!(point.drag_type, PointDragType::NoDrag)
-				{
-					point.drag_type = PointDragType::X;
-				}
-				point.both_drag_dirs_available = both_dirs_available;
+						let both_dirs_available =
+							x_state.constants.iter().all(|c| !y_state.constants.contains(c));
+						if !both_dirs_available
+							&& point.drag.both_drag_dirs_available
+							&& !matches!(point.drag.drag_type, PointDragType::NoDrag)
+						{
+							point.drag.drag_type = PointDragType::X;
+						}
+						point.drag.both_drag_dirs_available = both_dirs_available;
 
-				match point.drag_type {
-					PointDragType::NoDrag => {
-						point.drag_point = None;
-					},
-					PointDragType::Both => {
-						if x_state.is_literal && y_state.is_literal {
-							point.drag_point = Some(DragPoint::BothCoordLiterals);
-						} else if x_state.is_literal
-							&& let Some(y_const) = y_state.constants.first()
-						{
-							point.drag_point = Some(DragPoint::XLiteralYConstant(istr(y_const)));
-						} else if y_state.is_literal
-							&& let Some(x_const) = x_state.constants.first()
-						{
-							point.drag_point = Some(DragPoint::YLiteralXConstant(istr(x_const)));
-						} else if let (Some(x_const), Some(y_const)) =
-							(x_state.constants.first(), y_state.constants.first())
-						{
-							// todo:
-							if x_const == y_const {
-								if let Some(y_const) = y_state.constants.get(1) {
-									point.drag_point =
-										Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
-								} else if let Some(x_const) = x_state.constants.get(1) {
-									point.drag_point =
-										Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
+						match point.drag.drag_type {
+							PointDragType::NoDrag => {
+								point.drag.drag_point = None;
+							},
+							PointDragType::Both => {
+								if x_state.is_literal && y_state.is_literal {
+									point.drag.drag_point = Some(DragPoint::BothCoordLiterals);
+								} else if x_state.is_literal
+									&& let Some(y_const) = y_state.constants.first()
+								{
+									point.drag.drag_point = Some(DragPoint::XLiteralYConstant(istr(y_const)));
+								} else if y_state.is_literal
+									&& let Some(x_const) = x_state.constants.first()
+								{
+									point.drag.drag_point = Some(DragPoint::YLiteralXConstant(istr(x_const)));
+								} else if let (Some(x_const), Some(y_const)) =
+									(x_state.constants.first(), y_state.constants.first())
+								{
+									// todo:
+									if x_const == y_const {
+										if let Some(y_const) = y_state.constants.get(1) {
+											point.drag.drag_point = Some(DragPoint::BothCoordConstants(
+												istr(x_const),
+												istr(y_const),
+											));
+										} else if let Some(x_const) = x_state.constants.get(1) {
+											point.drag.drag_point = Some(DragPoint::BothCoordConstants(
+												istr(x_const),
+												istr(y_const),
+											));
+										} else {
+											point.drag.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+										}
+									} else {
+										point.drag.drag_point =
+											Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
+									}
+								} else if let Some(x_const) = x_state.constants.first()
+								// && y_state.first_constant.is_none()
+								{
+									point.drag.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+								} else if let Some(y_const) = y_state.constants.first() {
+									point.drag.drag_point = Some(DragPoint::YConstant(istr(y_const)));
 								} else {
-									point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+									point.drag.drag_point = None;
 								}
-							} else {
-								point.drag_point =
-									Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
-							}
-						} else if let Some(x_const) = x_state.constants.first()
-						// && y_state.first_constant.is_none()
-						{
-							point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-						} else if let Some(y_const) = y_state.constants.first() {
-							point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
-						} else {
-							point.drag_point = None;
+							},
+							PointDragType::X => {
+								if x_state.is_literal {
+									point.drag.drag_point = Some(DragPoint::XLiteral);
+								} else if let Some(x_const) = x_state.constants.first() {
+									if x_state.num_identifiers_and_special_ops == 1 {
+										point.drag.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+									} else if y_state.constants.iter().any(|c| c == x_const) {
+										point.drag.drag_point =
+											Some(DragPoint::SameConstantBothCoords(istr(x_const)));
+									} else {
+										point.drag.drag_point = Some(DragPoint::XConstant(istr(x_const)));
+									}
+								}
+							},
+							PointDragType::Y => {
+								if y_state.is_literal {
+									point.drag.drag_point = Some(DragPoint::YLiteral);
+								} else if let Some(y_const) = y_state.constants.first() {
+									if y_state.num_identifiers_and_special_ops == 1 {
+										point.drag.drag_point = Some(DragPoint::YConstant(istr(y_const)));
+									} else if x_state.constants.iter().any(|c| c == y_const) {
+										point.drag.drag_point =
+											Some(DragPoint::SameConstantBothCoords(istr(y_const)));
+									} else {
+										point.drag.drag_point = Some(DragPoint::YConstant(istr(y_const)));
+									}
+								}
+							},
 						}
-					},
-					PointDragType::X => {
-						if x_state.is_literal {
-							point.drag_point = Some(DragPoint::XLiteral);
-						} else if let Some(x_const) = x_state.constants.first() {
-							if x_state.num_identifiers_and_special_ops == 1 {
-								point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-							} else if y_state.constants.iter().any(|c| c == x_const) {
-								point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(x_const)));
-							} else {
-								point.drag_point = Some(DragPoint::XConstant(istr(x_const)));
-							}
-						}
-					},
-					PointDragType::Y => {
-						if y_state.is_literal {
-							point.drag_point = Some(DragPoint::YLiteral);
-						} else if let Some(y_const) = y_state.constants.first() {
-							if y_state.num_identifiers_and_special_ops == 1 {
-								point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
-							} else if x_state.constants.iter().any(|c| c == y_const) {
-								point.drag_point = Some(DragPoint::SameConstantBothCoords(istr(y_const)));
-							} else {
-								point.drag_point = Some(DragPoint::YConstant(istr(y_const)));
-							}
-						}
-					},
-				}
+					}
+				},
+				PointsType::SingleExpr { expr: _, val: _ } => {},
 			}
 		},
 		EntryType::Constant { .. } => {
@@ -357,18 +369,31 @@ pub fn optimize_entries<T: EvalexprFloat>(
 							}
 						}
 					},
-					EntryType::Points { points, .. } => {
-						for c_node in points
-							.iter()
-							.flat_map(|p| [p.x.node.as_ref(), p.y.node.as_ref()].into_iter())
-							.flatten()
-						{
-							for ident in c_node.iter_identifiers() {
-								if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
-									depends_on.push(d.identifier);
+					EntryType::Points { points_ty, .. } => match points_ty {
+						PointsType::Separate(points) => {
+							for c_node in points
+								.iter()
+								.flat_map(|p| [p.x.node.as_ref(), p.y.node.as_ref()].into_iter())
+								.flatten()
+							{
+								for ident in c_node.iter_identifiers() {
+									if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident)
+									{
+										depends_on.push(d.identifier);
+									}
 								}
 							}
-						}
+						},
+						PointsType::SingleExpr { expr, val: _ } => {
+							if let Some(node) = &expr.node {
+								for ident in node.iter_identifiers() {
+									if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident)
+									{
+										depends_on.push(d.identifier);
+									}
+								}
+							}
+						},
 					},
 					_ => {
 						unreachable!()
@@ -497,42 +522,111 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			}
 			func.expr_function = Some(expr_function);
 		},
-		EntryType::Points { identifier, points, .. } => {
+		EntryType::Points { identifier, points_ty, .. } => {
 			let mut stack = Stack::<T>::with_capacity(0);
-			for p in points.iter_mut() {
-				match eval_point2(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
-					Ok(Some(v)) => {
-						p.val = Some(v);
-					},
-					Ok(None) => {
-						p.val = None;
-					},
-					Err(e) => {
-						return Err((entry.id, e));
-					},
-				}
+			let mut warning = None;
+			match points_ty {
+				PointsType::Separate(points) => {
+					for p in points.iter_mut() {
+						match eval_point2(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
+							Ok(Some(v)) => {
+								p.val = Some(v);
+							},
+							Ok(None) => {
+								p.val = None;
+							},
+							Err(e) => {
+								return Err((entry.id, e));
+							},
+						}
+					}
+				},
+				PointsType::SingleExpr { expr, val } => {
+					val.clear();
+					if let Some(node) = &expr.node {
+						let eval_result =
+							node.eval_with_context(&mut stack, ctx).map_err(|e| (entry.id, e.to_string()))?;
+						match eval_result {
+							Value::Float(f) => {
+								return Err((
+									entry.id,
+									format!("Expected a point or list of points, got a float: {}", f),
+								));
+							},
+							Value::Boolean(b) => {
+								return Err((
+									entry.id,
+									format!("Expected a point or list of points, got a boolean: {}", b),
+								));
+							},
+							Value::Empty => {},
+							Value::Float2(x, y) => {
+								val.push((x, y));
+							},
+							Value::Tuple(thin_vec) => {
+								let mut invalid_indices = String::new();
+								for (i, v) in thin_vec.into_iter().enumerate() {
+									match v {
+										Value::Float2(x, y) => {
+											val.push((x, y));
+										},
+										v => {
+											if !invalid_indices.is_empty() {
+												invalid_indices.push_str(", ");
+											}
+											invalid_indices.push_str(&format!("{}: {}", i, v));
+										},
+									}
+								}
+								if !invalid_indices.is_empty() {
+									warning = Some(format!("Invalid points: {}", invalid_indices));
+								}
+							},
+						}
+					}
+				},
 			}
+
 			if identifier.to_str() != "" {
 				if ctx.has_value(*identifier) {
 					let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
 					*identifier = istr_empty();
 					return Err((entry.id, err));
 				}
-				if points.len() == 1 {
-					if let Some(va) = points[0].val {
-						ctx.set_value(*identifier, evalexpr::Value::<T>::Float2(va.0, va.1)).unwrap();
-					}
-				} else if points.len() > 1 {
-					let mut tuple = ThinVec::with_capacity(points.len());
-					for p in points {
-						if let Some(va) = p.val {
-							tuple.push(evalexpr::Value::<T>::Float2(va.0, va.1));
-						} else {
-							tuple.push(evalexpr::Value::<T>::Empty);
+
+				match points_ty {
+					PointsType::Separate(points) => {
+						if points.len() == 1 {
+							if let Some(va) = points[0].val {
+								ctx.set_value(*identifier, Value::<T>::Float2(va.0, va.1)).unwrap();
+							}
+						} else if points.len() > 1 {
+							let mut tuple = ThinVec::with_capacity(points.len());
+							for p in points {
+								if let Some(va) = p.val {
+									tuple.push(Value::<T>::Float2(va.0, va.1));
+								} else {
+									tuple.push(Value::<T>::Empty);
+								}
+							}
+							ctx.set_value(*identifier, Value::<T>::Tuple(tuple)).unwrap();
 						}
-					}
-					ctx.set_value(*identifier, evalexpr::Value::<T>::Tuple(tuple)).unwrap();
+					},
+					PointsType::SingleExpr { expr: _, val } => {
+						if val.len() == 1 {
+							ctx.set_value(*identifier, Value::<T>::Float2(val[0].0, val[0].1)).unwrap();
+						} else {
+							ctx.set_value(
+								*identifier,
+								Value::<T>::Tuple(val.iter().map(|v| Value::<T>::Float2(v.0, v.1)).collect()),
+							)
+							.unwrap();
+						}
+					},
 				}
+			}
+			if let Some(warning) = warning {
+				return Err((entry.id, warning));
 			}
 		},
 		_ => {},

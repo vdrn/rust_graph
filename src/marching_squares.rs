@@ -124,6 +124,7 @@ pub fn marching_squares<C>(
 			}
 		});
 		if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
+			cache.return_grid(grid);
 			return None;
 		}
 
@@ -412,6 +413,7 @@ pub fn marching_squares<C>(
 		})
 		.collect();
 	if interupt_signal.load(core::sync::atomic::Ordering::Relaxed) {
+		cache.return_grid(grid);
 		return None;
 	}
 
