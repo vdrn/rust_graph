@@ -1,6 +1,5 @@
 use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::AtomicBool;
 
 use arrayvec::ArrayVec;
 use eframe::egui::{Color32, Pos2};

@@ -125,7 +125,7 @@ integer_division = "warn" # Problem with this is that we would want to allow div
 # ### Warnings/Denys
 large_stack_frames = "warn"
 exit ="warn"
-panic_in_result_fn ="warn"
+# panic_in_result_fn ="warn"
 unused_peekable = "warn" 
 unnecessary_join = "warn"
 single_match_else = "warn"

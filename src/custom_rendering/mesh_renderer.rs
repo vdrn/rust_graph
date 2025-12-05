@@ -2,7 +2,6 @@ use alloc::sync::Arc;
 use send_wrapper::SendWrapper;
 use core::cell::RefCell;
 use core::num::NonZeroU64;
-use std::sync::Mutex;
 
 use eframe::egui::{self, Mesh, Rect};
 use eframe::egui_wgpu::wgpu::util::DeviceExt as _;

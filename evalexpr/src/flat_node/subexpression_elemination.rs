@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::flat_node::FlatOperator;
+use crate::flat_node::{AdditionalArgs, ClosureNode, FlatOperator, MapOp};
 use crate::{EvalexprFloat, FlatNode, HashMapContext, Value};
 
 /// Returns `true` if any local variables were deduplicated at the end of this function.
@@ -18,24 +18,20 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
 
 	let mut cur_idx = node.num_local_var_ops as usize;
 	while cur_idx < node.ops.len() {
-		let op = &node.ops[cur_idx];
+		let op = &mut node.ops[cur_idx];
 		let num_args = num_args(op);
-		let mut should_eliminate = num_args > 0;
 
-		// functions with 0 args need to be considered too
-		match op {
+		let should_eliminate = match op {
 			FlatOperator::ReadVar { identifier } => {
-				if !context.variables.contains_key(identifier) && context.functions.contains_key(identifier) {
-					// function calls without brackets
-					should_eliminate = true;
-				}
+				// function calls without brackets
+				!context.variables.contains_key(identifier) && context.functions.contains_key(identifier)
 			},
 			FlatOperator::FunctionCall { .. } => {
 				// calls with brackets
-				should_eliminate = true;
+				true
 			},
-			_ => {},
-		}
+			_ => num_args > 0,
+		};
 
 		if should_eliminate {
 			let start_idx = get_operator_range(&node.ops, cur_idx, 0).unwrap();
@@ -96,6 +92,7 @@ pub fn eliminate_subexpressions<F: EvalexprFloat>(
 		node.ops.splice(insert_place..insert_place, local_vars);
 	}
 
+	// false
 	let mut deduplicated = deduplicate_local_vars(node);
 	deduplicated |= inline_single_ref_local_vars(node);
 	deduplicated
@@ -120,37 +117,77 @@ fn remove_one_op_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) {
 			continue;
 		}
 
+		let local_var_op = node.ops[start].clone();
 		let local_var_idx = total_num_local_vars - i - 1;
-		match node.ops[start] {
-			FlatOperator::ReadParam { inverse_index } => {
-				for op in node.ops[start + 1..].iter_mut() {
-					let FlatOperator::ReadLocalVar { idx } = op else {
-						continue;
-					};
+		let mut closures_need_local_var = false;
+		// NOTE: we cannot remove the local var if the closures use it
+		{
+			let mut check_closure = |closure: &mut ClosureNode<F>| {
+				match closure {
+					ClosureNode::Unprepared { .. } => {},
+					ClosureNode::Prepared { additional_args, .. } => {
+						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
+							if local_var_indices.contains(&(local_var_idx as u32)) {
+								closures_need_local_var = true;
+								return true;
+							}
+						}
+					},
+				}
+				false
+			};
+			for op in node.iter_mut_top_level_ops2() {
+				match op {
+					FlatOperator::If { true_expr, false_expr } => {
+						if check_closure(true_expr) {
+							break;
+						}
+						if let Some(false_expr) = false_expr {
+							if check_closure(false_expr) {
+								break;
+							}
+						}
+					},
+					FlatOperator::Integral(closure)
+					| FlatOperator::Product(closure)
+					| FlatOperator::Sum(closure)
+					| FlatOperator::Map(MapOp::Closure(closure)) => {
+						if check_closure(closure) {
+							break;
+						}
+					},
+					_ => {},
+				}
+			}
+		}
+		if closures_need_local_var {
+			continue;
+		}
+		node.iter_mut_top_level_ops(&mut |op| {
+			let FlatOperator::ReadLocalVar { idx } = op else {
+				return;
+			};
+
+			match local_var_op {
+				FlatOperator::ReadParam { inverse_index } => {
 					if *idx == local_var_idx as u32 {
 						*op = FlatOperator::ReadParam { inverse_index };
 					} else if *idx > local_var_idx as u32 {
 						*idx -= 1;
 					}
-				}
-			},
-			FlatOperator::ReadVar { identifier } => {
-				for op in node.ops[start + 1..].iter_mut() {
-					let FlatOperator::ReadLocalVar { idx } = op else {
-						continue;
-					};
-
+				},
+				FlatOperator::ReadVar { identifier } => {
 					if *idx == local_var_idx as u32 {
 						*op = FlatOperator::ReadVar { identifier };
 					} else if *idx > local_var_idx as u32 {
 						*idx -= 1;
 					}
-				}
-			},
-			_ => {
-				unreachable!()
-			},
-		}
+				},
+				_ => {
+					unreachable!()
+				},
+			};
+		});
 		// ranges are in reverse order, so we can remove the op without affecting further start/end
 		// indices
 		node.ops.remove(start);
@@ -180,18 +217,46 @@ fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 				// 	"deduplicating local vars: source {i} to keep: {start}..={end} local_to_remove {j} range \
 				// 	 {start2}..={end2} all ops : {node:?}"
 				// );
-				for op in node.ops[end2 + 1..].iter_mut() {
-					if let FlatOperator::ReadLocalVar { idx } = op {
-						if *idx == j as u32 {
-							// println!("replacing op_i {} index {j} with {i}", node.num_local_var_ops + op_i
-							// as u32);
-
-							*idx = i as u32;
-						} else if *idx > j as u32 {
-							// println!("reducing op_i {} index {idx} with {}",node.num_local_var_ops + op_i as
-							// u32, *idx - 1);
-							*idx -= 1;
+				let update_cloure = |closure: &mut ClosureNode<F>| match closure {
+					ClosureNode::Unprepared { .. } => {},
+					ClosureNode::Prepared { additional_args, .. } => {
+						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
+							for idx in local_var_indices.iter_mut() {
+								if *idx == j as u32 {
+									*idx = i as u32;
+								} else if *idx > j as u32 {
+									*idx -= 1;
+								}
+							}
+							// TODO: we can also check if the local_var_indices have duplicates now, and
+							// deduplicate ReadParams in closure body as well. (need to be careful on how to
+							// translate the indices to ReadParam's inverse index, as they depend on number of
+							// regular closure's params!)
 						}
+					},
+				};
+				for op in node.ops[end2 + 1..].iter_mut() {
+					match op {
+						FlatOperator::ReadLocalVar { idx } => {
+							if *idx == j as u32 {
+								*idx = i as u32;
+							} else if *idx > j as u32 {
+								*idx -= 1;
+							}
+						},
+						FlatOperator::Map(MapOp::Closure(closure))
+						| FlatOperator::Integral(closure)
+						| FlatOperator::Product(closure)
+						| FlatOperator::Sum(closure) => {
+							update_cloure(closure);
+						},
+						FlatOperator::If { true_expr, false_expr } => {
+							update_cloure(true_expr);
+							if let Some(false_expr) = false_expr {
+								update_cloure(false_expr);
+							}
+						},
+						_ => {},
 					}
 				}
 				node.ops.drain(start2..=end2);
@@ -234,16 +299,54 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 		// let mut j = i + 1;
 		let mut ref_pos = None;
 		for op_i in end + 1..node.ops.len() {
-			if let FlatOperator::ReadLocalVar { idx } = &node.ops[op_i] {
-				if *idx == i as u32 {
-					if ref_pos.is_some() {
-						// multiple references, nothing to do
+			let check_closure_references_local_var = |closure: &ClosureNode<F>| {
+				match closure {
+					ClosureNode::Unprepared { .. } => {},
+					ClosureNode::Prepared { additional_args, .. } => {
+						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
+							if local_var_indices.contains(&(i as u32)) {
+								return true;
+							}
+						}
+					},
+				}
+				false
+			};
+
+			match &node.ops[op_i] {
+				FlatOperator::ReadLocalVar { idx } => {
+					if *idx == i as u32 {
+						if ref_pos.is_some() {
+							// multiple references, nothing to do
+							i += 1;
+							continue 'outer;
+						} else {
+							ref_pos = Some(op_i);
+						}
+					}
+				},
+				FlatOperator::Map(MapOp::Closure(closure))
+				| FlatOperator::Integral(closure)
+				| FlatOperator::Product(closure)
+				| FlatOperator::Sum(closure) => {
+					if check_closure_references_local_var(closure) {
 						i += 1;
 						continue 'outer;
-					} else {
-						ref_pos = Some(op_i);
 					}
-				}
+				},
+				FlatOperator::If { true_expr, false_expr } => {
+					if check_closure_references_local_var(true_expr) {
+						i += 1;
+						continue 'outer;
+					}
+					if let Some(false_expr) = false_expr {
+						if check_closure_references_local_var(false_expr) {
+							i += 1;
+							continue 'outer;
+						}
+					}
+				},
+				_ => {},
 			}
 		}
 		if let Some(ref_pos) = ref_pos {
@@ -409,8 +512,9 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::Clamp => 3,
 		FlatOperator::AccessX | FlatOperator::AccessY => 1,
 		FlatOperator::AccessIndex { .. } => 1,
-    FlatOperator::Access => 2,
-    FlatOperator::Map(_)=>1,
+		FlatOperator::Access => 2,
+		FlatOperator::Map(_) => 1,
+		FlatOperator::If { .. } => 1,
 	}
 }
 fn get_operator_range<F: EvalexprFloat>(

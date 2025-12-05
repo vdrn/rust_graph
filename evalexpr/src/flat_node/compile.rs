@@ -1,7 +1,7 @@
 use smallvec::SmallVec;
 
 use crate::error::{expect_function_argument_amount, expect_operator_argument_amount};
-use crate::flat_node::{FlatOperator, IntegralNode, MapExprOp, MapOp};
+use crate::flat_node::{ClosureNode, FlatOperator, MapOp};
 use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, IStr, Node, Operator, Value};
 /// Helper function to extract exactly one child node
 fn extract_one_node<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<Node<F>, F> {
@@ -473,12 +473,19 @@ fn compile_special_function<F: EvalexprFloat>(
 			};
 
 			let exp_node = compile_to_flat(expr_child)?;
+			use smallvec::smallvec;
 			match identifier.to_str() {
 				"Sum" | "sum" | "∑" => {
-					ops.push(FlatOperator::Sum { variable: variable_ident, expr: Box::new(exp_node) });
+					ops.push(FlatOperator::Sum(Box::new(ClosureNode::Unprepared {
+						params: smallvec![variable_ident],
+						expr:   exp_node,
+					})));
 				},
 				"Product" | "product" | "∏" => {
-					ops.push(FlatOperator::Product { variable: variable_ident, expr: Box::new(exp_node) });
+					ops.push(FlatOperator::Product(Box::new(ClosureNode::Unprepared {
+						params: smallvec![variable_ident],
+						expr:   exp_node,
+					})));
 				},
 				_ => unreachable!(),
 			}
@@ -508,9 +515,10 @@ fn compile_special_function<F: EvalexprFloat>(
 
 			compile_to_flat_inner(upper_bound, ops)?;
 			compile_to_flat_inner(lower_bound, ops)?;
-			ops.push(FlatOperator::Integral(Box::new(IntegralNode::UnpreparedExpr {
-				expr:     exp_node,
-				variable: *variable_name,
+			use smallvec::smallvec;
+			ops.push(FlatOperator::Integral(Box::new(ClosureNode::Unprepared {
+				expr:   exp_node,
+				params: smallvec![*variable_name],
 			})));
 
 			Ok(CompileNativeResult::Compiled)
@@ -591,8 +599,44 @@ fn compile_special_function<F: EvalexprFloat>(
 
 			let tuple_expr = node.children.pop().unwrap();
 			compile_to_flat_inner(tuple_expr, ops)?;
-			ops.push(FlatOperator::Map(MapOp::Expr(Box::new(MapExprOp { vars: args, expr: exp_node }))));
+			ops.push(FlatOperator::Map(MapOp::Closure(Box::new(ClosureNode::Unprepared {
+				params: args,
+				expr:   exp_node,
+			}))));
 			Ok(CompileNativeResult::Compiled)
+		},
+		"if" | "If" => match node.children.len() {
+			2 => {
+				let true_expr = node.children.pop().unwrap();
+				let condition = node.children.pop().unwrap();
+				compile_to_flat_inner(condition, ops)?;
+				ops.push(FlatOperator::If {
+					true_expr:  Box::new(ClosureNode::Unprepared {
+						params: SmallVec::new(),
+						expr:   compile_to_flat(true_expr)?,
+					}),
+					false_expr: None,
+				});
+				Ok(CompileNativeResult::Compiled)
+			},
+			3 => {
+				let false_expr = node.children.pop().unwrap();
+				let true_expr = node.children.pop().unwrap();
+				let condition = node.children.pop().unwrap();
+				compile_to_flat_inner(condition, ops)?;
+				ops.push(FlatOperator::If {
+					true_expr:  Box::new(ClosureNode::Unprepared {
+						params: SmallVec::new(),
+						expr:   compile_to_flat(true_expr)?,
+					}),
+					false_expr: Some(Box::new(ClosureNode::Unprepared {
+						params: SmallVec::new(),
+						expr:   compile_to_flat(false_expr)?,
+					})),
+				});
+				Ok(CompileNativeResult::Compiled)
+			},
+			_ => Err(EvalexprError::wrong_function_argument_amount_range(0, 2..=3)),
 		},
 		_ => Ok(CompileNativeResult::NotNative(node)),
 	}

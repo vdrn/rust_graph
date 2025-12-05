@@ -93,11 +93,11 @@ pub fn builtin_function<F: EvalexprFloat>(identifier: &str) -> Option<RustFuncti
 		"is_finite" => float_is(F::is_finite),
 		"is_infinite" => float_is(F::is_infinite),
 		"is_normal" => float_is(F::is_normal),
-		"if" => Some(RustFunction::new(|s, _c| {
-			expect_function_argument_amount(s.num_args(), 3)?;
-			let result_index = if s.get_arg(0).unwrap().as_boolean()? { 1 } else { 2 };
-			Ok(s.get_arg(result_index).unwrap().clone())
-		})),
+		// "if" => Some(RustFunction::new(|s, _c| {
+		// 	expect_function_argument_amount(s.num_args(), 3)?;
+		// 	let result_index = if s.get_arg(0).unwrap().as_boolean()? { 1 } else { 2 };
+		// 	Ok(s.get_arg(result_index).unwrap().clone())
+		// })),
 		"contains" => Some(RustFunction::new(move |s, _c| {
 			expect_function_argument_amount(s.num_args(), 2)?;
 			if let (Value::Tuple(a), b) = (s.get_arg(0).unwrap(), s.get_arg(1).unwrap()) {

@@ -4,12 +4,12 @@ use thin_vec::ThinVec;
 use crate::error::EvalexprResultValue;
 use crate::flat_node::eval::{self, access_index, eval_range, eval_range_with_step};
 use crate::flat_node::subexpression_elemination::{get_n_previous_exprs, range_as_const};
-use crate::flat_node::{FlatOperator, IntegralNode, MapExprOp, MapOp};
-use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, Value};
+use crate::flat_node::{ClosureNode, FlatOperator, MapOp};
+use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value};
 
 /// Inlines variables and folds the expression tree
 pub fn inline_variables_and_fold<F: EvalexprFloat>(
-	node: &FlatNode<F>, context: &mut HashMapContext<F>,
+	node: &FlatNode<F>, context: &mut HashMapContext<F>, skip_vars: &[IStr],
 ) -> EvalexprResult<FlatNode<F>, F> {
 	// return Ok(node.clone());
 	let mut new_ops = Vec::with_capacity(node.ops.len());
@@ -19,8 +19,12 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 	for source_op in node.ops.iter().skip(node.num_local_var_ops as usize) {
 		match source_op {
 			FlatOperator::ReadVar { identifier } => {
-				if let Some(value) = context.get_value(*identifier) {
-					new_ops.push(FlatOperator::PushConst { value: value.clone() });
+				if !skip_vars.contains(identifier) {
+					if let Some(value) = context.get_value(*identifier) {
+						new_ops.push(FlatOperator::PushConst { value: value.clone() });
+					} else {
+						new_ops.push(source_op.clone());
+					}
 				} else {
 					new_ops.push(source_op.clone());
 				}
@@ -49,51 +53,71 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
-			FlatOperator::Sum { expr, variable } | FlatOperator::Product { expr, variable } => {
+			FlatOperator::Sum(closure) | FlatOperator::Product(closure) => {
 				let is_sum = matches!(source_op, FlatOperator::Sum { .. });
-
-				if let Some(tuple_param) = pop_last_if_const_tuple(&mut new_ops)? {
-					if tuple_param.len() > 20 {
-						new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param.clone()) });
-					} else {
-						rerun_inlning = true;
-						let param_len = tuple_param.len();
-
-						let prev_variable_value = context.get_value(*variable).cloned();
-
-						for value in tuple_param.into_iter().rev() {
-							context.set_value(*variable, value)?;
-							let mut inlined_expr = inline_variables_and_fold(expr, context)?;
-							new_ops.append(&mut inlined_expr.ops);
-						}
-
-						if param_len == 2 {
-							if is_sum {
-								new_ops.push(FlatOperator::Add);
+				match closure.as_ref() {
+					ClosureNode::Unprepared { expr, params } => {
+						if let Some(tuple_param) = pop_last_if_const_tuple(&mut new_ops)? {
+							if tuple_param.len() > 20 {
+								new_ops.push(FlatOperator::PushConst {
+									value: Value::Tuple(tuple_param.clone()),
+								});
 							} else {
-								new_ops.push(FlatOperator::Mul);
-							}
-						} else if param_len > 2 {
-							if is_sum {
-								new_ops.push(FlatOperator::AddN { n: param_len as u32 });
-							} else {
-								new_ops.push(FlatOperator::MulN { n: param_len as u32 });
+								rerun_inlning = true;
+								let param_len = tuple_param.len();
+
+								let prev_arg_values = params
+									.iter()
+									.map(|v| context.get_value(*v).cloned())
+									.collect::<SmallVec<[Option<Value<F>>; 4]>>();
+
+								for value in tuple_param.into_iter().rev() {
+									context.set_value(params[0], value)?;
+									let mut inlined_expr =
+										inline_variables_and_fold(expr, context, skip_vars)?;
+									new_ops.append(&mut inlined_expr.ops);
+								}
+
+								if param_len == 2 {
+									if is_sum {
+										new_ops.push(FlatOperator::Add);
+									} else {
+										new_ops.push(FlatOperator::Mul);
+									}
+								} else if param_len > 2 {
+									if is_sum {
+										new_ops.push(FlatOperator::AddN { n: param_len as u32 });
+									} else {
+										new_ops.push(FlatOperator::MulN { n: param_len as u32 });
+									}
+								}
+								for (i, value) in prev_arg_values.into_iter().enumerate() {
+									if let Some(value) = value {
+										context.set_value(params[i], value)?;
+									} else {
+										context.remove_value(params[i])?;
+									}
+								}
+								continue;
 							}
 						}
-						if let Some(prev_variable_value) = prev_variable_value {
-							context.set_value(*variable, prev_variable_value)?;
+						let new_expr = inline_variables_and_fold(expr, context, skip_vars)?;
+						if is_sum {
+							new_ops.push(FlatOperator::Sum(Box::new(ClosureNode::Unprepared {
+								expr:   new_expr,
+								params: params.clone(),
+							})));
 						} else {
-							context.remove_value(*variable)?;
+							new_ops.push(FlatOperator::Product(Box::new(ClosureNode::Unprepared {
+								expr:   new_expr,
+								params: params.clone(),
+							})));
 						}
-						continue;
-					}
-				}
-				if is_sum {
-					let new_expr = inline_variables_and_fold(expr, context)?;
-					new_ops.push(FlatOperator::Sum { expr: Box::new(new_expr), variable: *variable });
-				} else {
-					let new_expr = inline_variables_and_fold(expr, context)?;
-					new_ops.push(FlatOperator::Product { expr: Box::new(new_expr), variable: *variable });
+					},
+					ClosureNode::Prepared { .. } => {
+						// might get optimized away later at function inlining
+						new_ops.push(source_op.clone());
+					},
 				}
 			},
 			FlatOperator::Map(map_op) => {
@@ -103,47 +127,54 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 						new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param) });
 					} else {
 						match map_op {
-							MapOp::Expr(expr) => {
-								let prev_arg_values = expr
-									.vars
-									.iter()
-									.map(|v| context.get_value(*v).cloned())
-									.collect::<SmallVec<[Option<Value<F>>; 4]>>();
+							MapOp::Closure(closure) => match closure.as_ref() {
+								ClosureNode::Unprepared { expr, params } => {
+									let prev_arg_values = params
+										.iter()
+										.map(|v| context.get_value(*v).cloned())
+										.collect::<SmallVec<[Option<Value<F>>; 4]>>();
 
-								for (i, value) in tuple_param.into_iter().enumerate() {
-									context.set_value(expr.vars[0], value)?;
-									match expr.vars.len() {
-										1 => {},
-										2 => {
-											context.set_value(expr.vars[1], Value::Float(F::from_usize(i)))?;
-										},
-										3 => {
-											context.set_value(expr.vars[1], Value::Float(F::from_usize(i)))?;
-											context.set_value(
-												expr.vars[2],
-												Value::Float(F::from_usize(tuple_len)),
-											)?;
-										},
-										_ => {
-											unreachable!()
-										},
+									for (i, value) in tuple_param.into_iter().enumerate() {
+										context.set_value(params[0], value)?;
+										match params.len() {
+											1 => {},
+											2 => {
+												context
+													.set_value(params[1], Value::Float(F::from_usize(i)))?;
+											},
+											3 => {
+												context
+													.set_value(params[1], Value::Float(F::from_usize(i)))?;
+												context.set_value(
+													params[2],
+													Value::Float(F::from_usize(tuple_len)),
+												)?;
+											},
+											_ => {
+												unreachable!()
+											},
+										}
+
+										let mut inlined_expr =
+											inline_variables_and_fold(expr, context, skip_vars)?;
+										new_ops.append(&mut inlined_expr.ops);
 									}
 
-									let mut inlined_expr = inline_variables_and_fold(&expr.expr, context)?;
-									new_ops.append(&mut inlined_expr.ops);
-								}
-
-								for (i, value) in prev_arg_values.into_iter().enumerate() {
-									if let Some(value) = value {
-										context.set_value(expr.vars[i], value)?;
-									} else {
-										context.remove_value(expr.vars[i])?;
+									for (i, value) in prev_arg_values.into_iter().enumerate() {
+										if let Some(value) = value {
+											context.set_value(params[i], value)?;
+										} else {
+											context.remove_value(params[i])?;
+										}
 									}
-								}
 
-								new_ops.push(FlatOperator::Tuple { len: tuple_len as u32 });
-								rerun_inlning = true;
-								continue;
+									new_ops.push(FlatOperator::Tuple { len: tuple_len as u32 });
+									rerun_inlning = true;
+									continue;
+								},
+								ClosureNode::Prepared { .. } => {
+									new_ops.push(FlatOperator::PushConst { value: Value::Tuple(tuple_param) });
+								},
 							},
 							MapOp::Func { name } => {
 								if let Some(expr_function) = context.expr_functions.get(name) {
@@ -193,12 +224,19 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					}
 				}
 				match map_op {
-					MapOp::Expr(expr) => {
-						let new_expr = inline_variables_and_fold(&expr.expr, context)?;
-						new_ops.push(FlatOperator::Map(MapOp::Expr(Box::new(MapExprOp {
-							vars: expr.vars.clone(),
-							expr: new_expr,
-						}))));
+					MapOp::Closure(closure) => match closure.as_ref() {
+						ClosureNode::Unprepared { expr, params } => {
+							let mut new_skip_vars = params.clone();
+							new_skip_vars.extend(skip_vars.iter().cloned());
+
+							let new_expr = inline_variables_and_fold(expr, context, &new_skip_vars)?;
+							new_ops.push(FlatOperator::Map(MapOp::Closure(Box::new(
+								ClosureNode::Unprepared { params: params.clone(), expr: new_expr },
+							))));
+						},
+						ClosureNode::Prepared { .. } => {
+							new_ops.push(source_op.clone());
+						},
 					},
 					MapOp::Func { name } => {
 						new_ops.push(FlatOperator::Map(MapOp::Func { name: *name }));
@@ -505,14 +543,17 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 				}
 			},
 			FlatOperator::Integral(int) => match int.as_ref() {
-				IntegralNode::UnpreparedExpr { expr, variable } => {
-					let new_expr = inline_variables_and_fold(expr, context)?;
-					new_ops.push(FlatOperator::Integral(Box::new(IntegralNode::UnpreparedExpr {
-						expr:     new_expr,
-						variable: *variable,
+				ClosureNode::Unprepared { expr, params } => {
+					let mut new_skip_vars = params.clone();
+					new_skip_vars.extend(skip_vars.iter().cloned());
+
+					let new_expr = inline_variables_and_fold(expr, context, &new_skip_vars)?;
+					new_ops.push(FlatOperator::Integral(Box::new(ClosureNode::Unprepared {
+						expr:   new_expr,
+						params: params.clone(),
 					})));
 				},
-				IntegralNode::PreparedFunc { .. } => {
+				ClosureNode::Prepared { .. } => {
 					new_ops.push(source_op.clone());
 				},
 			},
@@ -551,6 +592,54 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
+			FlatOperator::If { true_expr, false_expr } => {
+				// if let Some(const_condition) = get_last_if_const(&new_ops) {
+				// 	if const_condition.as_boolean()? {
+				// 		let mut inlined_true_expr = inline_variables_and_fold(true_expr, context)?;
+				// 		new_ops.append(&mut inlined_true_expr.ops);
+				// 	} else {
+				// 		if let Some(false_expr) = false_expr {
+				// 			let mut inlined_false_expr = inline_variables_and_fold(false_expr, context)?;
+				// 			new_ops.append(&mut inlined_false_expr.ops);
+				// 		} else {
+				// 			new_ops.push(FlatOperator::PushConst { value: Value::Empty });
+				// 		}
+				// 	}
+				// } else {
+				match (true_expr.as_ref(), false_expr.as_deref()) {
+					(
+						ClosureNode::Unprepared { expr: true_expr, .. },
+						Some(ClosureNode::Unprepared { expr: false_expr, .. }),
+					) => {
+						let inlined_true_expr = inline_variables_and_fold(true_expr, context, skip_vars)?;
+						let inlined_false_expr = inline_variables_and_fold(false_expr, context, skip_vars)?;
+						new_ops.push(FlatOperator::If {
+							true_expr:  Box::new(ClosureNode::Unprepared {
+								params: SmallVec::new(),
+								expr:   inlined_true_expr,
+							}),
+							false_expr: Some(Box::new(ClosureNode::Unprepared {
+								params: SmallVec::new(),
+								expr:   inlined_false_expr,
+							})),
+						});
+					},
+					(ClosureNode::Unprepared { expr: true_expr, .. }, None) => {
+						let inlined_true_expr = inline_variables_and_fold(true_expr, context, skip_vars)?;
+						new_ops.push(FlatOperator::If {
+							true_expr:  Box::new(ClosureNode::Unprepared {
+								params: SmallVec::new(),
+								expr:   inlined_true_expr,
+							}),
+							false_expr: None,
+						});
+					},
+					(_, _) => {
+						new_ops.push(source_op.clone());
+					},
+				}
+				// }
+			},
 
 			FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
@@ -587,7 +676,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 		num_local_var_ops: node.num_local_var_ops,
 	};
 	if rerun_inlning {
-		inline_variables_and_fold(&result, context)
+		inline_variables_and_fold(&result, context, skip_vars)
 	} else {
 		Ok(result)
 	}

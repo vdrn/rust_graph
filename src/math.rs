@@ -230,7 +230,7 @@ pub fn intersect_segs(
 	}
 }
 
-pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> (f64, f64)) -> f64 {
+pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> Option<(f64, f64)>) -> Option<f64> {
 	// Levenberg-Marquardt
 	// minimizing abs(f(val) - mouse_pos)^2
 
@@ -238,7 +238,7 @@ pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnM
 	let max_iterations = 100;
 
 	for _ in 0..max_iterations {
-		let (fx, fy) = f(t);
+		let (fx, fy) = f(t)?;
 		let residual_x = fx - mouse_pos.0;
 		let residual_y = fy - mouse_pos.1;
 
@@ -247,11 +247,11 @@ pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnM
 		if error < eps {
 			// success
 			// println!("succes at t: {t}");
-			return t;
+			return Some(t);
 		}
 
 		let h = eps * 100.0;
-		let (fx_h, fy_h) = f(t + h);
+		let (fx_h, fy_h) = f(t + h)?;
 
 		// first derivative
 		let df_dt_x = (fx_h - fx) / h;
@@ -260,7 +260,7 @@ pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnM
 		let gradient = 2.0 * (residual_x * df_dt_x + residual_y * df_dt_y);
 
 		// second derivative (hessian)
-		let (fx_2h, fy_2h) = f(t + 2.0 * h);
+		let (fx_2h, fy_2h) = f(t + 2.0 * h)?;
 		let d2f_dt2_x = (fx_2h - 2.0 * fx_h + fx) / (h * h);
 		let d2f_dt2_y = (fy_2h - 2.0 * fy_h + fy) / (h * h);
 		// Hessian of dist sq
@@ -275,7 +275,7 @@ pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnM
 
 		for scale in [1.0, 0.5, 0.25, 0.1] {
 			let t_new = t + scale * step;
-			let (fx_new, fy_new) = f(t_new);
+			let (fx_new, fy_new) = f(t_new)?;
 			let rx_new = fx_new - mouse_pos.0;
 			let ry_new = fy_new - mouse_pos.1;
 			let error_new = rx_new * rx_new + ry_new * ry_new;
@@ -288,14 +288,14 @@ pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnM
 
 		if (best_t - t).abs() < eps {
 			// we're stuck
-			return t;
+			return Some(t);
 		}
 
 		t = best_t;
 	}
 
 	// println!("reached max iterations {t}");
-	t
+	Some(t)
 }
 
 pub fn newton_raphson_minimizer2<const ITERS: usize>(

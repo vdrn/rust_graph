@@ -1,3 +1,5 @@
+use core::fmt::Write;
+
 use evalexpr::{
 	EvalexprFloat, ExpressionFunction, FlatNode, IStr, Node, Operator, Stack, ThinVec, Value, istr, istr_empty
 };
@@ -205,7 +207,7 @@ fn prepare_entry<T: EvalexprFloat>(
 				let first_ast_node =
 					if name_ast.children().is_empty() { &name_ast } else { &name_ast.children()[0] };
 
-        // println!("first ast node {:#?}", first_ast_node);
+				// println!("first ast node {:#?}", first_ast_node);
 				match first_ast_node.operator() {
 					evalexpr::Operator::VariableIdentifierRead { .. } | evalexpr::Operator::RootNode => {
 						*ty = FunctionType::Expression;
@@ -444,7 +446,8 @@ pub fn optimize_entries<T: EvalexprFloat>(
 			// In practice this only means its dependencies will not be inlined.
 			// We choose the one with least number of dependencies.
 			// NOTE: we might need to rethink this
-			functions.sort_unstable_by_key(|e| (e.prio, e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0)));
+			// functions.sort_by_key(|e| (e.prio, e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0)));
+			functions.sort_by_key(|e| e.prio);
 			println!("Cycle detected. Force compiling first function: {functions:?}. ");
 			functions[0].depends_on = None;
 		}
@@ -513,10 +516,13 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
+			// println!("node: {identifier}: {:#?}", node);
 			let inlined_node =
 				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
+			// println!("inlined node {identifier}: {:#?}", inlined_node);
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
+			// println!("expr_func node: {identifier} {:#?}", expr_function);
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());
@@ -575,7 +581,8 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 											if !invalid_indices.is_empty() {
 												invalid_indices.push_str(", ");
 											}
-											invalid_indices.push_str(&format!("{}: {}", i, v));
+											write!(&mut invalid_indices, "{i}: {v}").unwrap();
+											// invalid_indices.(&format!("{}: {}", i, v));
 										},
 									}
 								}

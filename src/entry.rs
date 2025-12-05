@@ -1,7 +1,7 @@
 use core::ops::RangeInclusive;
 
 use eframe::egui::{self, Color32};
-use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, ThinVec, Value, istr_empty};
+use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
 use crate::custom_rendering::fan_fill_renderer::FillRule;

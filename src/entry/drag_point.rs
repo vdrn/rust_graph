@@ -38,12 +38,11 @@ pub fn point_dragging<T: EvalexprFloat>(
 	let EntryType::Points { points_ty, .. } = &mut entry.ty else {
 		return None;
 	};
-  let PointsType::Separate(points) = points_ty else {
-    return None;
-  };
+	let PointsType::Separate(points) = points_ty else {
+		return None;
+	};
 
-	let point = 
-    &mut points[i.1 as usize];
+	let point = &mut points[i.1 as usize];
 	let point_x = dragging_point_i.x;
 	let point_y = dragging_point_i.y;
 
@@ -51,13 +50,16 @@ pub fn point_dragging<T: EvalexprFloat>(
 		result = Some(DragPointResult { x: x.to_f64(), y: y.to_f64(), name: entry.name.clone() });
 	}
 
-	let (Some(drag_point_type), Some(screen_pos)) = (point.drag.drag_point.clone(), plot_res.response.hover_pos())
+	let (Some(drag_point_type), Some(screen_pos)) =
+		(point.drag.drag_point.clone(), plot_res.response.hover_pos())
 	else {
 		return result;
 	};
 
 	let scale_x = plot_params.last_x - plot_params.first_x;
 	let scale_y = plot_params.last_y - plot_params.first_y;
+	let min_scale = scale_x.min(scale_y);
+	let eps = plot_params.eps * f64::max(min_scale, 100.0);
 	let pos = plot_res.transform.value_from_position(screen_pos);
 	match drag_point_type {
 		DragPoint::BothCoordLiterals => {
@@ -73,27 +75,27 @@ pub fn point_dragging<T: EvalexprFloat>(
 		DragPoint::XLiteralYConstant(y_const) => {
 			point.x.text = to_string_with_scale(T::from_f64(pos.x), scale_x);
 			let y_node = point.y.node.clone();
-			drag(entries, ctx, y_const, y_node, point_y, pos.y, plot_params.eps);
+			drag(entries, ctx, y_const, y_node, point_y, pos.y, eps);
 		},
 		DragPoint::YLiteralXConstant(x_const) => {
 			point.y.text = to_string_with_scale(T::from_f64(pos.y), scale_y);
 			let x_node = point.x.node.clone();
-			drag(entries, ctx, x_const, x_node, point_x, pos.x, plot_params.eps);
+			drag(entries, ctx, x_const, x_node, point_x, pos.x, eps);
 		},
 		DragPoint::BothCoordConstants(x_const, y_const) => {
 			let x_node = point.x.node.clone();
 			let y_node = point.y.node.clone();
 
-			drag(entries, ctx, x_const, x_node, point_x, pos.x, plot_params.eps);
-			drag(entries, ctx, y_const, y_node, point_y, pos.y, plot_params.eps);
+			drag(entries, ctx, x_const, x_node, point_x, pos.x, eps);
+			drag(entries, ctx, y_const, y_node, point_y, pos.y, eps);
 		},
 		DragPoint::XConstant(x_const) => {
 			let x_node = point.x.node.clone();
-			drag(entries, ctx, x_const, x_node, point_x, pos.x, plot_params.eps);
+			drag(entries, ctx, x_const, x_node, point_x, pos.x, eps);
 		},
 		DragPoint::YConstant(y_const) => {
 			let y_node = point.y.node.clone();
-			drag(entries, ctx, y_const, y_node, point_y, pos.y, plot_params.eps);
+			drag(entries, ctx, y_const, y_node, point_y, pos.y, eps);
 		},
 		DragPoint::SameConstantBothCoords(x_const) => {
 			let x_node = point.x.node.clone();
@@ -107,14 +109,16 @@ pub fn point_dragging<T: EvalexprFloat>(
 			};
 
 			let mut stack = Stack::<T>::new();
-			let new_value = minimize(value.to_f64(), (pos.x, pos.y), f32::EPSILON as f64, |x| {
+			let new_value = minimize(value.to_f64(), (pos.x, pos.y), eps , |x| {
 				ctx.set_value(x_const, f64_to_value::<T>(x)).unwrap();
-				(
-					x_node.eval_float_with_context(&mut stack, ctx).unwrap().to_f64(),
-					y_node.eval_float_with_context(&mut stack, ctx).unwrap().to_f64(),
-				)
+				Some((
+					x_node.eval_float_with_context(&mut stack, ctx).ok()?.to_f64(),
+					y_node.eval_float_with_context(&mut stack, ctx).ok()?.to_f64(),
+				))
 			});
-			*value = T::from_f64(new_value);
+			if let Some(new_value) = new_value {
+				*value = T::from_f64(new_value);
+			}
 		},
 	}
 

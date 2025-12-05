@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
 use crate::error::EvalexprResultValue;
-use crate::flat_node::{cold, FlatOperator, IntegralNode, MapOp};
+use crate::flat_node::{cold, ClosureNode, FlatOperator, MapOp};
 use crate::function::rust_function::builtin_function;
 use crate::math::integrate;
 use crate::{EvalexprError, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Value, ValueType};
@@ -15,8 +15,9 @@ pub fn eval_flat_node<F: EvalexprFloat>(
 ) -> EvalexprResultValue<F> {
 	let stack_size = stack.len();
 	let prev_num_args = stack.num_args;
-	match eval_priv_inner(node, stack, context, override_vars) {
+	match eval_priv_inner(node, stack, context, override_vars, stack_size) {
 		Ok(value) => {
+			stack.truncate(stack_size);
 			debug_assert_eq!(stack_size, stack.len());
 			stack.num_args = prev_num_args;
 			Ok(value)
@@ -134,10 +135,19 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 		// debug_assert!(arg_i < self.stack.len());
 		// Some(unsafe { self.stack.get_unchecked(arg_i) })
 	}
-	fn get_unchecked(&self, index: usize) -> &Value<T> {
+	#[inline(always)]
+	#[track_caller]
+	pub(crate) fn get_unchecked(&self, index: usize) -> &Value<T> {
 		// assert!(index < self.stack.len(), "index {} out of bounds {}", index, self.stack.len());
 		// unsafe { self.stack.get_unchecked(index) }
 		self.stack.get(index).unwrap()
+	}
+	#[inline(always)]
+	#[track_caller]
+	fn get_unchecked_mut(&mut self, index: usize) -> &mut Value<T> {
+		// assert!(index < self.stack.len(), "index {} out of bounds {}", index, self.stack.len());
+		// unsafe { self.stack.get_unchecked(index) }
+		self.stack.get_mut(index).unwrap()
 	}
 	// fn get(&self, index: usize) -> Option<&Value<T>> {
 	//     self.stack.get(index)
@@ -240,8 +250,8 @@ impl<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize> Stack<T, MAX_FUNCTION_
 #[inline(always)]
 fn eval_priv_inner<F: EvalexprFloat>(
 	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
+	base_index: usize,
 ) -> EvalexprResultValue<F> {
-	let base_index = stack.len();
 	for op in &node.ops {
 		match op {
 			// Binary arithmetic operators
@@ -684,7 +694,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let min = stack.pop_unchecked();
 				let x = stack.pop_unchecked();
 
-				stack.push(clamp(min, max, x)?);
+				stack.push(clamp(x, min, max)?);
 			},
 			FlatOperator::Factorial => {
 				let x = stack.pop_unchecked();
@@ -712,48 +722,76 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				stack.push(Value::Tuple(result))
 			},
 			// Native functions
-			FlatOperator::Sum { variable, expr } => {
-				let tuple = stack.pop_unchecked().as_tuple()?;
-				let mut result = F::ZERO;
-				let mut o_override_vars: SmallVec<[(IStr, Value<F>); 5]> =
-					smallvec::smallvec![(*variable, Value::Float(F::ZERO))];
-				o_override_vars.extend(override_vars.iter().cloned());
+			FlatOperator::Sum(closure) => match closure.as_ref() {
+				ClosureNode::Unprepared {..} => {
+					return Err(EvalexprError::CustomMessage(
+						"Sums outside functions are not supported".to_string(),
+					));
+				},
+				ClosureNode::Prepared { func, additional_args, .. } => {
+					let tuple = stack.pop_unchecked().as_tuple()?;
+					let mut result = F::ZERO;
 
-				for value in tuple {
-					o_override_vars[0].1 = value;
-					let current = eval_priv_inner(expr, stack, context, &o_override_vars)?.as_float()?;
-					result = result + current;
-				}
-				stack.push(Value::Float(result));
+							additional_args.push_values_to_stack(stack, base_index);
+					stack.push(Value::Empty);
+
+					let num_args = additional_args.len() + 1;
+					let prev_num_args = stack.num_args;
+					stack.num_args = num_args;
+
+					for value in tuple {
+						*stack.last_mut().unwrap() = value;
+						let current = func.unchecked_call(stack, context)?.as_float()?;
+						result = result + current;
+					}
+					for _ in 0..num_args {
+						stack.pop();
+					}
+					stack.num_args = prev_num_args;
+					stack.push(Value::Float(result));
+				},
 			},
-			FlatOperator::Product { variable, expr } => {
-				let tuple = stack.pop_unchecked().as_tuple()?;
-				let mut result = F::ONE;
-				let mut o_override_vars: SmallVec<[(IStr, Value<F>); 5]> =
-					smallvec::smallvec![(*variable, Value::Float(F::ZERO))];
-				o_override_vars.extend(override_vars.iter().cloned());
+			FlatOperator::Product(closure) => match closure.as_ref() {
+				ClosureNode::Unprepared {..} => {
+					return Err(EvalexprError::CustomMessage(
+						"Products outside functions are not supported".to_string(),
+					));
+				},
+				ClosureNode::Prepared { func, additional_args, .. } => {
+					let tuple = stack.pop_unchecked().as_tuple()?;
+					let mut result = F::ONE;
 
-				for value in tuple {
-					o_override_vars[0].1 = value;
-					let current = eval_priv_inner(expr, stack, context, &o_override_vars)?.as_float()?;
-					result = result * current;
-				}
-				stack.push(Value::Float(result));
+							additional_args.push_values_to_stack(stack, base_index);
+					stack.push(Value::Empty);
+
+					let num_args = additional_args.len() + 1;
+					let prev_num_args = stack.num_args;
+					stack.num_args = num_args;
+
+					for value in tuple {
+						*stack.last_mut().unwrap() = value;
+						let current = func.unchecked_call(stack, context)?.as_float()?;
+						result = result * current;
+					}
+					for _ in 0..num_args {
+						stack.pop();
+					}
+					stack.num_args = prev_num_args;
+
+					stack.push(Value::Float(result));
+				},
 			},
 			FlatOperator::Integral(int) => {
 				let upper = stack.pop_unchecked().as_float()?;
 				let lower = stack.pop_unchecked().as_float()?;
 				let result = match int.as_ref() {
-					IntegralNode::UnpreparedExpr { .. } => {
+					ClosureNode::Unprepared { .. } => {
 						return Err(EvalexprError::CustomMessage(
 							"Integrals outside functions are not supported.".to_string(),
 						));
 					},
-					IntegralNode::PreparedFunc { func, additional_args, .. } => {
-						for inverse_index in additional_args {
-							let value = stack.get_unchecked(base_index - *inverse_index as usize);
-							stack.push(value.clone());
-						}
+					ClosureNode::Prepared { func, additional_args, .. } => {
+							additional_args.push_values_to_stack(stack, base_index);
 						stack.push(Value::Empty);
 
 						let num_args = additional_args.len() + 1;
@@ -779,6 +817,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				stack.push(Value::Float(result));
 			},
 			FlatOperator::ReadLocalVar { idx } => {
+				// println!("READ LOCAL VAR base index {base_index} idx {idx} stack {:?}", stack.stack);
 				let value = stack.get_unchecked(base_index + *idx as usize);
 				stack.push(value.clone());
 			},
@@ -812,25 +851,56 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					_ => return Err(EvalexprError::expected_tuple(tuple)),
 				};
 				match map_op {
-					MapOp::Expr(expr) => {
-						let total = tuple.len();
-						let mut o_override_vars: SmallVec<[(IStr, Value<F>); 3]> =
-							expr.vars.iter().map(|v| (*v, Value::Float(F::ZERO))).collect();
+					MapOp::Closure(closure) => match closure.as_ref() {
+						ClosureNode::Unprepared { .. } => {
+							return Err(EvalexprError::CustomMessage(
+								"Maps outside functions are not supported".to_string(),
+							));
+						},
+						ClosureNode::Prepared { func, params, additional_args, .. } => {
+							let total = tuple.len();
 
-						if let Some(total_arg) = o_override_vars.get_mut(2) {
-							total_arg.1 = Value::Float(F::from_usize(total));
-						}
+							additional_args.push_values_to_stack(stack, base_index);
+							let num_args = additional_args.len() + params.len();
+							let prev_num_args = stack.num_args;
+							stack.num_args = num_args;
 
-						for (i, value) in tuple.iter_mut().enumerate() {
-							o_override_vars[0].1 = value.clone();
-							if let Some(index_arg) = o_override_vars.get_mut(1) {
-								index_arg.1 = Value::Float(F::from_usize(i));
+							// value arg
+							let value_arg_idx = stack.len();
+							stack.push(Value::Empty);
+
+							let mut index_arg_idx = None;
+							match params.len() {
+								1 => {},
+								2 => {
+									index_arg_idx = Some(stack.len());
+									stack.push(Value::Empty);
+								},
+								3 => {
+									index_arg_idx = Some(stack.len());
+									stack.push(Value::Empty);
+									stack.push(Value::Float(F::from_usize(total)));
+								},
+								_ => {
+									unreachable!()
+								},
 							}
-							let mapped = eval_priv_inner(&expr.expr, stack, context, &o_override_vars)?;
-							*value = mapped;
-						}
 
-						stack.push(tuple_to_value(tuple));
+							for (i, value) in tuple.iter_mut().enumerate() {
+								*stack.get_unchecked_mut(value_arg_idx) = value.clone();
+								if let Some(index_arg) = index_arg_idx {
+									*stack.get_unchecked_mut(index_arg) = Value::Float(F::from_usize(i));
+								}
+								let mapped = func.unchecked_call(stack, context)?;
+								*value = mapped;
+							}
+							for _ in 0..num_args {
+								stack.pop();
+							}
+							stack.num_args = prev_num_args;
+
+							stack.push(tuple_to_value(tuple));
+						},
 					},
 					MapOp::Func { name } => {
 						if let Some(expr_function) = context.expr_functions.get(name) {
@@ -864,11 +934,57 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					},
 				}
 			},
+			FlatOperator::If { true_expr, false_expr } => {
+				let condition = stack.pop_unchecked().as_boolean()?;
+				let result = if condition {
+					match true_expr.as_ref() {
+						ClosureNode::Unprepared { expr, .. } => {
+							eval_priv_inner(expr, stack, context, override_vars, base_index)?
+						},
+						ClosureNode::Prepared { func, additional_args, .. } => {
+							let num_args = additional_args.len();
+
+							additional_args.push_values_to_stack(stack, base_index);
+
+							let prev_num_args = stack.num_args;
+							stack.num_args = num_args;
+							let result = func.unchecked_call(stack, context)?;
+							for _ in 0..num_args {
+								stack.pop();
+							}
+							stack.num_args = prev_num_args;
+							result
+						},
+					}
+				} else {
+					if let Some(false_expr) = false_expr {
+						match false_expr.as_ref() {
+							ClosureNode::Unprepared { expr, .. } => {
+								eval_priv_inner(expr, stack, context, override_vars, base_index)?
+							},
+							ClosureNode::Prepared { func, additional_args, .. } => {
+								let num_args = additional_args.len();
+							additional_args.push_values_to_stack(stack, base_index);
+								let prev_num_args = stack.num_args;
+								stack.num_args = num_args;
+								let result = func.unchecked_call(stack, context)?;
+								for _ in 0..num_args {
+									stack.pop();
+								}
+								stack.num_args = prev_num_args;
+								result
+							},
+						}
+					} else {
+						Value::Empty
+					}
+				};
+				stack.push(result);
+			},
 		}
 	}
 
 	let result = stack.pop().unwrap();
-	stack.truncate(base_index);
 	Ok(result)
 }
 pub fn access<F: EvalexprFloat>(value: Value<F>, index: Value<F>) -> EvalexprResult<Value<F>, F> {
@@ -1247,7 +1363,7 @@ pub fn max<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<
 	math_binary(left, right, "max", |l, r| l.max(&r))
 }
 pub fn clamp<F: EvalexprFloat>(
-	minv: Value<F>, maxv: Value<F>, value: Value<F>,
+	value: Value<F>, minv: Value<F>, maxv: Value<F>,
 ) -> EvalexprResult<Value<F>, F> {
 	min(max(value, minv)?, maxv)
 }

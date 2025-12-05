@@ -441,7 +441,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 							result.needs_recompilation = true;
 						}
 					},
-					PointsType::SingleExpr { expr, val } => {
+					PointsType::SingleExpr { expr, .. } => {
 						ui.horizontal(|ui| match expr_ui(expr, ui, "Points", None, clear_cache, false) {
 							Ok(changed) => {
 								result.parsed |= changed;

@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::cell::{RefCell, RefMut};
 use core::mem;
-use core::sync::atomic::AtomicBool;
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
@@ -100,7 +99,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				entry.draw_buffer_scheduler.clear_buffer();
 			} else {
-				entry.draw_buffer_scheduler.schedule(entry.id, {
+				entry.draw_buffer_scheduler.schedule({
 					let entry_cloned =
 						ClonedEntry { id: entry.id, color: entry.color, ty: entry.ty.clone() };
 					let ctx = Arc::clone(ctx);

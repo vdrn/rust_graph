@@ -336,10 +336,6 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 	fn insert_back_prioritized(
 		&mut self, mut node: Node<NumericTypes>, is_root_node: bool,
 	) -> EvalexprResult<(), NumericTypes> {
-		// println!(
-		//     "Inserting {:?} into {:?}, is_root_node = {is_root_node}",
-		//     node, self,
-		// );
 		if matches!(self.operator(), Operator::FunctionIdentifier { .. })
 			&& node.operator() == &Operator::RootNode
 		{
@@ -358,7 +354,10 @@ impl<NumericTypes: EvalexprFloat> Node<NumericTypes> {
 					self.children.push(child);
 					return Ok(());
 				}
-			}
+			}else{
+        // no children
+        return Ok(());
+      }
 		}
 		// println!("Self is {:?}", self);
 		if self.operator().precedence() < node.operator().precedence() || node.operator().is_unary() || is_root_node

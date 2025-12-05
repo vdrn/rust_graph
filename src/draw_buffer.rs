@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::ptr;
-use core::sync::atomic::AtomicBool;
 use core::time::Duration;
 use std::sync::{Mutex, mpsc};
 use std::time::Instant;
@@ -793,7 +792,6 @@ pub struct FilledDrawBuffer {
 
 #[derive(Clone, Debug)]
 pub struct ScheduledCalc {
-	id:            u64,
 	timestamp:     Instant,
 }
 // pub struct DrawBufferScheduler {
@@ -987,8 +985,8 @@ pub struct DrawBufferScheduler {
 	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce() -> ExecutionResult + Send>)>,
 	pub average:   (Duration, usize),
 
-	sx: mpsc::SyncSender<(u64, Instant, ExecutionResult)>,
-	rx: mpsc::Receiver<(u64, Instant, ExecutionResult)>,
+	sx: mpsc::SyncSender<(Instant, ExecutionResult)>,
+	rx: mpsc::Receiver<(Instant, ExecutionResult)>,
 }
 impl DrawBufferScheduler {
 	pub fn new() -> Self {
@@ -1008,20 +1006,20 @@ impl DrawBufferScheduler {
 		}
 	}
 	pub fn schedule(
-		&mut self, id: u64, work: impl FnOnce() -> ExecutionResult + Send + 'static,
+		&mut self, work: impl FnOnce() -> ExecutionResult + Send + 'static,
 	) {
 		let started = Instant::now();
-		let scheduled_calc = ScheduledCalc { id, timestamp: started, };
+		let scheduled_calc = ScheduledCalc { timestamp: started, };
 
 		if self.scheduled.is_none() {
-			self.spawn_as_latest(scheduled_calc, work, false);
+			self.spawn_as_latest(scheduled_calc, work );
 		} else {
 			self.deferred = Some((scheduled_calc, Box::new(work)));
 		}
 	}
 	fn spawn_as_latest(
 		&mut self, calc: ScheduledCalc,
-		work: impl FnOnce() -> ExecutionResult + Send + 'static, is_deffered: bool,
+		work: impl FnOnce() -> ExecutionResult + Send + 'static, 
 	) {
 		let sx = self.sx.clone();
 		let calc_clone = calc.clone();
@@ -1030,7 +1028,7 @@ impl DrawBufferScheduler {
 		rayon::spawn(move || {
 			let result = work();
 
-			let _send_res = sx.send((calc_clone.id, calc_clone.timestamp, result));
+			let _send_res = sx.send((calc_clone.timestamp, result));
 		});
 
 		self.scheduled = Some(calc);
@@ -1075,7 +1073,7 @@ impl DrawBufferScheduler {
 	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
 		let mut received = false;
 		// let mut ido = None;
-		while let Ok((id, timestamp, result)) = self.rx.try_recv() {
+		while let Ok((timestamp, result)) = self.rx.try_recv() {
 			// ido = Some(id);
 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
 			// self.latest_one);
@@ -1118,7 +1116,7 @@ impl DrawBufferScheduler {
 	pub fn schedule_deffered_if_idle(&mut self) -> bool {
 		if self.scheduled.is_none() {
 			if let Some((calc, work)) = self.deferred.take() {
-				self.spawn_as_latest(calc, work, true);
+				self.spawn_as_latest(calc, work);
 				return true;
 			}
 		}

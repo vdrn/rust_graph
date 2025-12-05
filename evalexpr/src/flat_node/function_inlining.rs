@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 
 use crate::error::expect_function_argument_amount;
 use crate::flat_node::subexpression_elemination::{get_arg_ranges, get_n_previous_exprs};
-use crate::flat_node::{FlatOperator, IntegralNode};
+use crate::flat_node::{AdditionalArgs, ClosureNode, FlatOperator, MapOp};
 use crate::math::integrate;
 use crate::{EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value};
 
@@ -31,9 +31,19 @@ pub fn inline_functions<F: EvalexprFloat>(
 					}
 				}
 			},
+			// FlatOperator::If {..} => {
+			//   let op = &mut node.ops[cur_idx];
+			//   let FlatOperator::If { true_expr, false_expr } = op else {
+			//     unreachable!();
+			//   };
+			//   inline_functions(true_expr, context, )?;
+			//   if let Some(false_expr) = false_expr {
+			//     inline_functions(false_expr, context, )?;
+			//   }
+			// },
 			FlatOperator::Integral(int) => match int.as_ref() {
-				IntegralNode::PreparedFunc { func, additional_args, .. } => {
-					if additional_args.is_empty() {
+				ClosureNode::Prepared { func, additional_args, .. } => {
+					if additional_args.len() == 0 {
 						let arg_ranges = get_arg_ranges(&node.ops, cur_idx);
 						assert_eq!(arg_ranges.len(), 2);
 						let mut bounds = ArrayVec::<_, 2>::new();
@@ -111,48 +121,95 @@ fn inline_function<F: EvalexprFloat>(
 
 	let mut func_expr = expr_func.expr.clone();
 
+	let mut has_closures = false;
+	func_expr.iter_mut_top_level_ops(&mut |op| {
+		let mut check_closure = |closure: &mut ClosureNode<F>| match closure {
+			ClosureNode::Unprepared {..} => {},
+			ClosureNode::Prepared {..} => {
+				has_closures = true;
+			},
+		};
+		match op {
+			FlatOperator::If { true_expr, false_expr } => {
+				check_closure(true_expr);
+				if let Some(false_expr) = false_expr {
+					check_closure(false_expr);
+				}
+			},
+			FlatOperator::Integral(closure)
+			| FlatOperator::Product(closure)
+			| FlatOperator::Sum(closure)
+			| FlatOperator::Map(MapOp::Closure(closure)) => {
+				check_closure(closure);
+			},
+			_ => {},
+		}
+	});
 	// inline const args into function call
 	for (i, arg) in const_args.iter().enumerate() {
 		if let Some((_, arg)) = arg {
 			let inverse_idx = (i + 1) as u32;
-			func_expr.iter_mut(&mut |op| match op {
-				FlatOperator::ReadParam { inverse_index } => {
-					if *inverse_index == inverse_idx {
-						*op = FlatOperator::PushConst { value: arg.clone() };
-					} else if *inverse_index > inverse_idx
-						&& const_args[(*inverse_index - 1) as usize].is_none()
-					{
-						*inverse_index -= 1;
-					}
-				},
-				FlatOperator::Integral(int) => match int.as_mut() {
-					IntegralNode::UnpreparedExpr { expr, variable } => expr.iter_mut(&mut |op| match op {
+			let closure_iter = |closure: &mut ClosureNode<F>| {
+				match closure {
+					ClosureNode::Unprepared { expr, params } => expr.iter_mut_top_level_ops(&mut |op| match op {
 						FlatOperator::ReadVar { identifier } => {
 							let idx = expr_func.args.len() - i - 1;
-							if *identifier == expr_func.args[idx] && *identifier != *variable {
+							if *identifier == expr_func.args[idx] && !params.contains(identifier) {
 								*op = FlatOperator::PushConst { value: arg.clone() };
 							}
 						},
 						_ => {},
 					}),
-					IntegralNode::PreparedFunc { func, additional_args, .. } => {
-						additional_args.retain(|&idx| idx != inverse_idx);
-						func.args.retain(|&arg| arg != expr_func.args[expr_func.args.len() - i - 1]);
+					ClosureNode::Prepared { func, additional_args, params, .. } => {
+						let inverse_idx_offset = params.len() as u32;
+						if let AdditionalArgs::InverseIndices(_) = additional_args {
+							// additional_args.retain(|idx| *idx != inverse_idx);
 
-						func.expr.iter_mut(&mut |op| match op {
-							FlatOperator::ReadParam { inverse_index } => {
-								if *inverse_index - 1 == inverse_idx {
-									// TODO cannot use unwrap_or here
-									*op = FlatOperator::PushConst { value: arg.clone() };
-								} else if *inverse_index - 1 > inverse_idx
-									&& const_args[(*inverse_index - 1) as usize].is_none()
-								{
-									*inverse_index -= 1;
-								}
-							},
-							_ => {},
-						});
+							// additional_args.iter_mut().for_each(|arg| {
+							// 	if *arg > inverse_idx {
+							// 		*arg -= 1;
+							// 	}
+							// });
+							// func.args.retain(|&arg| arg != expr_func.args[expr_func.args.len() - i - 1]);
+
+							func.expr.iter_mut_top_level_ops(&mut |op| match op {
+								FlatOperator::ReadParam { inverse_index } => {
+									if *inverse_index - inverse_idx_offset == inverse_idx {
+										// TODO cannot use unwrap_or here
+										*op = FlatOperator::PushConst { value: arg.clone() };
+									}
+									// else if *inverse_index - inverse_idx_offset > inverse_idx
+									// && const_args[(*inverse_index - 1) as usize].is_none()
+									// {
+									// *inverse_index -= 1;
+									// }
+								},
+								_ => {},
+							});
+						}
 					},
+				}
+			};
+			func_expr.iter_mut_top_level_ops(&mut |op| match op {
+				FlatOperator::ReadParam { inverse_index } => {
+					if *inverse_index == inverse_idx {
+						*op = FlatOperator::PushConst { value: arg.clone() };
+					} else if !has_closures
+						&& *inverse_index > inverse_idx
+						&& const_args[(*inverse_index - 1) as usize].is_none()
+					{
+						*inverse_index -= 1;
+					}
+				},
+				FlatOperator::Integral(closure)
+				| FlatOperator::Product(closure)
+				| FlatOperator::Sum(closure)
+				| FlatOperator::Map(MapOp::Closure(closure)) => closure_iter(closure),
+				FlatOperator::If { true_expr, false_expr } => {
+					closure_iter(true_expr);
+					if let Some(false_expr) = false_expr {
+						closure_iter(false_expr);
+					}
 				},
 				_ => {},
 			});
@@ -161,10 +218,12 @@ fn inline_function<F: EvalexprFloat>(
 	// now remove pushing of const args
 	let mut num_inlined_args = 0;
 	let mut num_removed_ops = 0;
-	for ((start, end), _) in const_args.iter().flatten() {
-		node.ops.drain(*start..=*end);
-		num_removed_ops += (*start..=*end).count();
-		num_inlined_args += 1;
+	if !has_closures {
+		for ((start, end), _) in const_args.iter().flatten() {
+			node.ops.drain(*start..=*end);
+			num_removed_ops += (*start..=*end).count();
+			num_inlined_args += 1;
+		}
 	}
 	*cur_idx -= num_removed_ops;
 	let new_num_args = expr_func.num_args() - num_inlined_args;
@@ -192,7 +251,7 @@ fn inline_function<F: EvalexprFloat>(
 	// inline const local vars
 	for (i, param) in const_local_vars.iter().enumerate() {
 		if let Some((_, param)) = param {
-			func_expr.iter_mut(&mut |op| {
+			func_expr.iter_mut_top_level_ops(&mut |op| {
 				if let FlatOperator::ReadLocalVar { idx } = op {
 					if *idx == i as u32 {
 						*op = FlatOperator::PushConst { value: param.clone() };
@@ -230,7 +289,7 @@ fn inline_function<F: EvalexprFloat>(
 	}
 
 	// update references to params and vars in the function being inlined
-	func_expr.iter_mut(&mut |op| {
+	func_expr.iter_mut_top_level_ops(&mut |op| {
 		if let FlatOperator::ReadParam { inverse_index } = op {
 			let idx = shift_read_arg + (new_num_args as u32 - *inverse_index);
 			*op = FlatOperator::ReadLocalVar { idx };
@@ -239,7 +298,40 @@ fn inline_function<F: EvalexprFloat>(
 		}
 	});
 
-	// move inlinded function local vars to outer function local vars
+	// move additional closure args to parent functions local vars, and replace their inverse indices
+	// with local var indices
+	func_expr.iter_mut_top_level_ops(&mut |op| {
+		let handle_closure = |closure: &mut ClosureNode<F>| match closure {
+			ClosureNode::Unprepared {..} => {},
+			ClosureNode::Prepared {  additional_args, .. } => {
+				if let AdditionalArgs::InverseIndices(args) = additional_args {
+					for arg in args.iter_mut() {
+						let idx = shift_read_arg + (new_num_args as u32 - *arg);
+						*arg = idx;
+					}
+					let taken = core::mem::take(args);
+					*additional_args = AdditionalArgs::LocalVarIndices(taken);
+				}
+			},
+		};
+		match op {
+			FlatOperator::If { true_expr, false_expr } => {
+				handle_closure(true_expr);
+				if let Some(false_expr) = false_expr {
+					handle_closure(false_expr);
+				}
+			},
+			FlatOperator::Integral(closure)
+			| FlatOperator::Product(closure)
+			| FlatOperator::Sum(closure)
+			| FlatOperator::Map(MapOp::Closure(closure)) => {
+				handle_closure(closure);
+			},
+			_ => {},
+		}
+	});
+
+	// move inlined function local vars to outer function local vars
 	let insertion_idx = (node.num_local_var_ops) as usize;
 	let vars = func_expr.ops.drain(0..func_expr.num_local_var_ops as usize);
 	node.ops.splice(insertion_idx..insertion_idx, vars);

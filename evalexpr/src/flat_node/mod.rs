@@ -21,9 +21,9 @@ pub use eval::Stack;
 pub fn optimize_flat_node<F: EvalexprFloat>(
 	node: &FlatNode<F>, context: &mut HashMapContext<F>,
 ) -> EvalexprResult<FlatNode<F>, F> {
-	let mut inlined = inline_variables_and_fold(node, context)?;
+	let mut inlined = inline_variables_and_fold(node, context, &[])?;
 	if function_inlining::inline_functions(&mut inlined, context)? > 0 {
-		inlined = inline_variables_and_fold(&inlined, context)?;
+		inlined = inline_variables_and_fold(&inlined, context, &[])?;
 	};
 	if subexpression_elemination::eliminate_subexpressions(&mut inlined, context) {
 		// run again since we deduplicated local vars. could be a loop maybe
@@ -216,16 +216,10 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	Range,
 	RangeWithStep,
 	/// ∑
-	Sum {
-		variable: IStr,
-		expr:     Box<FlatNode<F>>,
-	},
+	Sum(Box<ClosureNode<F>>),
 	/// ∏
-	Product {
-		variable: IStr,
-		expr:     Box<FlatNode<F>>,
-	},
-	Integral(Box<IntegralNode<F>>),
+	Product(Box<ClosureNode<F>>),
+	Integral(Box<ClosureNode<F>>),
 
 	ReadLocalVar {
 		idx: u32,
@@ -242,29 +236,73 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	},
 	Access,
 	Map(MapOp<F>),
+	If {
+		true_expr:  Box<ClosureNode<F>>,
+		false_expr: Option<Box<ClosureNode<F>>>,
+	},
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MapExprOp<F: EvalexprFloat> {
-	vars: SmallVec<[IStr; 3]>,
-	expr: FlatNode<F>,
-}
-#[derive(Debug, Clone, PartialEq)]
 pub enum MapOp<F: EvalexprFloat> {
-	Expr(Box<MapExprOp<F>>),
+	Closure(Box<ClosureNode<F>>),
 	Func { name: IStr },
 }
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum IntegralNode<F: EvalexprFloat> {
+// 	UnpreparedExpr {
+// 		expr:     FlatNode<F>,
+// 		variable: IStr,
+// 	},
+// 	PreparedFunc {
+// 		func:            ExpressionFunction<F>,
+// 		variable:        IStr,
+// 		/// inverse_indices from outer scope
+// 		additional_args: Vec<u32>,
+// 	},
+// }
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum IntegralNode<F: EvalexprFloat> {
-	UnpreparedExpr {
-		expr:     FlatNode<F>,
-		variable: IStr,
+pub enum AdditionalArgs {
+	InverseIndices(SmallVec<[u32; 4]>),
+	LocalVarIndices(SmallVec<[u32; 4]>),
+}
+impl AdditionalArgs {
+	pub fn len(&self) -> usize {
+		match self {
+			AdditionalArgs::InverseIndices(args) => args.len(),
+			AdditionalArgs::LocalVarIndices(args) => args.len(),
+		}
+	}
+  #[inline(always)]
+  pub fn push_values_to_stack<F:EvalexprFloat>(&self, stack:&mut Stack<F>,base_stack_idx:usize) {
+    match self {
+      AdditionalArgs::InverseIndices(args) => {
+        for arg in args.iter() {
+          let value = stack.get_unchecked(base_stack_idx - *arg as usize);
+          stack.push(value.clone());
+        }
+      },
+      AdditionalArgs::LocalVarIndices(args) => {
+        for arg in args.iter() {
+          let value = stack.get_unchecked(base_stack_idx + *arg as usize);
+          stack.push(value.clone());
+        }
+      },
+    }
+  }
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClosureNode<F: EvalexprFloat> {
+	Unprepared {
+		expr:   FlatNode<F>,
+		params: SmallVec<[IStr; 4]>,
 	},
-	PreparedFunc {
+	Prepared {
 		func:            ExpressionFunction<F>,
-		variable:        IStr,
-		/// inverse_indices from outer scope
-		additional_args: Vec<u32>,
+		params:          SmallVec<[IStr; 4]>,
+		/// initialy inverse_indices for params from outer scope
+		/// after function inlining, these are parents local var indices!
+		additional_args: AdditionalArgs,
 	},
 }
 
@@ -469,39 +507,37 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all nodes in this tree.
 	pub fn iter(&self) -> impl Iterator<Item = &FlatOperator<F>> {
 		let mut ops = Vec::new();
-		for op in self.ops.iter() {
-			match op {
-				FlatOperator::Product { expr, variable, .. } | FlatOperator::Sum { expr, variable, .. } => {
+		fn closure_iter<'a, F: EvalexprFloat>(
+			closure: &'a ClosureNode<F>, ops: &mut Vec<&'a FlatOperator<F>>,
+		) {
+			match closure {
+				ClosureNode::Unprepared { expr, params } => {
 					ops.extend(expr.iter().filter(|op| match op {
-						FlatOperator::ReadVar { identifier } => identifier != variable,
+						FlatOperator::ReadVar { identifier } => !params.contains(identifier),
 						_ => true,
 					}));
 				},
-				FlatOperator::Map(map_op) => match map_op {
-					MapOp::Expr(expr) => {
-						ops.extend(expr.expr.iter().filter(|op| match op {
-							FlatOperator::ReadVar { identifier } => !expr.vars.contains(identifier),
-							_ => true,
-						}));
-					},
-					MapOp::Func { .. } => {
-						ops.push(op);
-					},
-					_ => {},
+				ClosureNode::Prepared { func, params, .. } => {
+					ops.extend(func.expr.ops.iter().filter(|op| match op {
+						FlatOperator::ReadVar { identifier } => !params.contains(identifier),
+						_ => true,
+					}));
 				},
-				FlatOperator::Integral(int) => match int.as_ref() {
-					IntegralNode::UnpreparedExpr { expr, variable } => {
-						ops.extend(expr.iter().filter(|op| match op {
-							FlatOperator::ReadVar { identifier } => identifier != variable,
-							_ => true,
-						}));
-					},
-					IntegralNode::PreparedFunc { func, variable, .. } => {
-						ops.extend(func.expr.ops.iter().filter(|op| match op {
-							FlatOperator::ReadVar { identifier } => identifier != variable,
-							_ => true,
-						}));
-					},
+			}
+		}
+		for op in self.ops.iter() {
+			match op {
+				FlatOperator::Map(MapOp::Closure(closure))
+				| FlatOperator::Integral(closure)
+				| FlatOperator::Product(closure)
+				| FlatOperator::Sum(closure) => closure_iter(closure, &mut ops),
+				FlatOperator::If { true_expr, false_expr } => {
+					closure_iter(true_expr, &mut ops);
+
+					if let Some(false_expr) = false_expr {
+						closure_iter(false_expr, &mut ops);
+					}
+					ops.push(op);
 				},
 				op => {
 					ops.push(op);
@@ -510,26 +546,38 @@ impl<F: EvalexprFloat> FlatNode<F> {
 		}
 		ops.into_iter()
 	}
-	pub(crate) fn iter_mut(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {
-		for op in self.ops.iter_mut() {
-			match op {
-				FlatOperator::Product { expr, .. } | FlatOperator::Sum { expr, .. } => {
-					expr.iter_mut(f);
-				},
-				FlatOperator::Map(map_op) => match map_op {
-					MapOp::Expr(expr) => {
-						expr.expr.iter_mut(f);
-					},
-					_ => {
-            f(op);
-          },
-				},
-				op => {
-					f(op);
-				},
-			}
-		}
+	pub(crate) fn iter_mut_top_level_ops(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {
+		self.ops.iter_mut().for_each(f);
 	}
+	pub(crate) fn iter_mut_top_level_ops2(&mut self)->impl Iterator<Item = &mut FlatOperator<F>> {
+		self.ops.iter_mut()
+	}
+	// pub(crate) fn iter_mut_closure_vars(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {
+	// 	for op in self.ops.iter_mut() {
+	// 		f(op);
+	// 		let mut closure_iter = |closure: &mut ClosureNode<F>| match closure {
+	// 			ClosureNode::Unprepared { expr, params } => expr.iter_mut_top_level_ops(f),
+	// 			ClosureNode::Prepared { func, params, .. } => {
+	// 				func.expr.iter_mut_top_level_ops(f);
+	// 			},
+	// 		};
+	// 		match op {
+	// 			FlatOperator::Map(MapOp::Closure(closure))
+	// 			| FlatOperator::Integral(closure)
+	// 			| FlatOperator::Product(closure)
+	// 			| FlatOperator::Sum(closure) => {
+	// 				closure_iter(closure);
+	// 			},
+	// 			FlatOperator::If { true_expr, false_expr } => {
+	// 				closure_iter(true_expr);
+	// 				if let Some(false_expr) = false_expr {
+	// 					closure_iter(false_expr);
+	// 				}
+	// 			},
+	// 			_ => {},
+	// 		}
+	// 	}
+	// }
 	/// Returns an iterator over all identifiers in this expression.
 	/// Each occurrence of an identifier is returned separately.
 	pub fn iter_identifiers(&self) -> impl Iterator<Item = &str> {
