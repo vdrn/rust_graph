@@ -15,6 +15,7 @@ pub(crate) use function_inlining::inline_functions;
 use smallvec::SmallVec;
 use variable_inlining::inline_variables_and_fold;
 pub(crate) use variable_inlining::setup_jump_offsets;
+pub(crate) use subexpression_elemination::eliminate_subexpressions;
 
 pub use compile::compile_to_flat;
 pub use eval::Stack;
@@ -329,11 +330,21 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub(crate) fn ops_len(&self) -> usize { self.ops.len() }
 	/// Returns the constant value of this node it it only contains a single PushConst operator.
 	pub fn as_constant(&self) -> Option<Value<F>> {
-		if self.ops.len() == 1 {
-			if let FlatOperator::PushConst { value } = &self.ops[0] {
-				return Some(value.clone());
-			}
-		}
+    // Closure inlining can produce nodes that are only multiple PushConsts
+    // (Because after folding the closure we dont remove parents local vars)
+    if self.ops.len() == 1 {
+      if let FlatOperator::PushConst { value } = &self.ops[0] {
+        return Some(value.clone());
+      }
+    }
+		// if !self.ops.is_empty() {
+		// 	if self.ops.all(|op| matches!(op, FlatOperator::PushConst { .. })) {
+		// 		let FlatOperator::PushConst { value } = &self.ops[0] else {
+		// 			unreachable!()
+		// 		};
+		// 		return Some(value.clone());
+		// 	}
+		// }
 		None
 	}
 	/// Evaluates the operator tree rooted at this node with empty context.

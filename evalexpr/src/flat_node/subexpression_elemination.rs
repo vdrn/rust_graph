@@ -276,7 +276,6 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 		// let mut j = i + 1;
 		let mut ref_pos = None;
 		for op_i in end + 1..node.ops.len() {
-
 			match &node.ops[op_i] {
 				FlatOperator::ReadLocalVar { idx } => {
 					if *idx == i as u32 {
@@ -334,31 +333,32 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 					*further_range = (further_range.0 - num_ops_in_lv, further_range.1 - num_ops_in_lv);
 				}
 			}
-			node.num_local_vars -= 1;
-
-			let mut drained_ops = Some(node.ops.drain(start..=end).collect::<Vec<_>>());
-
-			let mut op_i = 0;
-			while op_i < node.ops.len() {
-				// for op_i in 0..node.ops.len() {
-				if let FlatOperator::ReadLocalVar { idx } = &mut node.ops[op_i] {
-					if *idx == i as u32 {
-						node.ops.splice(
-							op_i..=op_i,
-							drained_ops.take().expect("we're only doing this if there is just 1 ref"),
-						);
-					} else if *idx > i as u32 {
-						*idx -= 1;
-					}
-				}
-				op_i += 1;
-			}
-			local_var_ranges.remove(i);
-			// println!("inlined local var {i} ");
-			inlined = true;
-		} else {
-			i += 1;
 		}
+		node.num_local_vars -= 1;
+
+		let mut drained_ops = Some(node.ops.drain(start..=end).collect::<Vec<_>>());
+
+		let mut op_i = 0;
+		while op_i < node.ops.len() {
+			// for op_i in 0..node.ops.len() {
+			if let FlatOperator::ReadLocalVar { idx } = &mut node.ops[op_i] {
+				if *idx == i as u32 {
+					node.ops.splice(
+						op_i..=op_i,
+						drained_ops.take().expect("we're only doing this if there is just 1 ref"),
+					);
+				} else if *idx > i as u32 {
+					*idx -= 1;
+				}
+			}
+			op_i += 1;
+		}
+		local_var_ranges.remove(i);
+		// println!("inlined local var {i} ");
+		inlined = true;
+		// } else {
+		// 	i += 1;
+		// }
 	}
 
 	inlined

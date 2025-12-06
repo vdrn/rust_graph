@@ -2,7 +2,7 @@ use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
 use crate::error::expect_function_argument_amount;
-use crate::flat_node::subexpression_elemination::{get_arg_ranges, get_n_previous_exprs};
+use crate::flat_node::subexpression_elemination::{get_arg_ranges, get_n_previous_exprs, range_as_const};
 use crate::flat_node::{AdditionalArgs, ClosureNode, FlatOperator, MapOp};
 use crate::math::integrate;
 use crate::{EvalexprFloat, EvalexprResult, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value};
@@ -43,23 +43,48 @@ pub fn inline_functions<F: EvalexprFloat>(
 			// },
 			FlatOperator::Integral(int) => match int.as_ref() {
 				ClosureNode::Prepared { func, additional_args, .. } => {
-					if additional_args.len() == 0 {
-						let arg_ranges = get_arg_ranges(&node.ops, cur_idx);
-						assert_eq!(arg_ranges.len(), 2);
-						let mut bounds = ArrayVec::<_, 2>::new();
-						for (start, end) in arg_ranges {
-							if start == end {
-								if let FlatOperator::PushConst { value } = &node.ops[start] {
-									bounds.push(value.clone());
+					let arg_ranges = get_arg_ranges(&node.ops, cur_idx);
+					assert_eq!(arg_ranges.len(), 2);
+					let mut bounds = ArrayVec::<_, 2>::new();
+					for range in arg_ranges {
+						if let Some(b) = range_as_const(&node.ops, range) {
+							bounds.push(b);
+						}
+					}
+					if bounds.len() == 2 {
+						let mut local_var_ranges = get_n_previous_exprs(
+							&node.ops,
+							node.num_local_var_ops.saturating_sub(1) as usize,
+							node.num_local_vars as usize,
+						);
+
+						let mut can_fold = false;
+						let mut stack = Stack::<F>::with_capacity(1);
+						if additional_args.len() == 0 {
+							// no closure args, we can fold
+							can_fold = true;
+						} else if let AdditionalArgs::LocalVarIndices(indices) = additional_args {
+							// we have closure args that reference local vars, so if all of them are const, we
+							// can fold
+							local_var_ranges.reverse();
+							can_fold = true;
+							for local_var_i in indices {
+								if let Some(const_arg) =
+									range_as_const(&node.ops, local_var_ranges[*local_var_i as usize])
+								{
+									stack.push(const_arg);
+								} else {
+									can_fold = false;
+									break;
 								}
 							}
 						}
-						if bounds.len() == 2 {
+						if can_fold {
 							let upper = bounds[0].as_float()?;
 							let lower = bounds[1].as_float()?;
-							let mut stack = Stack::<F>::with_capacity(1);
-							stack.num_args = 1;
+
 							stack.push(Value::Empty);
+							stack.num_args = stack.len();
 							let result = integrate::integrate(
 								lower,
 								upper,

@@ -2,7 +2,7 @@ use smallvec::SmallVec;
 
 use crate::error::{expect_function_argument_amount, EvalexprResultValue};
 use crate::flat_node::{
-	inline_functions, setup_jump_offsets, AdditionalArgs, ClosureNode, FlatOperator, MapOp
+	eliminate_subexpressions, inline_functions, setup_jump_offsets, AdditionalArgs, ClosureNode, FlatOperator, MapOp
 };
 use crate::{optimize_flat_node, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
 
@@ -49,7 +49,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 							}
 						}
 						arg_names.extend_from_slice(params);
-            let expr = expr.clone();
+						let expr = expr.clone();
 						// let expr = if let Some(context) = context {
 						// 	match optimize_flat_node(expr, context) {
 						// 		Ok(expr) => expr,
@@ -88,6 +88,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 		if has_closures {
 			if let Some(context) = context {
 				inline_functions(&mut expr, context)?;
+				eliminate_subexpressions(&mut expr, context);
 			}
 		}
 
