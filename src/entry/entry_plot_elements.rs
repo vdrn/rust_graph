@@ -99,7 +99,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			if !*can_be_drawn {
 				entry.draw_buffer_scheduler.clear_buffer();
 			} else {
-				entry.draw_buffer_scheduler.schedule({
+				entry.draw_buffer_scheduler.schedule(entry.id, {
 					let entry_cloned =
 						ClonedEntry { id: entry.id, color: entry.color, ty: entry.ty.clone() };
 					let ctx = Arc::clone(ctx);

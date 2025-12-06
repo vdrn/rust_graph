@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
@@ -16,7 +18,77 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 	new_ops.extend(node.ops.iter().take(node.num_local_var_ops as usize).cloned());
 
 	let mut rerun_inlning = false;
+	let mut popping_ops = SmallVec::<[SkippingOps; 4]>::new();
 	for source_op in node.ops.iter().skip(node.num_local_var_ops as usize) {
+		if let Some(popping_op) = popping_ops.last_mut() {
+			// NOTE: check how If functions are compiled in compile.rs to understand this code
+			match popping_op {
+				SkippingOps::SkippingIfsTrueExpr(state) => {
+					match state {
+						SkippingIfsTrueExprState::P1PoppingEverythingUntilLabel { label, last_jump_label } => {
+							// skip everything until we find label (while keeping track of last Jumps label)
+							match source_op {
+								FlatOperator::Label { id } => {
+									if *id == *label {
+										let last_jump_label = last_jump_label.unwrap();
+										*state = SkippingIfsTrueExprState::P2PoppingLabel {
+											label: last_jump_label,
+										};
+									}
+								},
+								FlatOperator::Jump { id: jumps_label, .. } => {
+									*last_jump_label = Some(*jumps_label);
+								},
+								_ => {},
+							}
+							continue;
+						},
+						SkippingIfsTrueExprState::P2PoppingLabel { label } => {
+							// find label L2 and skip it, then we're done
+							if let FlatOperator::Label { id } = source_op {
+								if *id == *label {
+									// we're done
+									popping_ops.pop().unwrap();
+									continue;
+								}
+							}
+						},
+					}
+				},
+				SkippingOps::SkippingIfsFalseExpr(state) => {
+					match state {
+						SkippingIfsFalseExprState::P1FindingTargetlabel { label } => {
+							// find target label, while adding eveything while we're finding it
+							// once we find it, we pop the last op (which has to be Jump) and read its label
+							if let FlatOperator::Label { id } = source_op {
+								if *id == *label {
+									let last_jump = new_ops.pop().unwrap();
+									let FlatOperator::Jump { id: jumps_label, .. } = last_jump else {
+										unreachable!()
+									};
+									*state = SkippingIfsFalseExprState::P2PopEverythingUntilLabel {
+										label: jumps_label,
+									};
+
+									continue;
+								}
+							}
+						},
+						SkippingIfsFalseExprState::P2PopEverythingUntilLabel { label } => {
+							// pop eveything until we find label
+							if let FlatOperator::Label { id } = source_op {
+								if *id == *label {
+									// we're done
+									popping_ops.pop().unwrap();
+								}
+							}
+							continue;
+						},
+					}
+				},
+			}
+		}
+
 		match source_op {
 			FlatOperator::ReadVar { identifier } => {
 				if !skip_vars.contains(identifier) {
@@ -316,6 +388,7 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					|value| FlatOperator::ModConst { value },
 				)?;
 			},
+
 			FlatOperator::ModConst { value } => {
 				fold_binary_const_op(&mut new_ops, source_op, |base| eval::mod_(base, value.clone()))?;
 			},
@@ -507,6 +580,35 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 			FlatOperator::DivN { n } => {
 				fold_nary_op(&mut new_ops, *n as usize, source_op, eval::div)?;
 			},
+
+			FlatOperator::Gt => {
+				fold_binary_op(&mut new_ops, source_op, eval::greater)?;
+			},
+			FlatOperator::Lt => {
+				fold_binary_op(&mut new_ops, source_op, eval::less)?;
+			},
+			FlatOperator::Geq => {
+				fold_binary_op(&mut new_ops, source_op, eval::greater_eq)?;
+			},
+			FlatOperator::Leq => {
+				fold_binary_op(&mut new_ops, source_op, eval::less_eq)?;
+			},
+      FlatOperator::Eq => {
+        fold_binary_op(&mut new_ops, source_op,|a,b| Ok(eval::eq(a,b)))?;
+      },
+      FlatOperator::Neq => {
+        fold_binary_op(&mut new_ops, source_op,|a,b| Ok(eval::neq(a,b)))?;
+      },
+      FlatOperator::And => {
+        fold_binary_op(&mut new_ops, source_op, eval::and)?;
+      },
+      FlatOperator::Or => {
+        fold_binary_op(&mut new_ops, source_op, eval::or)?;
+      },
+      FlatOperator::Not => {
+        fold_unary_op(&mut new_ops, source_op, eval::not)?;
+      },
+
 			FlatOperator::Tuple { len } => {
 				if *len == 2 {
 					if let Some((a, b)) = get_last_2_if_const(&new_ops) {
@@ -592,66 +694,31 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 					new_ops.push(source_op.clone());
 				}
 			},
-			FlatOperator::If { true_expr, false_expr } => {
-				// if let Some(const_condition) = get_last_if_const(&new_ops) {
-				// 	if const_condition.as_boolean()? {
-				// 		let mut inlined_true_expr = inline_variables_and_fold(true_expr, context)?;
-				// 		new_ops.append(&mut inlined_true_expr.ops);
-				// 	} else {
-				// 		if let Some(false_expr) = false_expr {
-				// 			let mut inlined_false_expr = inline_variables_and_fold(false_expr, context)?;
-				// 			new_ops.append(&mut inlined_false_expr.ops);
-				// 		} else {
-				// 			new_ops.push(FlatOperator::PushConst { value: Value::Empty });
-				// 		}
-				// 	}
-				// } else {
-				match (true_expr.as_ref(), false_expr.as_deref()) {
-					(
-						ClosureNode::Unprepared { expr: true_expr, .. },
-						Some(ClosureNode::Unprepared { expr: false_expr, .. }),
-					) => {
-						let inlined_true_expr = inline_variables_and_fold(true_expr, context, skip_vars)?;
-						let inlined_false_expr = inline_variables_and_fold(false_expr, context, skip_vars)?;
-						new_ops.push(FlatOperator::If {
-							true_expr:  Box::new(ClosureNode::Unprepared {
-								params: SmallVec::new(),
-								expr:   inlined_true_expr,
-							}),
-							false_expr: Some(Box::new(ClosureNode::Unprepared {
-								params: SmallVec::new(),
-								expr:   inlined_false_expr,
-							})),
-						});
-					},
-					(ClosureNode::Unprepared { expr: true_expr, .. }, None) => {
-						let inlined_true_expr = inline_variables_and_fold(true_expr, context, skip_vars)?;
-						new_ops.push(FlatOperator::If {
-							true_expr:  Box::new(ClosureNode::Unprepared {
-								params: SmallVec::new(),
-								expr:   inlined_true_expr,
-							}),
-							false_expr: None,
-						});
-					},
-					(_, _) => {
-						new_ops.push(source_op.clone());
-					},
+			FlatOperator::JumpIfFalse { id, .. } => {
+				if let Some(const_condition) = get_last_if_const(&new_ops) {
+					new_ops.pop().unwrap();
+					let cond = const_condition.as_boolean()?;
+					if cond {
+						popping_ops.push(SkippingOps::SkippingIfsFalseExpr(
+							SkippingIfsFalseExprState::P1FindingTargetlabel { label: *id },
+						));
+					} else {
+						popping_ops.push(SkippingOps::SkippingIfsTrueExpr(
+							SkippingIfsTrueExprState::P1PoppingEverythingUntilLabel {
+								label:           *id,
+								last_jump_label: None,
+							},
+						));
+					}
+				} else {
+					new_ops.push(source_op.clone());
 				}
-				// }
 			},
 
-			FlatOperator::ReadLocalVar { .. }
+			FlatOperator::Label { .. }
+			| FlatOperator::Jump { .. }
+			| FlatOperator::ReadLocalVar { .. }
 			| FlatOperator::ReadParam { .. }
-			| FlatOperator::Eq
-			| FlatOperator::Neq
-			| FlatOperator::Gt
-			| FlatOperator::Lt
-			| FlatOperator::Geq
-			| FlatOperator::Leq
-			| FlatOperator::And
-			| FlatOperator::Or
-			| FlatOperator::Not
 			| FlatOperator::Assign
 			| FlatOperator::AddAssign
 			| FlatOperator::SubAssign
@@ -913,4 +980,39 @@ fn get_last_3_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<(Val
 	}
 
 	None
+}
+
+enum SkippingIfsTrueExprState {
+	P1PoppingEverythingUntilLabel { label: u64, last_jump_label: Option<u64> },
+	P2PoppingLabel { label: u64 },
+}
+enum SkippingIfsFalseExprState {
+	P1FindingTargetlabel { label: u64 },
+	P2PopEverythingUntilLabel { label: u64 },
+}
+enum SkippingOps {
+	SkippingIfsTrueExpr(SkippingIfsTrueExprState),
+	SkippingIfsFalseExpr(SkippingIfsFalseExprState),
+}
+pub fn setup_jump_offsets<F: EvalexprFloat>(node: &mut FlatNode<F>) {
+	for i in 0..node.ops.len() {
+		match &node.ops[i] {
+			FlatOperator::JumpIfFalse { id, .. } | FlatOperator::Jump { id, .. } => {
+				let pos = node.ops[i..]
+					.iter()
+					.position(|op| match op {
+						FlatOperator::Label { id: other_id } => id == other_id,
+						_ => false,
+					})
+					.unwrap();
+				match &mut node.ops[i] {
+					FlatOperator::JumpIfFalse { offset, .. } | FlatOperator::Jump { offset, .. } => {
+						*offset = Some(NonZeroU32::new(pos as u32).unwrap());
+					},
+					_ => unreachable!(),
+				}
+			},
+			_ => {},
+		}
+	}
 }

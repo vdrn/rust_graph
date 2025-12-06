@@ -122,39 +122,21 @@ fn remove_one_op_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) {
 		let mut closures_need_local_var = false;
 		// NOTE: we cannot remove the local var if the closures use it
 		{
-			let mut check_closure = |closure: &mut ClosureNode<F>| {
-				match closure {
-					ClosureNode::Unprepared { .. } => {},
-					ClosureNode::Prepared { additional_args, .. } => {
-						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
-							if local_var_indices.contains(&(local_var_idx as u32)) {
-								closures_need_local_var = true;
-								return true;
-							}
-						}
-					},
-				}
-				false
-			};
 			for op in node.iter_mut_top_level_ops2() {
 				match op {
-					FlatOperator::If { true_expr, false_expr } => {
-						if check_closure(true_expr) {
-							break;
-						}
-						if let Some(false_expr) = false_expr {
-							if check_closure(false_expr) {
-								break;
-							}
-						}
-					},
 					FlatOperator::Integral(closure)
 					| FlatOperator::Product(closure)
 					| FlatOperator::Sum(closure)
-					| FlatOperator::Map(MapOp::Closure(closure)) => {
-						if check_closure(closure) {
-							break;
-						}
+					| FlatOperator::Map(MapOp::Closure(closure)) => match closure.as_ref() {
+						ClosureNode::Unprepared { .. } => {},
+						ClosureNode::Prepared { additional_args, .. } => {
+							if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
+								if local_var_indices.contains(&(local_var_idx as u32)) {
+									closures_need_local_var = true;
+									break;
+								}
+							}
+						},
 					},
 					_ => {},
 				}
@@ -217,24 +199,6 @@ fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 				// 	"deduplicating local vars: source {i} to keep: {start}..={end} local_to_remove {j} range \
 				// 	 {start2}..={end2} all ops : {node:?}"
 				// );
-				let update_cloure = |closure: &mut ClosureNode<F>| match closure {
-					ClosureNode::Unprepared { .. } => {},
-					ClosureNode::Prepared { additional_args, .. } => {
-						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
-							for idx in local_var_indices.iter_mut() {
-								if *idx == j as u32 {
-									*idx = i as u32;
-								} else if *idx > j as u32 {
-									*idx -= 1;
-								}
-							}
-							// TODO: we can also check if the local_var_indices have duplicates now, and
-							// deduplicate ReadParams in closure body as well. (need to be careful on how to
-							// translate the indices to ReadParam's inverse index, as they depend on number of
-							// regular closure's params!)
-						}
-					},
-				};
 				for op in node.ops[end2 + 1..].iter_mut() {
 					match op {
 						FlatOperator::ReadLocalVar { idx } => {
@@ -248,12 +212,25 @@ fn deduplicate_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> bool {
 						| FlatOperator::Integral(closure)
 						| FlatOperator::Product(closure)
 						| FlatOperator::Sum(closure) => {
-							update_cloure(closure);
-						},
-						FlatOperator::If { true_expr, false_expr } => {
-							update_cloure(true_expr);
-							if let Some(false_expr) = false_expr {
-								update_cloure(false_expr);
+							match closure.as_mut() {
+								ClosureNode::Unprepared { .. } => {},
+								ClosureNode::Prepared { additional_args, .. } => {
+									if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args
+									{
+										for idx in local_var_indices.iter_mut() {
+											if *idx == j as u32 {
+												*idx = i as u32;
+											} else if *idx > j as u32 {
+												*idx -= 1;
+											}
+										}
+										// TODO: we can also check if the local_var_indices have duplicates
+										// now, and deduplicate ReadParams in closure body as well.
+										// (need to be careful on how to translate the indices to
+										// ReadParam's inverse index, as they depend on number of
+										// regular closure's params!)
+									}
+								},
 							}
 						},
 						_ => {},
@@ -299,19 +276,6 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 		// let mut j = i + 1;
 		let mut ref_pos = None;
 		for op_i in end + 1..node.ops.len() {
-			let check_closure_references_local_var = |closure: &ClosureNode<F>| {
-				match closure {
-					ClosureNode::Unprepared { .. } => {},
-					ClosureNode::Prepared { additional_args, .. } => {
-						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
-							if local_var_indices.contains(&(i as u32)) {
-								return true;
-							}
-						}
-					},
-				}
-				false
-			};
 
 			match &node.ops[op_i] {
 				FlatOperator::ReadLocalVar { idx } => {
@@ -328,23 +292,16 @@ fn inline_single_ref_local_vars<F: EvalexprFloat>(node: &mut FlatNode<F>) -> boo
 				FlatOperator::Map(MapOp::Closure(closure))
 				| FlatOperator::Integral(closure)
 				| FlatOperator::Product(closure)
-				| FlatOperator::Sum(closure) => {
-					if check_closure_references_local_var(closure) {
-						i += 1;
-						continue 'outer;
-					}
-				},
-				FlatOperator::If { true_expr, false_expr } => {
-					if check_closure_references_local_var(true_expr) {
-						i += 1;
-						continue 'outer;
-					}
-					if let Some(false_expr) = false_expr {
-						if check_closure_references_local_var(false_expr) {
-							i += 1;
-							continue 'outer;
+				| FlatOperator::Sum(closure) => match closure.as_ref() {
+					ClosureNode::Unprepared { .. } => {},
+					ClosureNode::Prepared { additional_args, .. } => {
+						if let AdditionalArgs::LocalVarIndices(local_var_indices) = additional_args {
+							if local_var_indices.contains(&(i as u32)) {
+								i += 1;
+								continue 'outer;
+							}
 						}
-					}
+					},
 				},
 				_ => {},
 			}
@@ -514,7 +471,8 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		FlatOperator::AccessIndex { .. } => 1,
 		FlatOperator::Access => 2,
 		FlatOperator::Map(_) => 1,
-		FlatOperator::If { .. } => 1,
+		FlatOperator::Label { .. } | FlatOperator::Jump { .. } => 0,
+		FlatOperator::JumpIfFalse { .. } => 1,
 	}
 }
 fn get_operator_range<F: EvalexprFloat>(

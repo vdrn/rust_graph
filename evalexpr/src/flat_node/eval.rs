@@ -252,7 +252,9 @@ fn eval_priv_inner<F: EvalexprFloat>(
 	node: &FlatNode<F>, stack: &mut Stack<F>, context: &HashMapContext<F>, override_vars: &[(IStr, Value<F>)],
 	base_index: usize,
 ) -> EvalexprResultValue<F> {
-	for op in &node.ops {
+	let mut op_i = 0;
+	while op_i < node.ops.len() {
+		let op = &node.ops[op_i];
 		match op {
 			// Binary arithmetic operators
 			FlatOperator::Add => {
@@ -294,48 +296,48 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			FlatOperator::Eq => {
 				let b = stack.pop_unchecked();
 				let a = stack.pop_unchecked();
-				stack.push(Value::Boolean(a == b));
+				stack.push(eq(a, b));
 			},
 			FlatOperator::Neq => {
 				let b = stack.pop_unchecked();
 				let a = stack.pop_unchecked();
-				stack.push(Value::Boolean(a != b));
+				stack.push(neq(a, b));
 			},
 			FlatOperator::Gt => {
-				let b = stack.pop_unchecked().as_float()?;
-				let a = stack.pop_unchecked().as_float()?;
-				stack.push(Value::Boolean(a > b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(greater(a, b)?);
 			},
 			FlatOperator::Lt => {
-				let b = stack.pop_unchecked().as_float()?;
-				let a = stack.pop_unchecked().as_float()?;
-				stack.push(Value::Boolean(a < b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(less(a, b)?);
 			},
 			FlatOperator::Geq => {
-				let b = stack.pop_unchecked().as_float()?;
-				let a = stack.pop_unchecked().as_float()?;
-				stack.push(Value::Boolean(a >= b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(greater_eq(a, b)?);
 			},
 			FlatOperator::Leq => {
-				let b = stack.pop_unchecked().as_float()?;
-				let a = stack.pop_unchecked().as_float()?;
-				stack.push(Value::Boolean(a <= b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(less_eq(a, b)?);
 			},
 
 			// Logical operators
 			FlatOperator::And => {
-				let b = stack.pop_unchecked().as_boolean()?;
-				let a = stack.pop_unchecked().as_boolean()?;
-				stack.push(Value::Boolean(a && b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(and(a, b)?);
 			},
 			FlatOperator::Or => {
-				let b = stack.pop_unchecked().as_boolean()?;
-				let a = stack.pop_unchecked().as_boolean()?;
-				stack.push(Value::Boolean(a || b));
+				let b = stack.pop_unchecked();
+				let a = stack.pop_unchecked();
+				stack.push(or(a, b)?);
 			},
 			FlatOperator::Not => {
-				let a = stack.pop_unchecked().as_boolean()?;
-				stack.push(Value::Boolean(!a));
+				let a = stack.pop_unchecked();
+				stack.push(not(a)?);
 			},
 
 			// Assignment operators
@@ -723,7 +725,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 			},
 			// Native functions
 			FlatOperator::Sum(closure) => match closure.as_ref() {
-				ClosureNode::Unprepared {..} => {
+				ClosureNode::Unprepared { .. } => {
 					return Err(EvalexprError::CustomMessage(
 						"Sums outside functions are not supported".to_string(),
 					));
@@ -732,7 +734,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					let tuple = stack.pop_unchecked().as_tuple()?;
 					let mut result = F::ZERO;
 
-							additional_args.push_values_to_stack(stack, base_index);
+					additional_args.push_values_to_stack(stack, base_index);
 					stack.push(Value::Empty);
 
 					let num_args = additional_args.len() + 1;
@@ -752,7 +754,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				},
 			},
 			FlatOperator::Product(closure) => match closure.as_ref() {
-				ClosureNode::Unprepared {..} => {
+				ClosureNode::Unprepared { .. } => {
 					return Err(EvalexprError::CustomMessage(
 						"Products outside functions are not supported".to_string(),
 					));
@@ -761,7 +763,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					let tuple = stack.pop_unchecked().as_tuple()?;
 					let mut result = F::ONE;
 
-							additional_args.push_values_to_stack(stack, base_index);
+					additional_args.push_values_to_stack(stack, base_index);
 					stack.push(Value::Empty);
 
 					let num_args = additional_args.len() + 1;
@@ -791,7 +793,7 @@ fn eval_priv_inner<F: EvalexprFloat>(
 						));
 					},
 					ClosureNode::Prepared { func, additional_args, .. } => {
-							additional_args.push_values_to_stack(stack, base_index);
+						additional_args.push_values_to_stack(stack, base_index);
 						stack.push(Value::Empty);
 
 						let num_args = additional_args.len() + 1;
@@ -934,54 +936,41 @@ fn eval_priv_inner<F: EvalexprFloat>(
 					},
 				}
 			},
-			FlatOperator::If { true_expr, false_expr } => {
+			FlatOperator::Label { .. } => {},
+			FlatOperator::JumpIfFalse { id, offset } => {
 				let condition = stack.pop_unchecked().as_boolean()?;
-				let result = if condition {
-					match true_expr.as_ref() {
-						ClosureNode::Unprepared { expr, .. } => {
-							eval_priv_inner(expr, stack, context, override_vars, base_index)?
-						},
-						ClosureNode::Prepared { func, additional_args, .. } => {
-							let num_args = additional_args.len();
-
-							additional_args.push_values_to_stack(stack, base_index);
-
-							let prev_num_args = stack.num_args;
-							stack.num_args = num_args;
-							let result = func.unchecked_call(stack, context)?;
-							for _ in 0..num_args {
-								stack.pop();
-							}
-							stack.num_args = prev_num_args;
-							result
-						},
-					}
-				} else {
-					if let Some(false_expr) = false_expr {
-						match false_expr.as_ref() {
-							ClosureNode::Unprepared { expr, .. } => {
-								eval_priv_inner(expr, stack, context, override_vars, base_index)?
-							},
-							ClosureNode::Prepared { func, additional_args, .. } => {
-								let num_args = additional_args.len();
-							additional_args.push_values_to_stack(stack, base_index);
-								let prev_num_args = stack.num_args;
-								stack.num_args = num_args;
-								let result = func.unchecked_call(stack, context)?;
-								for _ in 0..num_args {
-									stack.pop();
-								}
-								stack.num_args = prev_num_args;
-								result
-							},
-						}
+				if !condition {
+					if let Some(offset) = offset {
+						op_i += offset.get() as usize;
 					} else {
-						Value::Empty
+						loop {
+							op_i += 1;
+							if let FlatOperator::Label { id: other_id } = &node.ops[op_i] {
+								if id == other_id {
+									break;
+								}
+							}
+						}
 					}
-				};
-				stack.push(result);
+				}
+			},
+			FlatOperator::Jump { id, offset } => {
+				if let Some(offset) = offset {
+					op_i += offset.get() as usize;
+				} else {
+					loop {
+						op_i += 1;
+						if let FlatOperator::Label { id: other_id } = &node.ops[op_i] {
+							if id == other_id {
+								break;
+							}
+						}
+					}
+				}
 			},
 		}
+
+		op_i += 1;
 	}
 
 	let result = stack.pop().unwrap();
@@ -1384,4 +1373,107 @@ pub fn tuple_to_value<F: EvalexprFloat>(tuple: ThinVec<Value<F>>) -> Value<F> {
 		_ => {},
 	}
 	Value::Tuple(tuple)
+}
+
+#[inline(always)]
+fn comp<F: EvalexprFloat>(
+	left: Value<F>, right: Value<F>, name: &'static str, op: impl Fn(F, F) -> Value<F> + Copy,
+) -> EvalexprResult<Value<F>, F> {
+	match (left, right) {
+		(Value::Float(l), Value::Float(r)) => Ok(op(l, r)),
+		(left, right) => comp_inner(left, right, name, op),
+	}
+}
+#[inline(never)]
+fn comp_inner<F: EvalexprFloat>(
+	left: Value<F>, right: Value<F>, name: &'static str, op: impl Fn(F, F) -> Value<F> + Copy,
+) -> EvalexprResult<Value<F>, F> {
+	use thin_vec::thin_vec;
+	match (left, right) {
+		(Value::Float2(l, r), Value::Float2(l2, r2)) => Ok(Value::Tuple(thin_vec![op(l, l2), op(r, r2)])),
+		(Value::Float(l), Value::Float2(l2, r2)) => Ok(Value::Tuple(thin_vec![op(l, l2), op(l, r2)])),
+		(Value::Float2(l, r), Value::Float(l2)) => Ok(Value::Tuple(thin_vec![op(l, l2), op(r, l2)])),
+		(Value::Tuple(l), Value::Tuple(r)) => {
+			if l.len() != r.len() {
+				return Err(EvalexprError::TuplesMismatchedLengths {
+					left:  l.len() as u32,
+					right: r.len() as u32,
+				});
+			}
+			let mut result = l;
+			for (l, r) in result.iter_mut().zip(r.into_iter()) {
+				*l = comp(l.clone(), r, name, op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+		(Value::Float(l), Value::Tuple(r)) => {
+			let mut result = r;
+			for r in result.iter_mut() {
+				*r = comp(Value::Float(l), r.clone(), name, op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+		(Value::Tuple(l), Value::Float(r)) => {
+			let mut result = l;
+			for l in result.iter_mut() {
+				*l = comp(l.clone(), Value::Float(r), name, op)?;
+			}
+			Ok(Value::Tuple(result))
+		},
+
+		(Value::Float2(l1, l2), Value::Tuple(r2)) => {
+			if r2.len() != 2 {
+				return Err(EvalexprError::TuplesMismatchedLengths { left: 2, right: r2.len() as u32 });
+			}
+			let mut result = r2;
+			result[0] = comp(Value::Float(l1), result[0].clone(), name, op)?;
+			result[1] = comp(Value::Float(l2), result[1].clone(), name, op)?;
+			Ok(Value::Tuple(result))
+		},
+		(Value::Tuple(l), Value::Float2(r1, r2)) => {
+			if l.len() != 2 {
+				return Err(EvalexprError::TuplesMismatchedLengths { left: 2, right: l.len() as u32 });
+			}
+			let mut result = l;
+			result[0] = comp(result[0].clone(), Value::Float(r1), name, op)?;
+			result[1] = comp(result[1].clone(), Value::Float(r2), name, op)?;
+			Ok(Value::Tuple(result))
+		},
+		(l, r) => Err(EvalexprError::wrong_type_combination(
+			name,
+			vec![(&l).into(), (&r).into()],
+			vec![ValueType::Float, ValueType::Float2, ValueType::Tuple],
+		)),
+	}
+}
+
+pub fn less<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	comp(left, right, "<", |l, r| Value::Boolean(l < r))
+}
+pub fn less_eq<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	comp(left, right, "<=", |l, r| Value::Boolean(l <= r))
+}
+pub fn greater<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	comp(left, right, ">", |l, r| Value::Boolean(l > r))
+}
+pub fn greater_eq<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	comp(left, right, ">=", |l, r| Value::Boolean(l >= r))
+}
+
+pub fn eq<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> Value<F> { Value::Boolean(left == right) }
+pub fn neq<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> Value<F> { Value::Boolean(left != right) }
+
+pub fn and<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	let left = left.as_boolean()?;
+	let right = right.as_boolean()?;
+	Ok(Value::Boolean(left && right))
+}
+pub fn or<F: EvalexprFloat>(left: Value<F>, right: Value<F>) -> EvalexprResult<Value<F>, F> {
+	let left = left.as_boolean()?;
+	let right = right.as_boolean()?;
+	Ok(Value::Boolean(left || right))
+}
+pub fn not<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, F> {
+	let value = value.as_boolean()?;
+	Ok(Value::Boolean(!value))
 }

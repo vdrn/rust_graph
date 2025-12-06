@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use smallvec::SmallVec;
 
 use crate::error::{expect_function_argument_amount, expect_operator_argument_amount};
@@ -605,38 +607,60 @@ fn compile_special_function<F: EvalexprFloat>(
 			}))));
 			Ok(CompileNativeResult::Compiled)
 		},
-		"if" | "If" => match node.children.len() {
-			2 => {
-				let true_expr = node.children.pop().unwrap();
-				let condition = node.children.pop().unwrap();
-				compile_to_flat_inner(condition, ops)?;
-				ops.push(FlatOperator::If {
-					true_expr:  Box::new(ClosureNode::Unprepared {
-						params: SmallVec::new(),
-						expr:   compile_to_flat(true_expr)?,
-					}),
-					false_expr: None,
-				});
-				Ok(CompileNativeResult::Compiled)
-			},
-			3 => {
-				let false_expr = node.children.pop().unwrap();
-				let true_expr = node.children.pop().unwrap();
-				let condition = node.children.pop().unwrap();
-				compile_to_flat_inner(condition, ops)?;
-				ops.push(FlatOperator::If {
-					true_expr:  Box::new(ClosureNode::Unprepared {
-						params: SmallVec::new(),
-						expr:   compile_to_flat(true_expr)?,
-					}),
-					false_expr: Some(Box::new(ClosureNode::Unprepared {
-						params: SmallVec::new(),
-						expr:   compile_to_flat(false_expr)?,
-					})),
-				});
-				Ok(CompileNativeResult::Compiled)
-			},
-			_ => Err(EvalexprError::wrong_function_argument_amount_range(0, 2..=3)),
+		"if" | "If" => {
+			static LABEL_ID: AtomicU64 = AtomicU64::new(0);
+
+			match node.children.len() {
+				2 => {
+					let true_expr = node.children.pop().unwrap();
+					let condition = node.children.pop().unwrap();
+					compile_to_flat_inner(condition, ops)?;
+					let l1 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
+					let l2 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
+					ops.push(FlatOperator::JumpIfFalse { id: l1 , offset:None});
+					compile_to_flat_inner(true_expr, ops)?;
+					ops.push(FlatOperator::Jump { id: l2 , offset:None});
+					ops.push(FlatOperator::Label { id: l1 });
+					ops.push(FlatOperator::PushConst { value: Value::Empty });
+					ops.push(FlatOperator::Label { id: l2 });
+
+					// ops.push(FlatOperator::If {
+					// 	true_expr:  Box::new(ClosureNode::Unprepared {
+					// 		params: SmallVec::new(),
+					// 		expr:   compile_to_flat(true_expr)?,
+					// 	}),
+					// 	false_expr: None,
+					// });
+					Ok(CompileNativeResult::Compiled)
+				},
+				3 => {
+					let false_expr = node.children.pop().unwrap();
+					let true_expr = node.children.pop().unwrap();
+					let condition = node.children.pop().unwrap();
+					compile_to_flat_inner(condition, ops)?;
+					let l1 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
+					let l2 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
+					ops.push(FlatOperator::JumpIfFalse { id: l1 , offset:None});
+					compile_to_flat_inner(true_expr, ops)?;
+					ops.push(FlatOperator::Jump { id: l2 , offset:None});
+					ops.push(FlatOperator::Label { id: l1 });
+					compile_to_flat_inner(false_expr, ops)?;
+					ops.push(FlatOperator::Label { id: l2 });
+
+					// ops.push(FlatOperator::If {
+					// 	true_expr:  Box::new(ClosureNode::Unprepared {
+					// 		params: SmallVec::new(),
+					// 		expr:   compile_to_flat(true_expr)?,
+					// 	}),
+					// 	false_expr: Some(Box::new(ClosureNode::Unprepared {
+					// 		params: SmallVec::new(),
+					// 		expr:   compile_to_flat(false_expr)?,
+					// 	})),
+					// });
+					Ok(CompileNativeResult::Compiled)
+				},
+				_ => Err(EvalexprError::wrong_function_argument_amount_range(0, 2..=3)),
+			}
 		},
 		_ => Ok(CompileNativeResult::NotNative(node)),
 	}

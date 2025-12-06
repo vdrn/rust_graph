@@ -1,8 +1,10 @@
 use smallvec::SmallVec;
 
 use crate::error::{expect_function_argument_amount, EvalexprResultValue};
-use crate::flat_node::{inline_functions, AdditionalArgs, ClosureNode, FlatOperator, MapOp};
-use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
+use crate::flat_node::{
+	inline_functions, setup_jump_offsets, AdditionalArgs, ClosureNode, FlatOperator, MapOp
+};
+use crate::{optimize_flat_node, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
 
 #[derive(Clone, PartialEq, Debug)]
 /// Struct that represents expression function
@@ -17,49 +19,6 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 	) -> EvalexprResult<Self, F> {
 		let mut has_closures = false;
 		let mut error = None;
-		let mut process_closure = |closure: &mut ClosureNode<F>,
-		                           outer_args: &[IStr],
-		                           context: &mut Option<&mut HashMapContext<F>>| {
-			match closure {
-				ClosureNode::Unprepared { expr, params } => {
-					has_closures = true;
-					let mut arg_names = SmallVec::<[IStr; 4]>::new();
-					let mut additional_arg_indices = SmallVec::<[u32; 4]>::new();
-					for (i, arg) in outer_args.iter().enumerate() {
-						if !params.contains(arg) {
-							for internal_var in expr.iter_variable_identifiers() {
-								if internal_var == arg.to_str()
-									&& arg_names.iter().all(|e| e.to_str() != internal_var)
-								{
-									arg_names.push(*arg);
-									additional_arg_indices.push((outer_args.len() - i) as u32);
-								}
-							}
-							// arg_names.push(*arg);
-							// additional_arg_indices.push((args.len() - i) as u32);
-						}
-					}
-					arg_names.extend_from_slice(params);
-
-					let func = match ExpressionFunction::new(expr.clone(), &arg_names, context) {
-						Ok(func) => func,
-						Err(e) => {
-							error = Some(e);
-							return None;
-						},
-					};
-					return Some(Box::new(ClosureNode::Prepared {
-						func,
-						params: params.clone(),
-						additional_args: AdditionalArgs::InverseIndices(additional_arg_indices),
-					}));
-				},
-				ClosureNode::Prepared { .. } => {
-					has_closures = true;
-				},
-			}
-			None
-		};
 		expr.iter_mut_top_level_ops(&mut |op| match op {
 			FlatOperator::ReadVar { identifier } => {
 				if let Some(idx) = args.iter().position(|e| e == identifier) {
@@ -70,18 +29,55 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 			| FlatOperator::Product(closure)
 			| FlatOperator::Sum(closure)
 			| FlatOperator::Map(MapOp::Closure(closure)) => {
-				if let Some(new) = process_closure(closure, args, context) {
-					*closure = new;
-				}
-			},
-			FlatOperator::If { true_expr, false_expr } => {
-				if let Some(new_true) = process_closure(true_expr, args, context) {
-					*true_expr = new_true;
-				}
-				if let Some(false_expr) = false_expr {
-					if let Some(new_false) = process_closure(false_expr, args, context) {
-						*false_expr = new_false;
-					}
+				match closure.as_ref() {
+					ClosureNode::Unprepared { expr, params } => {
+						has_closures = true;
+						let mut arg_names = SmallVec::<[IStr; 4]>::new();
+						let mut additional_arg_indices = SmallVec::<[u32; 4]>::new();
+						for (i, arg) in args.iter().enumerate() {
+							if !params.contains(arg) {
+								for internal_var in expr.iter_variable_identifiers() {
+									if internal_var == arg.to_str()
+										&& arg_names.iter().all(|e| e.to_str() != internal_var)
+									{
+										arg_names.push(*arg);
+										additional_arg_indices.push((args.len() - i) as u32);
+									}
+								}
+								// arg_names.push(*arg);
+								// additional_arg_indices.push((args.len() - i) as u32);
+							}
+						}
+						arg_names.extend_from_slice(params);
+            let expr = expr.clone();
+						// let expr = if let Some(context) = context {
+						// 	match optimize_flat_node(expr, context) {
+						// 		Ok(expr) => expr,
+						// 		Err(e) => {
+						// 			error = Some(e);
+						// 			return;
+						// 		},
+						// 	}
+						// } else {
+						// 	expr.clone()
+						// };
+
+						let func = match ExpressionFunction::new(expr, &arg_names, context) {
+							Ok(func) => func,
+							Err(e) => {
+								error = Some(e);
+								return;
+							},
+						};
+						**closure = ClosureNode::Prepared {
+							func,
+							params: params.clone(),
+							additional_args: AdditionalArgs::InverseIndices(additional_arg_indices),
+						};
+					},
+					ClosureNode::Prepared { .. } => {
+						has_closures = true;
+					},
 				}
 			},
 			_ => {},
@@ -95,6 +91,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 			}
 		}
 
+		setup_jump_offsets(&mut expr);
 		Ok(Self { expr, args: args.to_vec() })
 	}
 	/// number of top level ops

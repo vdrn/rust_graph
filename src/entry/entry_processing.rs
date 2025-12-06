@@ -446,8 +446,8 @@ pub fn optimize_entries<T: EvalexprFloat>(
 			// In practice this only means its dependencies will not be inlined.
 			// We choose the one with least number of dependencies.
 			// NOTE: we might need to rethink this
-			// functions.sort_by_key(|e| (e.prio, e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0)));
-			functions.sort_by_key(|e| e.prio);
+			functions.sort_by_key(|e| (e.prio, e.depends_on.as_ref().map(|d| d.len()).unwrap_or(0)));
+			// functions.sort_by_key(|e| e.prio);
 			println!("Cycle detected. Force compiling first function: {functions:?}. ");
 			functions[0].depends_on = None;
 		}
@@ -522,7 +522,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			// println!("inlined node {identifier}: {:#?}", inlined_node);
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| (entry.id, e.to_string()))?;
-			// println!("expr_func node: {identifier} {:#?}", expr_function);
+			println!("expr_func node: {identifier} {:#?}", expr_function);
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());

@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use crate::error::EvalexprResultValue;
 use crate::{
 	EmptyType, EvalexprError, EvalexprFloat, EvalexprResult, ExpressionFunction, HashMapContext, IStr, TupleType, Value, EMPTY_VALUE
@@ -12,6 +14,7 @@ use eval::{eval_flat_node, eval_flat_node_mut};
 pub(crate) use function_inlining::inline_functions;
 use smallvec::SmallVec;
 use variable_inlining::inline_variables_and_fold;
+pub(crate) use variable_inlining::setup_jump_offsets;
 
 pub use compile::compile_to_flat;
 pub use eval::Stack;
@@ -236,9 +239,17 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	},
 	Access,
 	Map(MapOp<F>),
-	If {
-		true_expr:  Box<ClosureNode<F>>,
-		false_expr: Option<Box<ClosureNode<F>>>,
+
+	Label {
+		id: u64,
+	},
+	JumpIfFalse {
+		id:     u64,
+		offset: Option<NonZeroU32>,
+	},
+	Jump {
+		id:     u64,
+		offset: Option<NonZeroU32>,
 	},
 }
 
@@ -273,23 +284,23 @@ impl AdditionalArgs {
 			AdditionalArgs::LocalVarIndices(args) => args.len(),
 		}
 	}
-  #[inline(always)]
-  pub fn push_values_to_stack<F:EvalexprFloat>(&self, stack:&mut Stack<F>,base_stack_idx:usize) {
-    match self {
-      AdditionalArgs::InverseIndices(args) => {
-        for arg in args.iter() {
-          let value = stack.get_unchecked(base_stack_idx - *arg as usize);
-          stack.push(value.clone());
-        }
-      },
-      AdditionalArgs::LocalVarIndices(args) => {
-        for arg in args.iter() {
-          let value = stack.get_unchecked(base_stack_idx + *arg as usize);
-          stack.push(value.clone());
-        }
-      },
-    }
-  }
+	#[inline(always)]
+	pub fn push_values_to_stack<F: EvalexprFloat>(&self, stack: &mut Stack<F>, base_stack_idx: usize) {
+		match self {
+			AdditionalArgs::InverseIndices(args) => {
+				for arg in args.iter() {
+					let value = stack.get_unchecked(base_stack_idx - *arg as usize);
+					stack.push(value.clone());
+				}
+			},
+			AdditionalArgs::LocalVarIndices(args) => {
+				for arg in args.iter() {
+					let value = stack.get_unchecked(base_stack_idx + *arg as usize);
+					stack.push(value.clone());
+				}
+			},
+		}
+	}
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClosureNode<F: EvalexprFloat> {
@@ -507,37 +518,24 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	/// Returns an iterator over all nodes in this tree.
 	pub fn iter(&self) -> impl Iterator<Item = &FlatOperator<F>> {
 		let mut ops = Vec::new();
-		fn closure_iter<'a, F: EvalexprFloat>(
-			closure: &'a ClosureNode<F>, ops: &mut Vec<&'a FlatOperator<F>>,
-		) {
-			match closure {
-				ClosureNode::Unprepared { expr, params } => {
-					ops.extend(expr.iter().filter(|op| match op {
-						FlatOperator::ReadVar { identifier } => !params.contains(identifier),
-						_ => true,
-					}));
-				},
-				ClosureNode::Prepared { func, params, .. } => {
-					ops.extend(func.expr.ops.iter().filter(|op| match op {
-						FlatOperator::ReadVar { identifier } => !params.contains(identifier),
-						_ => true,
-					}));
-				},
-			}
-		}
 		for op in self.ops.iter() {
 			match op {
 				FlatOperator::Map(MapOp::Closure(closure))
 				| FlatOperator::Integral(closure)
 				| FlatOperator::Product(closure)
-				| FlatOperator::Sum(closure) => closure_iter(closure, &mut ops),
-				FlatOperator::If { true_expr, false_expr } => {
-					closure_iter(true_expr, &mut ops);
-
-					if let Some(false_expr) = false_expr {
-						closure_iter(false_expr, &mut ops);
-					}
-					ops.push(op);
+				| FlatOperator::Sum(closure) => match closure.as_ref() {
+					ClosureNode::Unprepared { expr, params } => {
+						ops.extend(expr.iter().filter(|op| match op {
+							FlatOperator::ReadVar { identifier } => !params.contains(identifier),
+							_ => true,
+						}));
+					},
+					ClosureNode::Prepared { func, params, .. } => {
+						ops.extend(func.expr.ops.iter().filter(|op| match op {
+							FlatOperator::ReadVar { identifier } => !params.contains(identifier),
+							_ => true,
+						}));
+					},
 				},
 				op => {
 					ops.push(op);
@@ -549,7 +547,7 @@ impl<F: EvalexprFloat> FlatNode<F> {
 	pub(crate) fn iter_mut_top_level_ops(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {
 		self.ops.iter_mut().for_each(f);
 	}
-	pub(crate) fn iter_mut_top_level_ops2(&mut self)->impl Iterator<Item = &mut FlatOperator<F>> {
+	pub(crate) fn iter_mut_top_level_ops2(&mut self) -> impl Iterator<Item = &mut FlatOperator<F>> {
 		self.ops.iter_mut()
 	}
 	// pub(crate) fn iter_mut_closure_vars(&mut self, f: &mut dyn FnMut(&mut FlatOperator<F>)) {

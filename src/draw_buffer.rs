@@ -978,6 +978,7 @@ pub struct ScheduledCalc {
 // }
 
 pub struct DrawBufferScheduler {
+  id : u64,
 	pub current_draw_buffer: FilledDrawBuffer,
 	pub cur_error:           Option<(u64, String)>,
 
@@ -985,13 +986,14 @@ pub struct DrawBufferScheduler {
 	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce() -> ExecutionResult + Send>)>,
 	pub average:   (Duration, usize),
 
-	sx: mpsc::SyncSender<(Instant, ExecutionResult)>,
-	rx: mpsc::Receiver<(Instant, ExecutionResult)>,
+	sx: mpsc::SyncSender<(Instant, ExecutionResult, Duration)>,
+	rx: mpsc::Receiver<(Instant, ExecutionResult, Duration)>,
 }
 impl DrawBufferScheduler {
 	pub fn new() -> Self {
 		let (sx, rx) = mpsc::sync_channel(4);
 		Self {
+      id:0,
 			current_draw_buffer: FilledDrawBuffer {
 				buffer:    DrawBuffer::empty(),
 				timestamp: Instant::now(),
@@ -1006,8 +1008,9 @@ impl DrawBufferScheduler {
 		}
 	}
 	pub fn schedule(
-		&mut self, work: impl FnOnce() -> ExecutionResult + Send + 'static,
+		&mut self,id:u64, work: impl FnOnce() -> ExecutionResult + Send + 'static,
 	) {
+    self.id = id; 
 		let started = Instant::now();
 		let scheduled_calc = ScheduledCalc { timestamp: started, };
 
@@ -1026,9 +1029,11 @@ impl DrawBufferScheduler {
 		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
 
 		rayon::spawn(move || {
+      let start = Instant::now();
 			let result = work();
+      let duration = start.elapsed();
 
-			let _send_res = sx.send((calc_clone.timestamp, result));
+			let _send_res = sx.send((calc_clone.timestamp, result, duration));
 		});
 
 		self.scheduled = Some(calc);
@@ -1073,7 +1078,9 @@ impl DrawBufferScheduler {
 	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
 		let mut received = false;
 		// let mut ido = None;
-		while let Ok((timestamp, result)) = self.rx.try_recv() {
+		while let Ok((timestamp, result, duration)) = self.rx.try_recv() {
+      self.average.1 += 1;
+      self.average.0 += duration;
 			// ido = Some(id);
 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
 			// self.latest_one);
@@ -1081,8 +1088,6 @@ impl DrawBufferScheduler {
 				received = true;
 				match result {
 					Ok(buffer) => {
-						self.average.1 += 1;
-						self.average.0 += timestamp.elapsed();
 
 						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer };
 						self.cur_error = None;
@@ -1104,7 +1109,7 @@ impl DrawBufferScheduler {
 		(
 			has_outstanding,
 			if received {
-				// println!("average {ido:?}: {:?}", self.average.0 / self.average.1 as u32);
+				// println!("average {:?}: {:?}",self.id, self.average.0 / self.average.1 as u32);
 
 				Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
 			} else {
