@@ -146,7 +146,7 @@ fn drag<T: EvalexprFloat>(
 
 	*value = T::from_f64(new_value);
 }
-fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
+pub fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
 	for entry in entries.iter_mut() {
 		if Id::new(entry.id) == id {
 			return Some(entry);

@@ -9,7 +9,7 @@ use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashM
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult, FillMesh, OtherPointType, PointInteraction, PointInteractionType
+	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
 };
 use crate::entry::{
 	COLORS, ClonedEntry, DragPoint, Entry, EntryType, EquationType, NUM_COLORS, PointsType, f64_to_value
@@ -72,13 +72,27 @@ impl PlotParams {
 		}
 	}
 }
-pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &mut Entry<T>, sorting_idx: u32, selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>,
+pub fn schedule_create_plot_elements<T: EvalexprFloat>(
+	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut MultiDrawBufferScheduler, 
+	selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>, plot_params: &PlotParams,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
+) {
+	let mut to_execute_async = vec![];
+	for (i, entry) in top_level_entries.iter_mut().enumerate(){
+		schedule_entry_create_plot_elements(
+			entry, &mut to_execute_async, i as u32 * 1000, selected_id, ctx, plot_params, tl_context,
+		);
+	}
+	multi_scheduler.schedule(to_execute_async);
+}
+fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
+	entry: &mut Entry<T>, to_execute_async: &mut Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send>>,
+	sorting_idx: u32, selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>,
 	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
-		entry.draw_buffer_scheduler.clear_buffer();
+		entry.draw_buffer.clear();
 		return;
 	}
 	match &mut entry.ty {
@@ -87,6 +101,7 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			for (ei, entry) in entries.iter_mut().enumerate() {
 				schedule_entry_create_plot_elements(
 					entry,
+					to_execute_async,
 					sorting_idx + ei as u32,
 					selected_id,
 					ctx,
@@ -97,41 +112,36 @@ pub fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 		},
 		EntryType::Function { can_be_drawn, .. } => {
 			if !*can_be_drawn {
-				entry.draw_buffer_scheduler.clear_buffer();
+				entry.draw_buffer.clear();
 			} else {
-				entry.draw_buffer_scheduler.schedule(entry.id, {
+				to_execute_async.push({
 					let entry_cloned =
 						ClonedEntry { id: entry.id, color: entry.color, ty: entry.ty.clone() };
 					let ctx = Arc::clone(ctx);
 					let plot_params = plot_params.clone();
 					let tl_context = Arc::clone(tl_context);
 
-					move || {
+					Box::new(move || {
 						entry_create_plot_elements_async(
 							&entry_cloned, sorting_idx, &ctx, &plot_params, &tl_context,
 						)
-					}
+					})
 				});
 			}
 		},
 
 		_ => {
-			entry.draw_buffer_scheduler.execute({
-				|draw_buffer| {
-					entry_create_plot_elements_sync(
-						entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, ctx,
-						plot_params, tl_context, draw_buffer,
-					);
-					Ok(())
-				}
-			});
+			entry_create_plot_elements_sync(
+				entry.id, &entry.ty, &entry.name, entry.color, sorting_idx, selected_id, ctx, plot_params,
+				tl_context, &mut entry.draw_buffer,
+			);
 		},
 	}
 }
 pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 	entry: &ClonedEntry<T>, sorting_idx: u32, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
-) -> ExecutionResult {
+) -> ExecutionResult2 {
 	let color = entry.color();
 	let id = Id::new(entry.id);
 
@@ -205,7 +215,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 						Ok(v) => match v {
 							Value::Float(v) => v,
 							Value::Float2(_, _) | Value::Boolean(_) | Value::Tuple(_) | Value::Empty => {
-								return Ok(draw_buffer);
+								return Ok((entry.id, draw_buffer));
 							},
 						},
 						Err(e) => return Err((entry.id, e.to_string())),
@@ -301,7 +311,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									| Value::Boolean(_)
 									| Value::Tuple(_)
 									| Value::Empty => {
-										return Ok(draw_buffer);
+										return Ok((entry.id, draw_buffer));
 									},
 								},
 								Err(e) => return Err((entry.id, e.to_string())),
@@ -369,7 +379,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 			}
 		},
 	}
-	Ok(draw_buffer)
+	Ok((entry.id, draw_buffer))
 }
 pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: usize, sorting_idx: u32, selected_id: Option<Id>,
@@ -760,7 +770,7 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	// println!("fn {} num points", pp_buffer.len());
 	add_line(pp_buffer);
 
-	Ok(( ))
+	Ok(())
 }
 
 const P_CURVATURE_FACTOR_SCALE: f64 = 8.0;
@@ -1241,6 +1251,7 @@ fn draw_implicit<T: EvalexprFloat>(
 	//: 146_327
 
 	let params = marching_squares::MarchingSquaresParams {
+		id,
 		resolution,
 		bounds_min: mins,
 		bounds_max: maxs,

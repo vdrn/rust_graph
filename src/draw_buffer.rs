@@ -2,7 +2,9 @@ use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::ptr;
 use core::time::Duration;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::sync::{Mutex, mpsc};
+use std::thread;
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
@@ -16,6 +18,7 @@ use thread_local::ThreadLocal;
 use crate::custom_rendering::fan_fill_renderer::{FillRule, TriangleFanVertex};
 use crate::custom_rendering::mesh_renderer::MeshCallback;
 use crate::entry::{Entry, EntryType};
+use crate::fair_draining_semaphore::DrainingSemaphore;
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
@@ -107,80 +110,74 @@ impl ProcessedShapes {
 
 		// let mut result = Vec::new();
 		if let Some(transform) = plot_params.prev_plot_transform {
-			let mut clone_draw_buffer =
-				|color: Color32, draw_buffer: Result<&mut DrawBuffer, (u64, String)>| match draw_buffer {
-					Ok(draw_buffer) => {
-						let mut bounds = PlotBounds::NOTHING;
-						let mut id = None;
-						let mut name = None;
-						let mut allow_hover = false;
-						let mut mesh = Mesh::default();
-						for line in draw_buffer.lines.iter_mut() {
-							bounds.merge(&line.line.bounds());
-							id = Some(line.id);
-							if name.is_none() {
-								name = Some((&line.line as &dyn PlotItem).name().to_string());
-							}
-							allow_hover |= (&line.line as &dyn PlotItem).allow_hover();
+			let mut clone_draw_buffer = |color: Color32, draw_buffer: &mut DrawBuffer| {
+				let mut bounds = PlotBounds::NOTHING;
+				let mut id = None;
+				let mut name = None;
+				let mut allow_hover = false;
+				let mut mesh = Mesh::default();
+				for line in draw_buffer.lines.iter_mut() {
+					bounds.merge(&line.line.bounds());
+					id = Some(line.id);
+					if name.is_none() {
+						name = Some((&line.line as &dyn PlotItem).name().to_string());
+					}
+					allow_hover |= (&line.line as &dyn PlotItem).allow_hover();
 
-							if Some(line.id) == selected_plot_line {
-								// thanks to awesome builder api
-								let mut temp_line = Line::new("", vec![]);
-								core::mem::swap(&mut temp_line, &mut line.line);
-								temp_line = temp_line.width(line.width + 2.0);
-								temp_line.shapes(ui, &transform, &mut self.shapes_temp);
-								temp_line = temp_line.width(line.width);
-								core::mem::swap(&mut temp_line, &mut line.line);
-							} else {
-								line.line.shapes(ui, &transform, &mut self.shapes_temp);
-							}
-							for shape in self.shapes_temp.drain(..) {
-								self.tesselator.tessellate_shape(shape, &mut mesh);
-							}
-						}
-						let base = PlotItemBase::new(name.unwrap_or_default());
-						self.lines.push(ProcessedShape {
-							id: id.unwrap_or(Id::NULL),
-							shapes: mesh.into(),
-							allow_hover,
-							color,
-							bounds,
-							base,
-						});
-						for mesh in draw_buffer.meshes.iter() {
-							self.draw_meshes.push(mesh.clone());
-						}
-						for polygon in draw_buffer.polygons.iter() {
-							self.draw_polygons.push(polygon.clone());
-						}
-						for point in draw_buffer.points.iter() {
-							self.draw_points.push(point.clone());
-						}
-						for text in draw_buffer.texts.iter() {
-							self.draw_texts.push(text.clone());
-						}
-						// for mesh in draw_buffer.meshes.iter() {
-						// draw_meshes.extend(draw_buffer.meshes.iter().cloned());
-						// draw_polygons.extend(draw_buffer.polygons.iter().cloned());
+					if Some(line.id) == selected_plot_line {
+						// thanks to awesome builder api
+						let mut temp_line = Line::new("", vec![]);
+						core::mem::swap(&mut temp_line, &mut line.line);
+						temp_line = temp_line.width(line.width + 2.0);
+						temp_line.shapes(ui, &transform, &mut self.shapes_temp);
+						temp_line = temp_line.width(line.width);
+						core::mem::swap(&mut temp_line, &mut line.line);
+					} else {
+						line.line.shapes(ui, &transform, &mut self.shapes_temp);
+					}
+					for shape in self.shapes_temp.drain(..) {
+						self.tesselator.tessellate_shape(shape, &mut mesh);
+					}
+				}
+				let base = PlotItemBase::new(name.unwrap_or_default());
+				self.lines.push(ProcessedShape {
+					id: id.unwrap_or(Id::NULL),
+					shapes: mesh.into(),
+					allow_hover,
+					color,
+					bounds,
+					base,
+				});
+				for mesh in draw_buffer.meshes.iter() {
+					self.draw_meshes.push(mesh.clone());
+				}
+				for polygon in draw_buffer.polygons.iter() {
+					self.draw_polygons.push(polygon.clone());
+				}
+				for point in draw_buffer.points.iter() {
+					self.draw_points.push(point.clone());
+				}
+				for text in draw_buffer.texts.iter() {
+					self.draw_texts.push(text.clone());
+				}
+				// for mesh in draw_buffer.meshes.iter() {
+				// draw_meshes.extend(draw_buffer.meshes.iter().cloned());
+				// draw_polygons.extend(draw_buffer.polygons.iter().cloned());
 
-						// draw_lines.extend(draw_buffer.lines.iter().cloned());
-						// draw_points.extend(draw_buffer.points.iter().cloned());
-						// draw_texts.extend(draw_buffer.texts.iter().cloned());
-					},
-					Err((id, error)) => {
-						eval_errors.insert(id, error);
-					},
-				};
+				// draw_lines.extend(draw_buffer.lines.iter().cloned());
+				// draw_points.extend(draw_buffer.points.iter().cloned());
+				// draw_texts.extend(draw_buffer.texts.iter().cloned());
+			};
 			for entry in entries.iter_mut() {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					for entry in entries.iter_mut() {
 						let color = entry.color();
-						let draw_buffer = entry.draw_buffer_scheduler.draw_buffer_mut();
+						let draw_buffer = &mut entry.draw_buffer;
 						clone_draw_buffer(color, draw_buffer);
 					}
 				} else {
 					let color = entry.color();
-					let draw_buffer = entry.draw_buffer_scheduler.draw_buffer_mut();
+					let draw_buffer = &mut entry.draw_buffer;
 					clone_draw_buffer(color, draw_buffer);
 				}
 			}
@@ -302,132 +299,127 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 		if let Some((selected_entry, show_closest_point_to_mouse)) = selected_entry
 			&& ptr::eq(entry, selected_entry)
 		{
-			if let Ok(draw_buffer) = selected_entry.draw_buffer_scheduler.draw_buffer() {
-				for line in draw_buffer.lines.iter() {
-					let PlotGeometry::Points(plot_points) = line.line.geometry() else {
-						continue;
-					};
-					let pt_radius = line.width + 2.5;
+			let draw_buffer = &selected_entry.draw_buffer;
+			for line in draw_buffer.lines.iter() {
+				let PlotGeometry::Points(plot_points) = line.line.geometry() else {
+					continue;
+				};
+				let pt_radius = line.width + 2.5;
 
-					// Find local optima
-					let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-					for (pi, point) in plot_points.iter().enumerate() {
-						let cur = (point.x, point.y);
-						fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
-						fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
-						// Find closest point to mouse
-						if let Some(prev_1) = prev[1] {
-							if (&line.line as &dyn PlotItem).allow_hover() {
-								hover(prev_1, cur);
+				// Find local optima
+				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
+				for (pi, point) in plot_points.iter().enumerate() {
+					let cur = (point.x, point.y);
+					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
+					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
+					// Find closest point to mouse
+					if let Some(prev_1) = prev[1] {
+						if (&line.line as &dyn PlotItem).allow_hover() {
+							hover(prev_1, cur);
+						}
+						// if show_closest_point_to_mouse && let Some(mouse_pos_in_graph) =
+						// mouse_pos_in_graph {
+						// 	let mouse_on_seg = closest_point_on_segment(
+						// 		(cur.0, cur.1),
+						// 		(prev_1.0, prev_1.1),
+						// 		mouse_pos_in_graph,
+						// 	);
+						// 	let dist_sq = dist_sq(mouse_on_seg, mouse_pos_in_graph);
+						// 	if let Some(cur_closest_point_to_mouse) = closest_point_to_mouse {
+						// 		if dist_sq < cur_closest_point_to_mouse.1 {
+						// 			closest_point_to_mouse = Some((mouse_on_seg, dist_sq, id));
+						// 		}
+						// 	} else {
+						// 		closest_point_to_mouse = Some((mouse_on_seg, dist_sq, id));
+						// 	}
+						// }
+
+						if let Some(prev_0) = prev[0] {
+							if prev_0.1.signum() != prev_1.1.signum() {
+								// intersection with x axis
+								let sum = prev_0.1.abs() + prev_1.1.abs();
+								let x = if sum == 0.0 {
+									(prev_0.0 + prev_1.0) * 0.5
+								} else {
+									let t = prev_0.1.abs() / sum;
+									prev_0.0 + t * (prev_1.0 - prev_0.0)
+								};
+								draw_points.push(DrawPoint::new(
+									line.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x,
+										y: 0.0,
+										radius: pt_radius,
+										ty: PointInteractionType::Other(OtherPointType::IntersectionWithXAxis),
+									},
+									Points::new("", [x, 0.0]).color(Color32::GRAY).radius(pt_radius),
+								));
 							}
-							// if show_closest_point_to_mouse && let Some(mouse_pos_in_graph) =
-							// mouse_pos_in_graph {
-							// 	let mouse_on_seg = closest_point_on_segment(
-							// 		(cur.0, cur.1),
-							// 		(prev_1.0, prev_1.1),
-							// 		mouse_pos_in_graph,
-							// 	);
-							// 	let dist_sq = dist_sq(mouse_on_seg, mouse_pos_in_graph);
-							// 	if let Some(cur_closest_point_to_mouse) = closest_point_to_mouse {
-							// 		if dist_sq < cur_closest_point_to_mouse.1 {
-							// 			closest_point_to_mouse = Some((mouse_on_seg, dist_sq, id));
-							// 		}
-							// 	} else {
-							// 		closest_point_to_mouse = Some((mouse_on_seg, dist_sq, id));
-							// 	}
-							// }
 
-							if let Some(prev_0) = prev[0] {
-								if prev_0.1.signum() != prev_1.1.signum() {
-									// intersection with x axis
-									let sum = prev_0.1.abs() + prev_1.1.abs();
-									let x = if sum == 0.0 {
-										(prev_0.0 + prev_1.0) * 0.5
-									} else {
-										let t = prev_0.1.abs() / sum;
-										prev_0.0 + t * (prev_1.0 - prev_0.0)
-									};
-									draw_points.push(DrawPoint::new(
-										line.sorting_index,
-										pi as u32,
-										PointInteraction {
-											x,
-											y: 0.0,
-											radius: pt_radius,
-											ty: PointInteractionType::Other(
-												OtherPointType::IntersectionWithXAxis,
-											),
-										},
-										Points::new("", [x, 0.0]).color(Color32::GRAY).radius(pt_radius),
-									));
-								}
+							if prev_0.0.signum() != prev_1.0.signum() {
+								// intersection with y axis
+								let sum = prev_0.0.abs() + prev_1.0.abs();
+								let y = if sum == 0.0 {
+									(prev_0.1 + prev_1.1) * 0.5
+								} else {
+									let t = prev_0.0.abs() / sum;
+									prev_0.1 + t * (prev_1.1 - prev_0.1)
+								};
+								draw_points.push(DrawPoint::new(
+									line.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x: 0.0,
+										y,
+										radius: pt_radius,
+										ty: PointInteractionType::Other(OtherPointType::IntersectionWithYAxis),
+									},
+									Points::new("", [0.0, y]).color(Color32::GRAY).radius(pt_radius),
+								));
+							}
 
-								if prev_0.0.signum() != prev_1.0.signum() {
-									// intersection with y axis
-									let sum = prev_0.0.abs() + prev_1.0.abs();
-									let y = if sum == 0.0 {
-										(prev_0.1 + prev_1.1) * 0.5
-									} else {
-										let t = prev_0.0.abs() / sum;
-										prev_0.1 + t * (prev_1.1 - prev_0.1)
-									};
-									draw_points.push(DrawPoint::new(
-										line.sorting_index,
-										pi as u32,
-										PointInteraction {
-											x: 0.0,
-											y,
-											radius: pt_radius,
-											ty: PointInteractionType::Other(
-												OtherPointType::IntersectionWithYAxis,
-											),
-										},
-										Points::new("", [0.0, y]).color(Color32::GRAY).radius(pt_radius),
-									));
-								}
-
-								if less_then(prev_0.1, prev_1.1, plot_params.eps)
-									&& greater_then(prev_1.1, cur.1, plot_params.eps)
-								{
-									// local maximum
-									draw_points.push(DrawPoint::new(
-										line.sorting_index,
-										pi as u32,
-										PointInteraction {
-											x:      prev_1.0,
-											y:      prev_1.1,
-											radius: pt_radius,
-											ty:     PointInteractionType::Other(OtherPointType::Maxima),
-										},
-										Points::new("", [prev_1.0, prev_1.1])
-											.color(Color32::GRAY)
-											.radius(pt_radius),
-									));
-								}
-								if greater_then(prev_0.1, prev_1.1, plot_params.eps)
-									&& less_then(prev_1.1, cur.1, plot_params.eps)
-								{
-									// local minimum
-									draw_points.push(DrawPoint::new(
-										line.sorting_index,
-										pi as u32,
-										PointInteraction {
-											x:      prev_1.0,
-											y:      prev_1.1,
-											radius: pt_radius,
-											ty:     PointInteractionType::Other(OtherPointType::Minima),
-										},
-										Points::new("", [prev_1.0, prev_1.1])
-											.color(Color32::GRAY)
-											.radius(pt_radius),
-									));
-								}
+							if less_then(prev_0.1, prev_1.1, plot_params.eps)
+								&& greater_then(prev_1.1, cur.1, plot_params.eps)
+							{
+								// local maximum
+								draw_points.push(DrawPoint::new(
+									line.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x:      prev_1.0,
+										y:      prev_1.1,
+										radius: pt_radius,
+										ty:     PointInteractionType::Other(OtherPointType::Maxima),
+									},
+									Points::new("", [prev_1.0, prev_1.1])
+										.color(Color32::GRAY)
+										.radius(pt_radius),
+								));
+							}
+							if greater_then(prev_0.1, prev_1.1, plot_params.eps)
+								&& less_then(prev_1.1, cur.1, plot_params.eps)
+							{
+								// local minimum
+								draw_points.push(DrawPoint::new(
+									line.sorting_index,
+									pi as u32,
+									PointInteraction {
+										x:      prev_1.0,
+										y:      prev_1.1,
+										radius: pt_radius,
+										ty:     PointInteractionType::Other(OtherPointType::Minima),
+									},
+									Points::new("", [prev_1.0, prev_1.1])
+										.color(Color32::GRAY)
+										.radius(pt_radius),
+								));
 							}
 						}
-
-						prev[0] = prev[1];
-						prev[1] = Some(cur);
 					}
+
+					prev[0] = prev[1];
+					prev[1] = Some(cur);
 				}
 			}
 			if show_closest_point_to_mouse {
@@ -443,50 +435,47 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 				}
 			}
 		} else {
-			if let Ok(draw_buffer) = entry.draw_buffer_scheduler.draw_buffer() {
-				for fline in draw_buffer.lines.iter() {
-					// draw_lines.par_iter().for_each(|fline| {
-					let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
-						continue;
-					};
-					let mut draw_buffer = thread_local_get(draw_buffers).inner.borrow_mut();
-					if !<Line as PlotItem>::allow_hover(&fline.line) {
-						continue;
-					}
-					// find intersections
-					let mut pi = 0;
-					for plot_seg in plot_points.windows(2) {
-						hover((plot_seg[0].x, plot_seg[0].y), (plot_seg[1].x, plot_seg[1].y));
+			let draw_buffer = &entry.draw_buffer;
+			for fline in draw_buffer.lines.iter() {
+				// draw_lines.par_iter().for_each(|fline| {
+				let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
+					continue;
+				};
+				let mut draw_buffer = thread_local_get(draw_buffers).inner.borrow_mut();
+				if !<Line as PlotItem>::allow_hover(&fline.line) {
+					continue;
+				}
+				// find intersections
+				let mut pi = 0;
+				for plot_seg in plot_points.windows(2) {
+					hover((plot_seg[0].x, plot_seg[0].y), (plot_seg[1].x, plot_seg[1].y));
 
-						if let Some(selected_draw_buffer) =
-							selected_entry.and_then(|(s, _)| s.draw_buffer_scheduler.draw_buffer().ok())
-						{
-							for selected_line in selected_draw_buffer.lines.iter() {
-								let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
-									continue;
-								};
-								let pt_radius = selected_line.width + 2.5;
-								for sel_seg in sel_points.windows(2) {
-									if let Some(point) = intersect_segs(
-										plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
-									) {
-										draw_buffer.points.push(DrawPoint::new(
-											fline.sorting_index,
-											pi as u32,
-											PointInteraction {
-												x:      point.x,
-												y:      point.y,
-												radius: pt_radius,
-												ty:     PointInteractionType::Other(
-													OtherPointType::Intersection,
-												),
-											},
-											Points::new("", [point.x, point.y])
-												.color(Color32::GRAY)
-												.radius(pt_radius),
-										));
-										pi += 1;
-									}
+					if let Some(selected_draw_buffer) =
+						selected_entry.map(|(s, _)| &s.draw_buffer)
+					{
+						for selected_line in selected_draw_buffer.lines.iter() {
+							let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
+								continue;
+							};
+							let pt_radius = selected_line.width + 2.5;
+							for sel_seg in sel_points.windows(2) {
+								if let Some(point) = intersect_segs(
+									plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
+								) {
+									draw_buffer.points.push(DrawPoint::new(
+										fline.sorting_index,
+										pi as u32,
+										PointInteraction {
+											x:      point.x,
+											y:      point.y,
+											radius: pt_radius,
+											ty:     PointInteractionType::Other(OtherPointType::Intersection),
+										},
+										Points::new("", [point.x, point.y])
+											.color(Color32::GRAY)
+											.radius(pt_radius),
+									));
+									pi += 1;
 								}
 							}
 						}
@@ -783,17 +772,17 @@ impl DrawText {
 /// SAFETY: Not Sync because of `ExplicitGenerator` callbacks, but we dont use those.
 unsafe impl Sync for DrawLine {}
 
-pub type ExecutionResult = Result<DrawBuffer, (u64, String)>;
+// pub type ExecutionResult = Result<DrawBuffer, (u64, String)>;
 
-pub struct FilledDrawBuffer {
-	buffer:    DrawBuffer,
-	timestamp: Instant,
-}
+// pub struct FilledDrawBuffer {
+// 	buffer:    DrawBuffer,
+// 	timestamp: Instant,
+// }
 
-#[derive(Clone, Debug)]
-pub struct ScheduledCalc {
-	timestamp:     Instant,
-}
+// #[derive(Clone, Debug)]
+// pub struct ScheduledCalc {
+// 	timestamp: Instant,
+// }
 // pub struct DrawBufferScheduler {
 // 	pub current_draw_buffer: FilledDrawBuffer,
 // 	pub cur_error:           Option<(u64, String)>,
@@ -977,151 +966,277 @@ pub struct ScheduledCalc {
 // 	fn drop(&mut self) { self.clear_buffer(); }
 // }
 
-pub struct DrawBufferScheduler {
-  id : u64,
-	pub current_draw_buffer: FilledDrawBuffer,
-	pub cur_error:           Option<(u64, String)>,
+// pub struct DrawBufferScheduler {
+// 	id:                      u64,
+// 	pub current_draw_buffer: FilledDrawBuffer,
+// 	pub cur_error:           Option<(u64, String)>,
 
-	pub scheduled: Option<ScheduledCalc>,
-	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce() -> ExecutionResult + Send>)>,
+// 	pub scheduled: Option<ScheduledCalc>,
+// 	pub deferred:  Option<(ScheduledCalc, Box<dyn FnOnce() -> ExecutionResult + Send>)>,
+// 	pub average:   (Duration, usize),
+
+// 	sx: mpsc::SyncSender<(Instant, ExecutionResult, Duration)>,
+// 	rx: mpsc::Receiver<(Instant, ExecutionResult, Duration)>,
+// }
+// impl DrawBufferScheduler {
+// 	pub fn new() -> Self {
+// 		let (sx, rx) = mpsc::sync_channel(4);
+// 		Self {
+// 			id: 0,
+// 			current_draw_buffer: FilledDrawBuffer {
+// 				buffer:    DrawBuffer::empty(),
+// 				timestamp: Instant::now(),
+// 			},
+// 			cur_error: None,
+
+// 			scheduled: None,
+// 			average: (Duration::ZERO, 0),
+// 			deferred: None,
+// 			sx,
+// 			rx,
+// 		}
+// 	}
+// 	pub fn schedule(&mut self, id: u64, work: impl FnOnce() -> ExecutionResult + Send + 'static) {
+// 		self.id = id;
+// 		let started = Instant::now();
+// 		let scheduled_calc = ScheduledCalc { timestamp: started };
+
+// 		if self.scheduled.is_none() {
+// 			self.spawn_as_latest(scheduled_calc, work);
+// 		} else {
+// 			self.deferred = Some((scheduled_calc, Box::new(work)));
+// 		}
+// 	}
+// 	fn spawn_as_latest(
+// 		&mut self, calc: ScheduledCalc, work: impl FnOnce() -> ExecutionResult + Send + 'static,
+// 	) {
+// 		let sx = self.sx.clone();
+// 		let calc_clone = calc.clone();
+// 		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
+// 		let id = self.id;
+
+// 		//
+
+// 		rayon::spawn(move || {
+// 			let start = Instant::now();
+// 			let result = work();
+// 			let duration = start.elapsed();
+
+// 			let _send_res = sx.send((calc_clone.timestamp, result, duration));
+// 		});
+
+// 		self.scheduled = Some(calc);
+// 	}
+// 	pub fn clear_buffer(&mut self) {
+// 		self.current_draw_buffer.buffer.clear();
+// 		self.current_draw_buffer.timestamp = Instant::now();
+// 		// if let Some(scheduled) = self.scheduled.take() {
+// 		//   scheduled.cancel_signal.store(true, Ordering::Relaxed);
+// 		// }
+// 		// if let Some(earliest) = self.earliest_one.take() {
+// 		// 	earliest.cancel_signal.store(true, Ordering::Relaxed);
+// 		// }
+// 		// if let Some(latest) = self.latest_one.take() {
+// 		// 	latest.cancel_signal.store(true, Ordering::Relaxed);
+// 		// }
+// 	}
+// 	pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
+// 		let started = Instant::now();
+// 		self.current_draw_buffer.buffer.clear();
+// 		self.current_draw_buffer.timestamp = started;
+// 		match work(&mut self.current_draw_buffer.buffer) {
+// 			Ok(_) => {},
+// 			Err(err) => {
+// 				self.cur_error = Some(err);
+// 				self.current_draw_buffer.buffer.clear();
+// 			},
+// 		}
+// 	}
+
+// 	fn draw_buffer_mut(&mut self) -> Result<&mut DrawBuffer, (u64, String)> {
+// 		if let Some(err) = &self.cur_error {
+// 			Err(err.clone())
+// 		} else {
+// 			Ok(&mut self.current_draw_buffer.buffer)
+// 		}
+// 	}
+// 	fn draw_buffer(&self) -> Result<&DrawBuffer, (u64, String)> {
+// 		if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(&self.current_draw_buffer.buffer) }
+// 	}
+// 	/// returns (has_outstanding, maybe_new_result)
+// 	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
+// 		let mut received = false;
+// 		// let mut ido = None;
+// 		while let Ok((timestamp, result, duration)) = self.rx.try_recv() {
+// 			self.average.1 += 1;
+// 			self.average.0 += duration;
+// 			// ido = Some(id);
+// 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
+// 			// self.latest_one);
+// 			if timestamp > self.current_draw_buffer.timestamp {
+// 				received = true;
+// 				match result {
+// 					Ok(buffer) => {
+// 						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer };
+// 						self.cur_error = None;
+// 					},
+// 					Err(err) => {
+// 						self.cur_error = Some(err);
+// 						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer: DrawBuffer::empty() };
+// 					},
+// 				}
+// 			}
+// 			if let Some(scheduled) = &self.scheduled {
+// 				if timestamp == scheduled.timestamp {
+// 					self.scheduled = None;
+// 				}
+// 			}
+// 		}
+
+// 		let has_outstanding = self.scheduled.is_some();
+// 		(
+// 			has_outstanding,
+// 			if received {
+// 				println!("average {:?}: {:?}", self.id, self.average.0 / self.average.1 as u32);
+
+// 				Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
+// 			} else {
+// 				None
+// 			},
+// 		)
+// 	}
+
+// 	pub fn schedule_deffered_if_idle(&mut self) -> bool {
+// 		if self.scheduled.is_none() {
+// 			if let Some((calc, work)) = self.deferred.take() {
+// 				self.spawn_as_latest(calc, work);
+// 				return true;
+// 			}
+// 		}
+// 		false
+// 	}
+// }
+
+pub type ExecutionResult2 = Result<(u64, DrawBuffer), (u64, String)>;
+pub type MultiExecutionResult = Vec<Result<(u64, DrawBuffer), (u64, String)>>;
+pub struct MultiDrawBufferScheduler {
+	pub scheduled: bool,
+	pub deferred:  Option<Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send>>>,
 	pub average:   (Duration, usize),
 
-	sx: mpsc::SyncSender<(Instant, ExecutionResult, Duration)>,
-	rx: mpsc::Receiver<(Instant, ExecutionResult, Duration)>,
+	sx: mpsc::SyncSender<(MultiExecutionResult, Duration)>,
+	rx: mpsc::Receiver<(MultiExecutionResult, Duration)>,
 }
-impl DrawBufferScheduler {
+impl MultiDrawBufferScheduler {
 	pub fn new() -> Self {
 		let (sx, rx) = mpsc::sync_channel(4);
-		Self {
-      id:0,
-			current_draw_buffer: FilledDrawBuffer {
-				buffer:    DrawBuffer::empty(),
-				timestamp: Instant::now(),
-			},
-			cur_error: None,
-
-			scheduled: None,
-			average: (Duration::ZERO, 0),
-			deferred: None,
-			sx,
-			rx,
-		}
+		Self { scheduled: false, average: (Duration::ZERO, 0), deferred: None, sx, rx }
 	}
-	pub fn schedule(
-		&mut self,id:u64, work: impl FnOnce() -> ExecutionResult + Send + 'static,
-	) {
-    self.id = id; 
+	pub fn schedule(&mut self, work: Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send + 'static>>) {
 		let started = Instant::now();
-		let scheduled_calc = ScheduledCalc { timestamp: started, };
+		let scheduled_calc = ScheduledCalc { timestamp: started };
 
-		if self.scheduled.is_none() {
-			self.spawn_as_latest(scheduled_calc, work );
+		if !self.scheduled {
+			self.spawn_as_latest(work);
 		} else {
-			self.deferred = Some((scheduled_calc, Box::new(work)));
+			self.deferred = Some(work);
 		}
 	}
-	fn spawn_as_latest(
-		&mut self, calc: ScheduledCalc,
-		work: impl FnOnce() -> ExecutionResult + Send + 'static, 
-	) {
+	fn spawn_as_latest(&mut self, work: Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send + 'static>>) {
 		let sx = self.sx.clone();
-		let calc_clone = calc.clone();
 		// println!("scheduling latest {calc_clone:?} is_deffered {is_deffered}");
 
-		rayon::spawn(move || {
-      let start = Instant::now();
-			let result = work();
-      let duration = start.elapsed();
+		//
 
-			let _send_res = sx.send((calc_clone.timestamp, result, duration));
+		rayon::spawn(move || {
+			let start = Instant::now();
+			let result = work
+				.into_par_iter()
+				.map(|work| {
+					let result = work();
+					result
+				})
+				.collect::<Vec<_>>();
+
+			let duration = start.elapsed();
+
+			let _send_res = sx.send((result, duration));
 		});
 
-		self.scheduled = Some(calc);
+		self.scheduled = true;
 	}
-	pub fn clear_buffer(&mut self) {
-		self.current_draw_buffer.buffer.clear();
-		self.current_draw_buffer.timestamp = Instant::now();
-		// if let Some(scheduled) = self.scheduled.take() {
-		//   scheduled.cancel_signal.store(true, Ordering::Relaxed);
-		// }
-		// if let Some(earliest) = self.earliest_one.take() {
-		// 	earliest.cancel_signal.store(true, Ordering::Relaxed);
-		// }
-		// if let Some(latest) = self.latest_one.take() {
-		// 	latest.cancel_signal.store(true, Ordering::Relaxed);
-		// }
-	}
-	pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
-		let started = Instant::now();
-		self.current_draw_buffer.buffer.clear();
-		self.current_draw_buffer.timestamp = started;
-		match work(&mut self.current_draw_buffer.buffer) {
-			Ok(_) => {},
-			Err(err) => {
-				self.cur_error = Some(err);
-				self.current_draw_buffer.buffer.clear();
-			},
-		}
-	}
+	// pub fn clear_buffer(&mut self) {
+	// self.current_draw_buffer.buffer.clear();
+	// self.current_draw_buffer.timestamp = Instant::now();
+	// if let Some(scheduled) = self.scheduled.take() {
+	//   scheduled.cancel_signal.store(true, Ordering::Relaxed);
+	// }
+	// if let Some(earliest) = self.earliest_one.take() {
+	// 	earliest.cancel_signal.store(true, Ordering::Relaxed);
+	// }
+	// if let Some(latest) = self.latest_one.take() {
+	// 	latest.cancel_signal.store(true, Ordering::Relaxed);
+	// }
+	// }
+	// pub fn execute(&mut self, work: impl FnOnce(&mut DrawBuffer) -> Result<(), (u64, String)>) {
+	// 	let started = Instant::now();
+	// 	self.current_draw_buffer.buffer.clear();
+	// 	self.current_draw_buffer.timestamp = started;
+	// 	match work(&mut self.current_draw_buffer.buffer) {
+	// 		Ok(_) => {},
+	// 		Err(err) => {
+	// 			self.cur_error = Some(err);
+	// 			self.current_draw_buffer.buffer.clear();
+	// 		},
+	// 	}
+	// }
 
-	fn draw_buffer_mut(&mut self) -> Result<&mut DrawBuffer, (u64, String)> {
-		if let Some(err) = &self.cur_error {
-			Err(err.clone())
-		} else {
-			Ok(&mut self.current_draw_buffer.buffer)
-		}
-	}
-	fn draw_buffer(&self) -> Result<&DrawBuffer, (u64, String)> {
-		if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(&self.current_draw_buffer.buffer) }
-	}
+	// fn draw_buffer_mut(&mut self) -> Result<&mut DrawBuffer, (u64, String)> {
+	// 	if let Some(err) = &self.cur_error {
+	// 		Err(err.clone())
+	// 	} else {
+	// 		Ok(&mut self.current_draw_buffer.buffer)
+	// 	}
+	// }
+	// fn draw_buffer(&self) -> Result<&DrawBuffer, (u64, String)> {
+	// 	if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(&self.current_draw_buffer.buffer) }
+	// }
 	/// returns (has_outstanding, maybe_new_result)
-	pub fn try_receive(&mut self) -> (bool, Option<Result<(), (u64, String)>>) {
-		let mut received = false;
+	pub fn try_receive(&mut self) -> (bool, Option<Vec<Result<(u64, DrawBuffer), (u64, String)>>>) {
 		// let mut ido = None;
-		while let Ok((timestamp, result, duration)) = self.rx.try_recv() {
-      self.average.1 += 1;
-      self.average.0 += duration;
+
+		let mut result = None;
+		while let Ok((buffers, duration)) = self.rx.try_recv() {
+			result = Some(buffers);
+			self.average.1 += 1;
+			self.average.0 += duration;
+      // println!("duration {duration:?}");
 			// ido = Some(id);
 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
 			// self.latest_one);
-			if timestamp > self.current_draw_buffer.timestamp {
-				received = true;
-				match result {
-					Ok(buffer) => {
-
-						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer };
-						self.cur_error = None;
-					},
-					Err(err) => {
-						self.cur_error = Some(err);
-						self.current_draw_buffer = FilledDrawBuffer { timestamp, buffer: DrawBuffer::empty() };
-					},
-				}
-			}
-			if let Some(scheduled) = &self.scheduled {
-				if timestamp == scheduled.timestamp {
-					self.scheduled = None;
-				}
-			}
+			self.scheduled = false;
 		}
 
-		let has_outstanding = self.scheduled.is_some();
+		let has_outstanding = self.scheduled;
+    if result.is_some() {
+      // println!("average : {:?}", self.average.0 / self.average.1 as u32);
+    }
 		(
 			has_outstanding,
-			if received {
-				// println!("average {:?}: {:?}",self.id, self.average.0 / self.average.1 as u32);
+			result, /* if received {
+					* 	println!("average {:?}: {:?}", self.id, self.average.0 / self.average.1 as u32); */
 
-				Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
-			} else {
-				None
-			},
+				   /* 	Some(if let Some(err) = &self.cur_error { Err(err.clone()) } else { Ok(()) })
+					* } else {
+					* 	None
+					* }, */
 		)
 	}
 
 	pub fn schedule_deffered_if_idle(&mut self) -> bool {
-		if self.scheduled.is_none() {
-			if let Some((calc, work)) = self.deferred.take() {
-				self.spawn_as_latest(calc, work);
+		if !self.scheduled {
+			if let Some(work) = self.deferred.take() {
+				self.spawn_as_latest(work);
 				return true;
 			}
 		}

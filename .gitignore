@@ -1,3 +1,4 @@
 /target
 assets/wasm/*
 todo.md
+rustc-ice*

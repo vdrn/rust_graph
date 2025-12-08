@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32};
 use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
-use crate::custom_rendering::fan_fill_renderer::FillRule;
+use crate::{custom_rendering::fan_fill_renderer::FillRule, draw_buffer::DrawBuffer};
 use crate::draw_buffer::DrawBufferScheduler;
 
 mod drag_point;
@@ -13,7 +13,7 @@ mod entry_processing;
 mod entry_ui;
 
 pub use drag_point::point_dragging;
-pub use entry_plot_elements::{PlotParams, schedule_entry_create_plot_elements};
+pub use entry_plot_elements::{PlotParams, schedule_create_plot_elements};
 pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprocess_ast};
 pub use entry_ui::entry_ui;
 
@@ -51,7 +51,7 @@ pub struct Entry<T: EvalexprFloat> {
 	pub active:                bool,
 	pub color:                 usize,
 	pub ty:                    EntryType<T>,
-	pub draw_buffer_scheduler: DrawBufferScheduler,
+	pub draw_buffer: DrawBuffer,
 }
 pub struct ClonedEntry<T: EvalexprFloat> {
 	pub id:    u64,
@@ -82,7 +82,7 @@ impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
 			active:                self.active,
 			color:                 self.color,
 			ty:                    self.ty.clone(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
+			draw_buffer: DrawBuffer::empty(),
 		}
 	}
 }
@@ -389,7 +389,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
+			draw_buffer: DrawBuffer::empty(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
 				can_be_drawn: true,
@@ -412,7 +412,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: false,
 			name: String::new(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
+			draw_buffer: DrawBuffer::empty(),
 			ty: EntryType::Constant {
 				istr_name:   istr_empty(),
 				value:       T::ZERO,
@@ -429,7 +429,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
+			draw_buffer: DrawBuffer::empty(),
 			ty: EntryType::Points {
 				identifier: istr_empty(),
         points_ty: PointsType::Separate(vec![PointEntry::default()]),
@@ -443,7 +443,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: id as usize % NUM_COLORS,
 			active: true,
 			name: String::new(),
-			draw_buffer_scheduler: DrawBufferScheduler::new(),
+			draw_buffer: DrawBuffer::empty(),
 			ty: EntryType::Folder { entries: Vec::new() },
 		}
 	}
@@ -587,3 +587,4 @@ pub enum DragPoint {
 	BothCoordConstants(IStr, IStr),
 	SameConstantBothCoords(IStr),
 }
+

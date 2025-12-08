@@ -50,6 +50,8 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use crate::draw_buffer::{DrawBufferScheduler, MultiDrawBufferScheduler};
+
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -190,6 +192,7 @@ struct UiState {
 
 	custom_renderer:     Option<FanFillRenderer>,
 	prev_plot_transform: Option<egui_plot::PlotTransform>,
+  multi_draw_buffer_scheduler:MultiDrawBufferScheduler,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -311,6 +314,7 @@ impl Application {
 				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
+        multi_draw_buffer_scheduler:MultiDrawBufferScheduler::new(),
 				force_process_elements: true,
 				processed_shapess: ProcessedShapes::new(),
 				custom_renderer: FanFillRenderer::new(cc),

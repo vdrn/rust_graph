@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use arrayvec::ArrayVec;
 use eframe::egui::{Color32, Pos2};
@@ -11,6 +12,7 @@ use rayon::iter::{
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
+use crate::draw_buffer::EXECUTION_SEMAPHORE;
 use crate::scope;
 
 #[repr(align(128))]
@@ -66,6 +68,7 @@ pub enum MarchingSquaresFill {
 	Positive,
 }
 pub struct MarchingSquaresParams {
+  pub id:u64,
   pub eps:f64,
 	pub resolution: usize,
 	pub bounds_min: (f64, f64),
@@ -86,6 +89,9 @@ pub fn marching_squares<C>(
 	params: MarchingSquaresParams, f: impl Fn(&mut C, f64, f64) -> Result<f64, String> + Sync,
 	thread_prepare: impl Fn() -> C + Sync, cache: &MarchingSquaresCache, 
 ) -> Result<Vec<MarchingSquaresResult>, String> {
+
+  // let _execution_semaphore_guard = EXECUTION_SEMAPHORE.enter();
+
 	scope!("marching_squares");
 	let (x_min, y_min) = params.bounds_min;
 	let (x_max, y_max) = params.bounds_max;

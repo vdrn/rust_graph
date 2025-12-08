@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
-use crate::entry::{
-	self, Entry, EntryType, point_dragging, prepare_entries, schedule_entry_create_plot_elements
-};
+use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements};
 use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::{AppConfig, State, UiState, persistence, scope};
 
@@ -431,25 +429,28 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		let mut received_new = false;
 		{
-			let mut request_repaint = false;
 			scope!("receive_draw_buffers");
-			for_each_entry_mut(&mut state.entries, |entry| {
-				let (has_outstanding, maybe_received) = entry.draw_buffer_scheduler.try_receive();
-				request_repaint |= has_outstanding;
-				if let Some(received) = maybe_received {
-					request_repaint |= has_outstanding;
-					received_new = true;
-					match received {
-						Ok(()) => {
-							ui_state.eval_errors.remove(&entry.id);
+			let (has_outstanding, maybe_received) = ui_state.multi_draw_buffer_scheduler.try_receive();
+			if let Some(received) = maybe_received {
+        received_new = true;
+				for r in received {
+					match r {
+						Ok((id, draw_buffer)) => {
+							if let Some(entry) = get_entry_mut_by_id(&mut state.entries, id) {
+								entry.draw_buffer = draw_buffer;
+							}
 						},
 						Err((id, error)) => {
-							ui_state.eval_errors.insert(id, error);
+							if let Some(entry) = get_entry_mut_by_id(&mut state.entries, id) {
+								ui_state.eval_errors.insert(id, error);
+								entry.draw_buffer.clear();
+							}
 						},
 					}
 				}
-			});
-			if request_repaint {
+			}
+
+			if has_outstanding {
 				ui.ctx().request_repaint();
 			}
 		}
@@ -646,22 +647,27 @@ pub fn graph_panel<T: EvalexprFloat>(
 			ui_state.eval_errors.clear();
 			let plot_params = entry::PlotParams::new(ui_state);
 			let main_context = Arc::new(state.ctx.clone());
-			for (i, entry) in state.entries.iter_mut().enumerate() {
-				schedule_entry_create_plot_elements(
-					entry,
-					i as u32 * 1000,
-					ui_state.selected_plot_line.map(|(id, _)| id),
-					&main_context,
-					&plot_params,
-					&state.thread_local_context,
-				);
-			}
+			schedule_create_plot_elements(
+				&mut state.entries,
+				&mut ui_state.multi_draw_buffer_scheduler,
+				ui_state.selected_plot_line.map(|(id, _)| id),
+				&main_context,
+				&plot_params,
+				&state.thread_local_context,
+			);
+			// for (i, entry) in state.entries.iter_mut().enumerate() {
+			// 	schedule_entry_create_plot_elements(
+			// 		entry,
+			// 		i as u32 * 1000,
+			// 		ui_state.selected_plot_line.map(|(id, _)| id),
+			// 		&main_context,
+			// 		&plot_params,
+			// 		&state.thread_local_context,
+			// 	);
+			// }
 			ui_state.force_process_elements = true;
 		} else {
-			let mut request_repaint = false;
-			for_each_entry_mut(&mut state.entries, |entry| {
-				request_repaint |= entry.draw_buffer_scheduler.schedule_deffered_if_idle();
-			});
+			let mut request_repaint = ui_state.multi_draw_buffer_scheduler.schedule_deffered_if_idle();
 			if request_repaint {
 				ui.ctx().request_repaint();
 			}
@@ -1003,4 +1009,19 @@ fn for_each_entry_mut<T: EvalexprFloat>(entries: &mut [Entry<T>], mut f: impl Fn
 			f(entry);
 		}
 	}
+}
+
+fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: u64) -> Option<&mut Entry<T>> {
+	for entry in entries.iter_mut() {
+		if entry.id == id {
+			return Some(entry);
+		} else if let EntryType::Folder { entries } = &mut entry.ty {
+			for sub_entry in entries.iter_mut() {
+				if sub_entry.id == id {
+					return Some(sub_entry);
+				}
+			}
+		}
+	}
+	None
 }
