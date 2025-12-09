@@ -25,11 +25,10 @@ mod widgets;
 
 use app_ui::GraphConfig;
 use custom_rendering::fan_fill_renderer::FanFillRenderer;
-use draw_buffer::DrawBufferRC;
+use custom_rendering::mesh_renderer::init_mesh_renderer;
+use draw_buffer::{DrawBufferRC, MultiDrawBufferScheduler, ProcessedShapes};
 use entry::{ConstantType, Entry, EntryType, PointEntry};
 use marching_squares::MarchingSquaresCache;
-use custom_rendering::mesh_renderer::init_mesh_renderer;
-use draw_buffer::{ ProcessedShapes};
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -50,8 +49,7 @@ use eframe::wasm_bindgen::{self, prelude::*};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use crate::draw_buffer::{DrawBufferScheduler, MultiDrawBufferScheduler};
-
+use crate::app_ui::DebugInfo;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -190,9 +188,10 @@ struct UiState {
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	full_frame_scope: Option<puffin::ProfilerScope>,
 
-	custom_renderer:     Option<FanFillRenderer>,
-	prev_plot_transform: Option<egui_plot::PlotTransform>,
-  multi_draw_buffer_scheduler:MultiDrawBufferScheduler,
+	custom_renderer:             Option<FanFillRenderer>,
+	prev_plot_transform:         Option<egui_plot::PlotTransform>,
+	multi_draw_buffer_scheduler: MultiDrawBufferScheduler,
+  debug_info:                   DebugInfo,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -314,7 +313,8 @@ impl Application {
 				thread_local_context: Arc::new(ThreadLocal::new()),
 			},
 			ui: UiState {
-        multi_draw_buffer_scheduler:MultiDrawBufferScheduler::new(),
+        debug_info: DebugInfo::new(),
+				multi_draw_buffer_scheduler: MultiDrawBufferScheduler::new(),
 				force_process_elements: true,
 				processed_shapess: ProcessedShapes::new(),
 				custom_renderer: FanFillRenderer::new(cc),

@@ -4,7 +4,6 @@ use core::ptr;
 use core::time::Duration;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::sync::{Mutex, mpsc};
-use std::thread;
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
@@ -12,13 +11,11 @@ use eframe::egui_wgpu;
 use eframe::epaint::TessellationOptions;
 use egui_plot::{Line, PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
 use evalexpr::EvalexprFloat;
-use rustc_hash::FxHashMap;
 use thread_local::ThreadLocal;
 
 use crate::custom_rendering::fan_fill_renderer::{FillRule, TriangleFanVertex};
 use crate::custom_rendering::mesh_renderer::MeshCallback;
 use crate::entry::{Entry, EntryType};
-use crate::fair_draining_semaphore::DrainingSemaphore;
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
@@ -89,7 +86,7 @@ impl ProcessedShapes {
 	}
 	pub fn process<T: EvalexprFloat>(
 		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], plot_params: &crate::entry::PlotParams,
-		eval_errors: &mut FxHashMap<u64, String>, selected_plot_line: Option<Id>,
+		selected_plot_line: Option<Id>,
 	) {
 		let ppp = ui.pixels_per_point();
 		if self.tes_pixels_per_point != ppp {
@@ -1133,8 +1130,8 @@ impl MultiDrawBufferScheduler {
 		Self { scheduled: false, average: (Duration::ZERO, 0), deferred: None, sx, rx }
 	}
 	pub fn schedule(&mut self, work: Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send + 'static>>) {
-		let started = Instant::now();
-		let scheduled_calc = ScheduledCalc { timestamp: started };
+		// let started = Instant::now();
+		// let scheduled_calc = ScheduledCalc { timestamp: started };
 
 		if !self.scheduled {
 			self.spawn_as_latest(work);

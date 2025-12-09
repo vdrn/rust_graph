@@ -4,7 +4,7 @@ use crate::error::{expect_function_argument_amount, EvalexprResultValue};
 use crate::flat_node::{
 	eliminate_subexpressions, inline_functions, setup_jump_offsets, AdditionalArgs, ClosureNode, FlatOperator, MapOp
 };
-use crate::{optimize_flat_node, EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
+use crate::{EvalexprFloat, EvalexprResult, FlatNode, HashMapContext, IStr, Stack, Value};
 
 #[derive(Clone, PartialEq, Debug)]
 /// Struct that represents expression function

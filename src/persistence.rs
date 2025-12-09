@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
-use crate::draw_buffer::{DrawBuffer, DrawBufferScheduler};
+use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
 	EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
@@ -331,11 +331,11 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 	for entry in ser.entries {
 		*id += 1;
 		let entry_deserialized = Entry {
-			id:                    *id,
-			active:                entry.visible,
-			color:                 entry.color,
+			id:          *id,
+			active:      entry.visible,
+			color:       entry.color,
 			draw_buffer: DrawBuffer::empty(),
-			ty:                    match entry.ty {
+			ty:          match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
 					ranged,
@@ -421,7 +421,7 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					EntryType::Folder { entries }
 				},
 			},
-			name:                  entry.name,
+			name:        entry.name,
 		};
 
 		result.push(entry_deserialized);

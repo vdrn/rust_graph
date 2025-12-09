@@ -5,7 +5,7 @@ use eframe::egui::{
 	self, Align, Area, Button, CollapsingHeader, DragValue, Grid, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
 };
 use eframe::epaint::Color32;
-use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, VLine};
+use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, PlotUi, VLine};
 use evalexpr::EvalexprFloat;
 use serde::{Deserialize, Serialize};
 
@@ -427,12 +427,19 @@ pub fn graph_panel<T: EvalexprFloat>(
 			}
 		}
 
+		if ui.input(|i| i.key_pressed(egui::Key::F9)) {
+			ui_state.debug_info.pause_redraw = !ui_state.debug_info.pause_redraw;
+		}
+		if ui.input(|i| i.key_pressed(egui::Key::F10)) {
+			ui_state.debug_info.draw = !ui_state.debug_info.draw;
+		}
+
 		let mut received_new = false;
 		{
 			scope!("receive_draw_buffers");
 			let (has_outstanding, maybe_received) = ui_state.multi_draw_buffer_scheduler.try_receive();
 			if let Some(received) = maybe_received {
-        received_new = true;
+				received_new = true;
 				for r in received {
 					match r {
 						Ok((id, draw_buffer)) => {
@@ -462,7 +469,6 @@ pub fn graph_panel<T: EvalexprFloat>(
 				ui,
 				&mut state.entries,
 				&plot_params,
-				&mut ui_state.eval_errors,
 				ui_state.selected_plot_line.map(|(id, _)| id),
 			);
 			ui.ctx().request_repaint();
@@ -619,6 +625,8 @@ pub fn graph_panel<T: EvalexprFloat>(
 			for draw_text in ui_state.processed_shapess.draw_texts.iter() {
 				plot_ui.add(draw_text.text.clone());
 			}
+
+			ui_state.debug_info.draw(plot_ui);
 		});
 
 		if plot_res.response.double_clicked() {
@@ -643,18 +651,22 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		if force_create_elements || changed {
 			// println!("Scheduling element creation because force {force_create_elements} changed {changed}");
-			scope!("schedule_entry_create_plot_elements");
-			ui_state.eval_errors.clear();
-			let plot_params = entry::PlotParams::new(ui_state);
-			let main_context = Arc::new(state.ctx.clone());
-			schedule_create_plot_elements(
-				&mut state.entries,
-				&mut ui_state.multi_draw_buffer_scheduler,
-				ui_state.selected_plot_line.map(|(id, _)| id),
-				&main_context,
-				&plot_params,
-				&state.thread_local_context,
-			);
+			if !ui_state.debug_info.pause_redraw {
+				ui_state.debug_info.plot_bounds = Some(*plot_res.transform.bounds());
+				scope!("schedule_entry_create_plot_elements");
+				ui_state.eval_errors.clear();
+				let plot_params = entry::PlotParams::new(ui_state);
+				let main_context = Arc::new(state.ctx.clone());
+				schedule_create_plot_elements(
+					&mut state.entries,
+					&mut ui_state.multi_draw_buffer_scheduler,
+					ui_state.selected_plot_line.map(|(id, _)| id),
+					&main_context,
+					&plot_params,
+					&state.thread_local_context,
+				);
+			}
+
 			// for (i, entry) in state.entries.iter_mut().enumerate() {
 			// 	schedule_entry_create_plot_elements(
 			// 		entry,
@@ -667,7 +679,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			// }
 			ui_state.force_process_elements = true;
 		} else {
-			let mut request_repaint = ui_state.multi_draw_buffer_scheduler.schedule_deffered_if_idle();
+			let request_repaint = ui_state.multi_draw_buffer_scheduler.schedule_deffered_if_idle();
 			if request_repaint {
 				ui.ctx().request_repaint();
 			}
@@ -999,18 +1011,6 @@ at which point they are fully opaque.";
 	}
 }
 
-fn for_each_entry_mut<T: EvalexprFloat>(entries: &mut [Entry<T>], mut f: impl FnMut(&mut Entry<T>)) {
-	for entry in entries.iter_mut() {
-		if let EntryType::Folder { entries } = &mut entry.ty {
-			for entry in entries.iter_mut() {
-				f(entry);
-			}
-		} else {
-			f(entry);
-		}
-	}
-}
-
 fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: u64) -> Option<&mut Entry<T>> {
 	for entry in entries.iter_mut() {
 		if entry.id == id {
@@ -1024,4 +1024,51 @@ fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: u64) -> O
 		}
 	}
 	None
+}
+
+pub struct DebugInfo {
+	plot_bounds:  Option<PlotBounds>,
+	pause_redraw: bool,
+	draw:         bool,
+}
+impl DebugInfo {
+	pub fn new() -> Self { Self { plot_bounds: None, pause_redraw: false, draw: false } }
+	fn draw(&self, plot_ui: &mut PlotUi) {
+		let _bounds = plot_ui.plot_bounds();
+		if !self.draw {
+			return;
+		}
+		let Some(last_bounds) = self.plot_bounds else {
+			return;
+		};
+		let reso = 300;
+		let width = last_bounds.width();
+		let height = last_bounds.height();
+		let cgrid_w = width / reso as f64;
+		let cgrid_h = height / reso as f64;
+		for i in 0..=reso {
+			let x = last_bounds.min()[0] + cgrid_w * i as f64;
+			let y = last_bounds.min()[1] + cgrid_h * i as f64;
+			plot_ui.hline(HLine::new("", y).color(Color32::from_gray(150)));
+			plot_ui.vline(VLine::new("", x).color(Color32::from_gray(150)));
+
+			let x_mid = last_bounds.min()[0] + cgrid_w * i as f64 + cgrid_w * 0.5;
+			let y_mid = last_bounds.min()[1] + cgrid_h * i as f64 + cgrid_h * 0.5;
+			plot_ui.hline(HLine::new("", y_mid).width(0.6).color(Color32::from_gray(100)));
+			plot_ui.vline(VLine::new("", x_mid).width(0.6).color(Color32::from_gray(100)));
+
+			// if x >= bounds.min()[0] && x <= bounds.max()[0] {
+			// 	let y = bounds.min()[1];
+			// 	plot_ui.text(
+			// 		Text::new("", PlotPoint::new(x, y), format!("{x:.2}")).color(Color32::from_gray(100)),
+			// 	);
+			// }
+			// if y >= bounds.min()[1] && y <= bounds.max()[1] {
+			// let x = bounds.min()[0];
+			// plot_ui.text(
+			// Text::new("", PlotPoint::new(x, y), format!("{y:.2}")).color(Color32::from_gray(100)),
+			// );
+			// }
+		}
+	}
 }

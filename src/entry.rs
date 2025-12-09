@@ -5,7 +5,6 @@ use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr
 use serde::{Deserialize, Serialize};
 
 use crate::{custom_rendering::fan_fill_renderer::FillRule, draw_buffer::DrawBuffer};
-use crate::draw_buffer::DrawBufferScheduler;
 
 mod drag_point;
 mod entry_plot_elements;

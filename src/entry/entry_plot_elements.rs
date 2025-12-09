@@ -9,7 +9,7 @@ use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashM
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
+	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
 };
 use crate::entry::{
 	COLORS, ClonedEntry, DragPoint, Entry, EntryType, EquationType, NUM_COLORS, PointsType, f64_to_value
@@ -205,7 +205,8 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 					}),
 				});
 			};
-			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+			// let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 255);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
@@ -1251,7 +1252,6 @@ fn draw_implicit<T: EvalexprFloat>(
 	//: 146_327
 
 	let params = marching_squares::MarchingSquaresParams {
-		id,
 		resolution,
 		bounds_min: mins,
 		bounds_max: maxs,

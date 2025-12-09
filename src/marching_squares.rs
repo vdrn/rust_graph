@@ -1,6 +1,5 @@
 use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use arrayvec::ArrayVec;
 use eframe::egui::{Color32, Pos2};
@@ -12,7 +11,6 @@ use rayon::iter::{
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::draw_buffer::EXECUTION_SEMAPHORE;
 use crate::scope;
 
 #[repr(align(128))]
@@ -68,7 +66,6 @@ pub enum MarchingSquaresFill {
 	Positive,
 }
 pub struct MarchingSquaresParams {
-  pub id:u64,
   pub eps:f64,
 	pub resolution: usize,
 	pub bounds_min: (f64, f64),
@@ -448,6 +445,7 @@ fn is_edge_discontinuous(
 	val_start: f64, val_mid: f64, val_end: f64, start_param: (f64, f64), end_param: (f64, f64),
 	mut eval: impl FnMut(f64, f64) -> Option<f64>,
 ) -> bool {
+  // return false;
 	// Only check if there's a sign change across the full edge
 	if val_start.signum() == val_end.signum() {
 		return false;
@@ -458,7 +456,7 @@ fn is_edge_discontinuous(
 	let right_change = (val_end - val_mid).abs();
 	let max_half = left_change.max(right_change);
 
-	const TOLERANCE: f64 = 0.95;
+	const TOLERANCE: f64 = 1.0;
 	if max_half < TOLERANCE * abs_change {
 		return false;
 	}
@@ -770,7 +768,7 @@ fn process_subcell_mesh(
 				let v3 = (x, y);
 				let v4 = (x, y + dy);
 				let p_top = interpolate_edge(Edge::Top, x, y, dx, dy, &vals);
-				let v5 = (p_top.0, p_top.1);
+				let v5 = p_top;
 				mesh_builder.add_pentagon(v1, v2, v3, v4, v5);
 			}
 		},
@@ -844,15 +842,6 @@ fn process_subcell_mesh(
 			let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
 
 			if is_positive {
-				// top-left, interp(top), interp(right), bot-right, interp(bot), interp(left)
-				let v1 = (x, y + dy);
-				let v2 = (p_top.0, p_top.1);
-				let v3 = (p_right.0, p_right.1);
-				let v4 = (x + dx, y);
-				let v5 = (p_bot.0, p_bot.1);
-				let v6 = (p_left.0, p_left.1);
-				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
-			} else {
 				// bot-left, interp(left), interp(bot)
 				let v1 = (x, y);
 				let v2 = (p_left.0, p_left.1);
@@ -863,6 +852,15 @@ fn process_subcell_mesh(
 				let v5 = (p_right.0, p_right.1);
 				let v6 = (p_top.0, p_top.1);
 				mesh_builder.add_triangle(v4, v5, v6);
+			} else {
+				// top-left, interp(top), interp(right), bot-right, interp(bot), interp(left)
+				let v1 = (x, y + dy);
+				let v2 = (p_top.0, p_top.1);
+				let v3 = (p_right.0, p_right.1);
+				let v4 = (x + dx, y);
+				let v5 = (p_bot.0, p_bot.1);
+				let v6 = (p_left.0, p_left.1);
+				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
 			}
 		},
 		0b1010 => {
@@ -873,15 +871,6 @@ fn process_subcell_mesh(
 			let p_left = interpolate_edge(Edge::Left, x, y, dx, dy, &vals);
 
 			if is_positive {
-				// bot-left, interp(bot), interp(right), top-right, interp(top), interp(left)
-				let v1 = (x, y);
-				let v2 = (p_bot.0, p_bot.1);
-				let v3 = (p_right.0, p_right.1);
-				let v4 = (x + dx, y + dy);
-				let v5 = (p_top.0, p_top.1);
-				let v6 = (p_left.0, p_left.1);
-				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
-			} else {
 				// bot-right, interp(bot), interp(right)
 				let v1 = (x + dx, y);
 				let v2 = (p_bot.0, p_bot.1);
@@ -892,6 +881,15 @@ fn process_subcell_mesh(
 				let v5 = (p_top.0, p_top.1);
 				let v6 = (p_left.0, p_left.1);
 				mesh_builder.add_triangle(v4, v5, v6);
+			} else {
+				// bot-left, interp(bot), interp(right), top-right, interp(top), interp(left)
+				let v1 = (x, y);
+				let v2 = (p_bot.0, p_bot.1);
+				let v3 = (p_right.0, p_right.1);
+				let v4 = (x + dx, y + dy);
+				let v5 = (p_top.0, p_top.1);
+				let v6 = (p_left.0, p_left.1);
+				mesh_builder.add_hexagon(v1, v2, v3, v4, v5, v6);
 			}
 		},
 		_ => {
