@@ -8,7 +8,9 @@ use smallvec::SmallVec;
 
 use crate::builtins::is_builtin;
 use crate::entry::entry_plot_elements::eval_point2;
-use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType};
+use crate::entry::{
+	DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType, ProcessedColors, value_to_color
+};
 use crate::scope;
 
 pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {
@@ -85,6 +87,7 @@ fn prepare_entry<T: EvalexprFloat>(
 		EntryType::Folder { .. } => {
 			//handled in outer scope
 		},
+		EntryType::Color(_color) => {},
 		EntryType::Points { points_ty, identifier, .. } => {
 			*identifier = istr(entry.name.as_str().trim());
 
@@ -348,7 +351,7 @@ fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 }
 pub fn optimize_entries<T: EvalexprFloat>(
 	root_entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>,
-	optimization_errors: &mut FxHashMap<u64, String>,
+	processed_colors: &mut ProcessedColors<T>, optimization_errors: &mut FxHashMap<u64, String>,
 ) {
 	scope!("optimizing_pass");
 
@@ -365,6 +368,15 @@ pub fn optimize_entries<T: EvalexprFloat>(
 				match &node.ty {
 					EntryType::Function { func, .. } => {
 						if let Some(node) = func.node.as_ref() {
+							for ident in node.iter_identifiers() {
+								if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
+									depends_on.push(d.identifier);
+								}
+							}
+						}
+					},
+					EntryType::Color(color) => {
+						if let Some(node) = color.expr.node.as_ref() {
 							for ident in node.iter_identifiers() {
 								if let Some(d) = functions.iter().find(|e| e.identifier.to_str() == ident) {
 									depends_on.push(d.identifier);
@@ -421,8 +433,8 @@ pub fn optimize_entries<T: EvalexprFloat>(
 				} else {
 					&mut root_entries[functions[i].idx]
 				};
-				if let Err((id, e)) = inline_and_fold_entry(entry, ctx) {
-					optimization_errors.insert(id, e);
+				if let Err(e) = inline_and_fold_entry(entry, ctx, processed_colors) {
+					optimization_errors.insert(entry.id, e);
 				} else {
 					optimization_errors.remove(&entry.id);
 				}
@@ -473,6 +485,12 @@ fn add_entries<T: EvalexprFloat>(root_idx: Option<usize>, entries: &[Entry<T>], 
 			EntryType::Folder { entries } => {
 				add_entries(Some(i), entries, graph);
 			},
+      EntryType::Color(color) => {
+				let depends_on = if color.expr.node.is_some() { Some(smallvec![]) } else { None };
+        graph.push(GraphEntry { identifier: istr_empty(), root_idx, idx: i, depends_on, prio: 2 });
+
+
+      },
 			EntryType::Points { identifier, .. } => {
 				let depends_on = Some(smallvec![]);
 				graph.push(GraphEntry { identifier: *identifier, root_idx, idx: i, depends_on, prio: 1 });
@@ -495,33 +513,47 @@ fn get_entry<T: EvalexprFloat>(
 	match &entry.ty {
 		EntryType::Function { .. } => Some(entry),
 		EntryType::Points { .. } => Some(entry),
+		EntryType::Color { .. } => Some(entry),
 		// EntryType::Integral { func, .. } => func.node.as_ref(),
 		_ => None,
 	}
 }
 
 fn inline_and_fold_entry<T: EvalexprFloat>(
-	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>,
-) -> Result<(), (u64, String)> {
+	entry: &mut Entry<T>, ctx: &mut evalexpr::HashMapContext<T>, processed_colors: &mut ProcessedColors<T>,
+) -> Result<(), String> {
 	match &mut entry.ty {
+		EntryType::Color(color) => {
+			let Some(func) = &color.expr.node else {
+				return Ok(());
+			};
+			let inlined_node = evalexpr::optimize_flat_node(func, ctx).map_err(|e| e.to_string())?;
+			let expr_function =
+				ExpressionFunction::new(inlined_node, &[istr("x"), istr("y"), istr("v")], &mut Some(ctx))
+					.map_err(|e| e.to_string())?;
+			if let Some(value) = expr_function.as_constant() {
+				processed_colors.add_constant(entry.id, value_to_color(value)?);
+			} else {
+				processed_colors.add_function(entry.id, expr_function);
+			}
+		},
 		EntryType::Function { func, identifier, .. } => {
 			func.expr_function = None;
 
 			if ctx.has_value(*identifier) {
 				let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
 				*identifier = istr_empty();
-				return Err((entry.id, err));
+				return Err(err);
 			}
 
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
 			// println!("node: {identifier}: {:#?}", node);
-			let inlined_node =
-				evalexpr::optimize_flat_node(node, ctx).map_err(|e| (entry.id, e.to_string()))?;
+			let inlined_node = evalexpr::optimize_flat_node(node, ctx).map_err(|e| e.to_string())?;
 			// println!("inlined node {identifier}: {:#?}", inlined_node);
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
-				.map_err(|e| (entry.id, e.to_string()))?;
+				.map_err(|e| e.to_string())?;
 			// println!("expr_func node: {identifier} {:#?}", expr_function);
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
@@ -543,7 +575,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 								p.val = None;
 							},
 							Err(e) => {
-								return Err((entry.id, e));
+								return Err(e);
 							},
 						}
 					}
@@ -552,19 +584,15 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 					val.clear();
 					if let Some(node) = &expr.node {
 						let eval_result =
-							node.eval_with_context(&mut stack, ctx).map_err(|e| (entry.id, e.to_string()))?;
+							node.eval_with_context(&mut stack, ctx).map_err(|e| e.to_string())?;
 						match eval_result {
 							Value::Float(f) => {
-								return Err((
-									entry.id,
-									format!("Expected a point or list of points, got a float: {}", f),
-								));
+								return Err(format!("Expected a point or list of points, got a float: {}", f));
 							},
 							Value::Boolean(b) => {
-								return Err((
-									entry.id,
+								return Err(
 									format!("Expected a point or list of points, got a boolean: {}", b),
-								));
+								);
 							},
 							Value::Empty => {},
 							Value::Float2(x, y) => {
@@ -599,7 +627,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 				if ctx.has_value(*identifier) {
 					let err = format!("Cannot use identifier {} as name: it is already defined.", identifier);
 					*identifier = istr_empty();
-					return Err((entry.id, err));
+					return Err(err);
 				}
 
 				match points_ty {
@@ -634,7 +662,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 				}
 			}
 			if let Some(warning) = warning {
-				return Err((entry.id, warning));
+				return Err(warning);
 			}
 		},
 		_ => {},

@@ -329,12 +329,12 @@ pub struct FlatNode<F: EvalexprFloat> {
 impl<F: EvalexprFloat> FlatNode<F> {
 	pub(crate) fn ops_len(&self) -> usize { self.ops.len() }
 	/// Returns the constant value of this node it it only contains a single PushConst operator.
-	pub fn as_constant(&self) -> Option<Value<F>> {
+	pub fn as_constant(&self) -> Option<&Value<F>> {
     // Closure inlining can produce nodes that are only multiple PushConsts
     // (Because after folding the closure we dont remove parents local vars)
     if self.ops.len() == 1 {
       if let FlatOperator::PushConst { value } = &self.ops[0] {
-        return Some(value.clone());
+        return Some(value);
       }
     }
 		// if !self.ops.is_empty() {

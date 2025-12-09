@@ -7,12 +7,12 @@ use eframe::egui::{
 	self, Align, Button, Color32, DragValue, Label, PopupCloseBehavior, RichText, Slider, TextEdit, TextWrapMode, Widget, vec2
 };
 
-use evalexpr::{EvalexprFloat, HashMapContext};
+use evalexpr::{EvalexprFloat, HashMapContext, Stack};
 
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, RESERVED_NAMES
+	COLORS, ConstantType, DragPoint, Entry, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
 };
 use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
@@ -26,7 +26,10 @@ pub struct EditEntryResult {
 	pub parsed:              bool,
 }
 pub fn entry_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>,
+  processed_colors: &ProcessedColors<T>,
+
+  entry: &mut Entry<T>, clear_cache: bool,
 ) -> EditEntryResult {
 	let mut result = EditEntryResult {
 		needs_recompilation: false,
@@ -114,7 +117,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 		});
 		// entry edit
 		ui.horizontal(|ui| {
-			entry_type_ui(ui, ctx, entry, clear_cache, prev_visible, &mut result);
+			entry_type_ui(ui, ctx,processed_colors, entry, clear_cache, prev_visible, &mut result);
 		});
 	});
 
@@ -230,6 +233,7 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) -> boo
 				},
 				EntryType::Constant { .. } => {},
 				EntryType::Folder { .. } => {},
+				EntryType::Color(_) => {},
 			}
 		})
 		.0
@@ -237,8 +241,8 @@ fn entry_style<T: EvalexprFloat>(ui: &mut egui::Ui, entry: &mut Entry<T>) -> boo
 	changed
 }
 fn entry_type_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
-	result: &mut EditEntryResult,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>, processed_colors: &ProcessedColors<T>, entry: &mut Entry<T>,
+	clear_cache: bool, prev_active: bool, result: &mut EditEntryResult,
 ) {
 	match &mut entry.ty {
 		EntryType::Folder { .. } => {
@@ -257,7 +261,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 				}
 
 				ui.vertical(|ui| {
-					if let Some(computed_const) = func.computed_const() {
+					if let Some(computed_const) = func.computed_const().cloned() {
 						ui.with_layout(egui::Layout::right_to_left(Align::LEFT), |ui| {
 							Label::new(computed_const.human_display(func.display_rational))
 								.wrap_mode(TextWrapMode::Truncate)
@@ -677,6 +681,30 @@ fn entry_type_ui<T: EvalexprFloat>(
 				}
 
 				// *value = T::from_f64(v);
+			});
+		},
+		EntryType::Color(color) => {
+			ui.horizontal(|ui| {
+				match expr_ui(&mut color.expr, ui, "(255,0,0)", None, clear_cache, true) {
+					Ok(changed) => {
+						result.parsed |= changed;
+						result.needs_recompilation |= changed;
+					},
+					Err(e) => {
+						result.error = Some(format!("Parsing error: {e}"));
+					},
+				}
+				if let Some(color) = processed_colors.find_color(entry.id) {
+					let mut stack = Stack::<T>::new();
+					match  color.get_color32(&mut stack, ctx, T::ZERO, T::ZERO, T::ZERO) {
+            Ok(color) => {
+						ui.label(RichText::new("    ").background_color(color));
+            }
+            Err(e) => {
+              result.error = Some(e);
+            }
+          }
+				}
 			});
 		},
 	}

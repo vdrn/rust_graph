@@ -50,6 +50,7 @@ use eframe::wasm_bindgen::{self, prelude::*};
 pub use wasm_bindgen_rayon::init_thread_pool;
 
 use crate::app_ui::DebugInfo;
+use crate::entry::ProcessedColors;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -117,6 +118,32 @@ impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
 		}
 	}
 }
+#[derive(Serialize, Deserialize)]
+struct IdGenerator {
+	next_id: u64,
+}
+impl IdGenerator {
+	fn new() -> Self { Self { next_id: 0 } }
+	fn next(&mut self) -> u64 {
+		self.next_id += 1;
+    self.next_id
+	}
+}
+
+struct GraphState<T: EvalexprFloat> {
+	entries:              Vec<Entry<T>>,
+	saved_graph_config:   GraphConfig,
+	current_graph_config: GraphConfig,
+	name:                 String,
+	id_generator:         IdGenerator,
+}
+struct State2<T: EvalexprFloat> {
+	graph_state: GraphState<T>,
+	ctx:         evalexpr::HashMapContext<T>,
+	clear_cache:          bool,
+	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
+	processed_colors:     ProcessedColors<T>,
+}
 
 struct State<T: EvalexprFloat> {
 	entries:              Vec<Entry<T>>,
@@ -125,6 +152,7 @@ struct State<T: EvalexprFloat> {
 	name:                 String,
 	clear_cache:          bool,
 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
+	processed_colors:     ProcessedColors<T>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -151,47 +179,58 @@ impl Default for AppConfig {
 }
 
 struct UiState {
-	processed_shapess: ProcessedShapes,
 	conf:              AppConfig,
-	next_id:           u64,
-	plot_bounds:       PlotBounds,
-	graph_config:      GraphConfig,
 
-	// data_aspect: f32,
+	// cross frame signals
 	reset_graph:            bool,
 	force_process_elements: bool,
 
+  // UI 
+	showing_help: bool,
+  // UI - Persistance
 	cur_dir:             String,
-	serialization_error: Option<String>,
 	serialized_states:   BTreeMap<String, String>,
+	file_to_remove:       Option<String>,
 
+  // Errors
+	serialization_error: Option<String>,
 	parsing_errors:      FxHashMap<u64, String>,
 	prepare_errors:      FxHashMap<u64, String>,
 	optimization_errors: FxHashMap<u64, String>,
 	eval_errors:         FxHashMap<u64, String>,
 
+  // Graph UI interactions
 	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<draw_buffer::PointInteraction>,
 	plot_mouese_pos:      Option<egui::Pos2>,
 	showing_custom_label: bool,
 
-	f32_epsilon:          f64,
-	f64_epsilon:          f64,
+  // URL
 	permalink_string:     String,
 	scheduled_url_update: bool,
 	last_url_update:      f64,
-	file_to_remove:       Option<String>,
 
+
+
+
+  // Drawing
+	processed_shapes: ProcessedShapes,
 	draw_buffers: Box<ThreadLocal<DrawBufferRC>>,
-	showing_help: bool,
+	fan_fill_renderer:             Option<FanFillRenderer>,
+	multi_draw_buffer_scheduler: MultiDrawBufferScheduler,
 
+  // Misc
+	debug_info:                  DebugInfo,
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 	full_frame_scope: Option<puffin::ProfilerScope>,
 
-	custom_renderer:             Option<FanFillRenderer>,
+  // TODO: move to graph state
+	plot_bounds:       PlotBounds,
 	prev_plot_transform:         Option<egui_plot::PlotTransform>,
-	multi_draw_buffer_scheduler: MultiDrawBufferScheduler,
-  debug_info:                   DebugInfo,
+
+  // todo: remove
+	graph_config:      GraphConfig,
+	next_id:           u64,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
@@ -302,6 +341,7 @@ impl Application {
 				// points_cache: PointsCache::default(),
 				clear_cache:          true,
 				thread_local_context: Arc::new(ThreadLocal::new()),
+				processed_colors:     ProcessedColors::new(),
 			},
 			state_f64: State {
 				entries:              entries_d,
@@ -311,13 +351,14 @@ impl Application {
 				// points_cache: PointsCache::default(),
 				clear_cache:          true,
 				thread_local_context: Arc::new(ThreadLocal::new()),
+				processed_colors:     ProcessedColors::new(),
 			},
 			ui: UiState {
-        debug_info: DebugInfo::new(),
+				debug_info: DebugInfo::new(),
 				multi_draw_buffer_scheduler: MultiDrawBufferScheduler::new(),
 				force_process_elements: true,
-				processed_shapess: ProcessedShapes::new(),
-				custom_renderer: FanFillRenderer::new(cc),
+				processed_shapes: ProcessedShapes::new(),
+				fan_fill_renderer: FanFillRenderer::new(cc),
 				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 				full_frame_scope: None,
 				// animating: Arc::new(AtomicBool::new(true)),
@@ -341,8 +382,6 @@ impl Application {
 				showing_custom_label: false,
 				dragging_point_i: None,
 				plot_mouese_pos: None,
-				f32_epsilon: f32::EPSILON as f64,
-				f64_epsilon: f64::EPSILON,
 				permalink_string: String::new(),
 				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),

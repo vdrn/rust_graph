@@ -4,7 +4,8 @@ use eframe::egui::{self, Color32};
 use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr, Stack, Value, istr_empty};
 use serde::{Deserialize, Serialize};
 
-use crate::{custom_rendering::fan_fill_renderer::FillRule, draw_buffer::DrawBuffer};
+use crate::custom_rendering::fan_fill_renderer::FillRule;
+use crate::draw_buffer::DrawBuffer;
 
 mod drag_point;
 mod entry_plot_elements;
@@ -45,11 +46,11 @@ pub const COLORS: &[Color32; 20] = &[
 pub const NUM_COLORS: usize = COLORS.len();
 
 pub struct Entry<T: EvalexprFloat> {
-	pub id:                    u64,
-	pub name:                  String,
-	pub active:                bool,
-	pub color:                 usize,
-	pub ty:                    EntryType<T>,
+	pub id:          u64,
+	pub name:        String,
+	pub active:      bool,
+	pub color:       usize,
+	pub ty:          EntryType<T>,
 	pub draw_buffer: DrawBuffer,
 }
 pub struct ClonedEntry<T: EvalexprFloat> {
@@ -76,11 +77,11 @@ impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
 impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
 	fn clone(&self) -> Self {
 		Self {
-			id:                    self.id,
-			name:                  self.name.clone(),
-			active:                self.active,
-			color:                 self.color,
-			ty:                    self.ty.clone(),
+			id:          self.id,
+			name:        self.name.clone(),
+			active:      self.active,
+			color:       self.color,
+			ty:          self.ty.clone(),
 			draw_buffer: DrawBuffer::empty(),
 		}
 	}
@@ -123,7 +124,7 @@ impl<T: EvalexprFloat> Default for Expr<T> {
 	}
 }
 impl<T: EvalexprFloat> Expr<T> {
-	fn computed_const(&self) -> Option<Value<T>> {
+	fn computed_const(&self) -> Option<&Value<T>> {
 		let Some(node) = &self.node else { return None };
 		if node.as_constant().is_some() {
 			// if unoptimized node is constant, no need to display it
@@ -192,12 +193,18 @@ pub enum EntryType<T: EvalexprFloat> {
 	},
 	Points {
 		identifier: IStr,
-		points_ty:     PointsType<T>,
+		points_ty:  PointsType<T>,
 		style:      PointStyle<T>,
 	},
+	Color(ColorEntry<T>),
+
 	Folder {
 		entries: Vec<Entry<T>>,
 	},
+}
+#[derive(Clone, Debug)]
+pub struct ColorEntry<T: EvalexprFloat> {
+	pub expr: Expr<T>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
@@ -363,6 +370,7 @@ impl<T: EvalexprFloat> Entry<T> {
 					"📁"
 				}
 			},
+			EntryType::Color { .. } => "🎨",
 		}
 	}
 	pub fn symbol_with_name(&self) -> &'static str {
@@ -371,6 +379,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Constant { .. } => "⏵ Constant",
 			EntryType::Points { .. } => "◊ Points",
 			EntryType::Folder { .. } => "📂 Folder",
+			EntryType::Color { .. } => "🎨 Color",
 		}
 	}
 	pub fn name(&self) -> &'static str {
@@ -379,6 +388,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Constant { .. } => "Constant",
 			EntryType::Points { .. } => "Points",
 			EntryType::Folder { .. } => "Folder",
+			EntryType::Color { .. } => "Color",
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
@@ -431,9 +441,19 @@ impl<T: EvalexprFloat> Entry<T> {
 			draw_buffer: DrawBuffer::empty(),
 			ty: EntryType::Points {
 				identifier: istr_empty(),
-        points_ty: PointsType::Separate(vec![PointEntry::default()]),
+				points_ty:  PointsType::Separate(vec![PointEntry::default()]),
 				style:      PointStyle::default(),
 			},
+		}
+	}
+	pub fn new_color(id: u64) -> Self {
+		Self {
+			id,
+			color: id as usize % NUM_COLORS,
+			active: true,
+			name: String::new(),
+			draw_buffer: DrawBuffer::empty(),
+			ty: EntryType::Color(ColorEntry { expr: Expr::from_text("") }),
 		}
 	}
 	pub fn new_folder(id: u64) -> Self {
@@ -505,7 +525,7 @@ impl<T: EvalexprFloat> Default for PointEntry<T> {
 #[derive(Clone, Debug)]
 pub enum PointsType<T: EvalexprFloat> {
 	Separate(Vec<PointEntry<T>>),
-	SingleExpr { expr: Expr<T>, val:Vec<(T,T)> }
+	SingleExpr { expr: Expr<T>, val: Vec<(T, T)> },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -587,3 +607,59 @@ pub enum DragPoint {
 	SameConstantBothCoords(IStr),
 }
 
+pub struct ProcessedColors<T: EvalexprFloat> {
+	pub colors: Vec<(u64, ProcessedColor<T>)>,
+}
+impl<T: EvalexprFloat> ProcessedColors<T> {
+	pub fn new() -> Self { Self { colors: Vec::new() } }
+	pub fn add_constant(&mut self, id: u64, color: Color32) {
+		self.colors.push((id, ProcessedColor::Constant(color)));
+	}
+	pub fn add_function(&mut self, id: u64, func: ExpressionFunction<T>) {
+		self.colors.push((id, ProcessedColor::Function(func)));
+	}
+	pub fn clear(&mut self) { self.colors.clear(); }
+	pub fn find_color(&self, id: u64) -> Option<&ProcessedColor<T>> {
+		self.colors.iter().find(|(i, _)| *i == id).map(|(_, c)| c)
+	}
+}
+
+pub enum ProcessedColor<T: EvalexprFloat> {
+	Constant(Color32),
+	Function(ExpressionFunction<T>),
+}
+impl<T: EvalexprFloat> ProcessedColor<T> {
+	pub fn get_color32(
+		&self, stack: &mut Stack<T>, ctx: &HashMapContext<T>, x: T, y: T, v: T,
+	) -> Result<Color32, String> {
+		match self {
+			ProcessedColor::Constant(color) => Ok(*color),
+			ProcessedColor::Function(func) => value_to_color(
+				&func
+					.call(stack, ctx, &[Value::Float(x), Value::Float(y), Value::Float(v)])
+					.map_err(|e| e.to_string())?,
+			),
+		}
+	}
+}
+
+pub fn value_to_color<T: EvalexprFloat>(value: &Value<T>) -> Result<Color32, String> {
+	match value {
+		Value::Tuple(thin_vec) => match thin_vec.len() {
+			3 | 4 => {
+				let r = thin_vec[0].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
+				let g = thin_vec[1].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
+				let b = thin_vec[2].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
+				let a = (if thin_vec.len() == 4 {
+					thin_vec[3].as_float().map_err(|e| e.to_string())?.to_f64()
+				} else {
+					1.0
+				}) * 255.0;
+				return Ok(Color32::from_rgba_unmultiplied(r as u8, g as u8, b as u8, a as u8));
+			},
+			_ => {},
+		},
+		_ => {},
+	}
+	Err("Expected a 3 or 4 element tuple".to_string())
+}

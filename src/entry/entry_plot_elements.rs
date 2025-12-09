@@ -35,7 +35,7 @@ pub struct PlotParams {
 	pub invert_axes:         [bool; 2],
 }
 impl PlotParams {
-	pub fn new(ui_state: &UiState) -> Self {
+	pub fn new<T:EvalexprFloat>(ui_state: &UiState) -> Self {
 		let first_x = ui_state.plot_bounds.min()[0];
 		let last_x = ui_state.plot_bounds.max()[0];
 		let first_y = ui_state.plot_bounds.min()[1];
@@ -59,7 +59,7 @@ impl PlotParams {
 			step_size_y = plot_height / points_to_draw_y as f64;
 		}
 		Self {
-			eps: if ui_state.conf.use_f32 { ui_state.f32_epsilon } else { ui_state.f64_epsilon },
+			eps: T::EPSILON,
 			first_x,
 			last_x,
 			first_y,
@@ -73,14 +73,20 @@ impl PlotParams {
 	}
 }
 pub fn schedule_create_plot_elements<T: EvalexprFloat>(
-	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut MultiDrawBufferScheduler, 
+	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut MultiDrawBufferScheduler,
 	selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 ) {
 	let mut to_execute_async = vec![];
-	for (i, entry) in top_level_entries.iter_mut().enumerate(){
+	for (i, entry) in top_level_entries.iter_mut().enumerate() {
 		schedule_entry_create_plot_elements(
-			entry, &mut to_execute_async, i as u32 * 1000, selected_id, ctx, plot_params, tl_context,
+			entry,
+			&mut to_execute_async,
+			i as u32 * 1000,
+			selected_id,
+			ctx,
+			plot_params,
+			tl_context,
 		);
 	}
 	multi_scheduler.schedule(to_execute_async);
@@ -96,7 +102,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 		return;
 	}
 	match &mut entry.ty {
-		EntryType::Constant { .. } => {},
+		EntryType::Constant { .. }|EntryType::Color(_) => {},
 		EntryType::Folder { entries } => {
 			for (ei, entry) in entries.iter_mut().enumerate() {
 				schedule_entry_create_plot_elements(
@@ -147,7 +153,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 
 	let mut draw_buffer = DrawBuffer::empty();
 	match &entry.ty {
-		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Points { .. } => {
+		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Points { .. }| EntryType::Color{..} => {
 			unreachable!()
 		},
 		EntryType::Function {
@@ -205,8 +211,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 					}),
 				});
 			};
-			// let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
-			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 255);
+			let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
@@ -392,7 +397,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	let egui_id = Id::new(id);
 
 	match ty {
-		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Function { .. } => {
+		EntryType::Folder { .. } | EntryType::Constant { .. } | EntryType::Function { .. } | EntryType::Color{..} => {
 			unreachable!()
 		},
 		EntryType::Points { points_ty, style, .. } => {
@@ -756,6 +761,20 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 					// return Err((id, "Non-parametric function must return a number.".to_string()));
 				},
 				Err(e) => {
+					match &e {
+						EvalexprError::ExpectedTuple { actual }
+						| EvalexprError::ExpectedFloat2 { actual }
+						| EvalexprError::ExpectedBoolean { actual } => {
+							if actual == &f64_to_value::<T>(sampling_arg) {
+                // NOTE: function was probably not ment to be drawn (it expects its argument to be
+                // something else than Float).
+                // TODO: we need to handle these cases better, and at least display a note in the
+                // us (and/or disable setting function to be visible)
+								return Ok(());
+							}
+						},
+						_ => {},
+					}
 					return Err((id, e.to_string()));
 				},
 			}

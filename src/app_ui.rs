@@ -172,7 +172,8 @@ pub fn side_panel<T: EvalexprFloat>(
 															});
 															ui.horizontal(|ui| {
 																let fe_result = entry::entry_ui(
-																	ui, &state.ctx, entry, state.clear_cache,
+																	ui, &state.ctx, &state.processed_colors,
+																	entry, state.clear_cache,
 																);
 																if fe_result.remove {
 																	remove_from_folder = Some(entry.id);
@@ -217,8 +218,10 @@ pub fn side_panel<T: EvalexprFloat>(
 											ui.label("||").on_hover_text("Drag to reorder entries");
 										});
 										ui.horizontal(|ui| {
-											let result =
-												entry::entry_ui(ui, &state.ctx, entry, state.clear_cache);
+											let result = entry::entry_ui(
+												ui, &state.ctx, &state.processed_colors, entry,
+												state.clear_cache,
+											);
 											if result.remove {
 												remove = Some(entry.id);
 											}
@@ -352,9 +355,11 @@ pub fn side_panel<T: EvalexprFloat>(
 					}
 					let changed_any = needs_recompilation || state.clear_cache || animating;
 					if changed_any {
+						state.processed_colors.clear();
 						entry::optimize_entries(
 							&mut state.entries,
 							&mut state.ctx,
+							&mut state.processed_colors,
 							&mut ui_state.optimization_errors,
 						);
 					}
@@ -392,7 +397,7 @@ pub fn side_panel<T: EvalexprFloat>(
 pub fn graph_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame, changed: bool,
 ) {
-	let plot_params = entry::PlotParams::new(ui_state);
+	let plot_params = entry::PlotParams::new::<T>(ui_state);
 
 	scope!("graph");
 
@@ -465,7 +470,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		// TODO: this is not enough for changedete4ction.
 		if changed || received_new || ui_state.reset_graph || ui_state.force_process_elements {
 			scope!("process_draw_buffers");
-			ui_state.processed_shapess.process(
+			ui_state.processed_shapes.process(
 				ui,
 				&mut state.entries,
 				&plot_params,
@@ -533,14 +538,14 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let mut hovered_point: Option<(bool, PointInteraction)> = None;
 
 		if let (Some(custom_renderer), Some(prev_plot_transform)) =
-			(&mut ui_state.custom_renderer, ui_state.prev_plot_transform)
+			(&mut ui_state.fan_fill_renderer, ui_state.prev_plot_transform)
 		{
 			// TODO: move this to process_draw_buffers
 			let render_state = eframe.wgpu_render_state().unwrap();
 			let draw_frame = prev_plot_transform.frame();
 
 			let size = draw_frame.size();
-			for mesh in ui_state.processed_shapess.draw_meshes.iter_mut() {
+			for mesh in ui_state.processed_shapes.draw_meshes.iter_mut() {
 				if let DrawMeshType::FillMesh(fill_mesh) = &mut mesh.ty {
 					if fill_mesh.vertices.len() > 2 {
 						fill_mesh.texture_id = Some(custom_renderer.paint_curve_fill(
@@ -551,7 +556,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				}
 			}
 		}
-		if let Some(custom_renderer) = &mut ui_state.custom_renderer {
+		if let Some(custom_renderer) = &mut ui_state.fan_fill_renderer {
 			custom_renderer.reset_textures();
 		}
 
@@ -564,7 +569,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			if ui_state.graph_config.show_grid[1] {
 				plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
 			}
-			for mesh in ui_state.processed_shapess.draw_meshes.iter() {
+			for mesh in ui_state.processed_shapes.draw_meshes.iter() {
 				match &mesh.ty {
 					DrawMeshType::EguiPlotMesh(mesh) => {
 						// TODO: we can have processed mesh instead, and keep it as Arc
@@ -587,7 +592,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 					},
 				}
 			}
-			for draw_poly_group in ui_state.processed_shapess.draw_polygons.iter() {
+			for draw_poly_group in ui_state.processed_shapes.draw_polygons.iter() {
 				for poly in draw_poly_group.clone().polygons {
 					plot_ui.polygon(poly);
 				}
@@ -595,13 +600,13 @@ pub fn graph_panel<T: EvalexprFloat>(
 			// for draw_line in p_draw_buffer.draw_lines {
 			// 	plot_ui.line(draw_line.line);
 			// }
-			for line in ui_state.processed_shapess.lines.iter() {
+			for line in ui_state.processed_shapes.lines.iter() {
 				plot_ui.add(line.clone());
 			}
 			for draw_point in p_draw_buffer
 				.draw_points
 				.into_iter()
-				.chain(ui_state.processed_shapess.draw_points.iter().cloned())
+				.chain(ui_state.processed_shapes.draw_points.iter().cloned())
 			{
 				if let Some(mouse_pos) = ui_state.plot_mouese_pos {
 					let transform = ui_state.prev_plot_transform.as_ref().unwrap();
@@ -622,7 +627,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				}
 				plot_ui.points(draw_point.points);
 			}
-			for draw_text in ui_state.processed_shapess.draw_texts.iter() {
+			for draw_text in ui_state.processed_shapes.draw_texts.iter() {
 				plot_ui.add(draw_text.text.clone());
 			}
 
@@ -655,7 +660,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				ui_state.debug_info.plot_bounds = Some(*plot_res.transform.bounds());
 				scope!("schedule_entry_create_plot_elements");
 				ui_state.eval_errors.clear();
-				let plot_params = entry::PlotParams::new(ui_state);
+				let plot_params = entry::PlotParams::new::<T>(ui_state);
 				let main_context = Arc::new(state.ctx.clone());
 				schedule_create_plot_elements(
 					&mut state.entries,
@@ -828,6 +833,12 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 		let new_points = Entry::new_points(*next_id);
 		if ui.button(new_points.symbol_with_name()).clicked() {
 			entries.push(new_points);
+			*next_id += 1;
+			needs_recompilation = true;
+		}
+		let new_color = Entry::new_color(*next_id);
+		if ui.button(new_color.symbol_with_name()).clicked() {
+			entries.push(new_color);
 			*next_id += 1;
 			needs_recompilation = true;
 		}

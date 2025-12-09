@@ -98,7 +98,7 @@ impl<F: EvalexprFloat> ExpressionFunction<F> {
 	/// number of top level ops
 	pub fn ops_len(&self) -> usize { self.expr.ops_len() }
 	/// Returns the constant value of this node it it only contains a single PushConst operator.
-	pub fn as_constant(&self) -> Option<Value<F>> { self.expr.as_constant() }
+	pub fn as_constant(&self) -> Option<&Value<F>> { self.expr.as_constant() }
 
 	/// Returns the arguments this expression function takes.
 	pub fn args(&self) -> &[IStr] { &self.args }
