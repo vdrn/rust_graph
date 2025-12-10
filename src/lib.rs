@@ -8,7 +8,7 @@ use std::env;
 use eframe::egui::{self, Id, Visuals};
 use eframe::{App, CreationContext};
 use egui_plot::PlotBounds;
-use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, Stack};
+use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, HashMapContext, Stack};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thread_local::ThreadLocal;
@@ -118,42 +118,72 @@ impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
 		}
 	}
 }
-#[derive(Serialize, Deserialize)]
-struct IdGenerator {
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct IdGenerator {
 	next_id: u64,
 }
 impl IdGenerator {
-	fn new() -> Self { Self { next_id: 0 } }
 	fn next(&mut self) -> u64 {
 		self.next_id += 1;
-    self.next_id
+		self.next_id
 	}
+	pub fn new(start_id: u64) -> Self { Self { next_id: start_id } }
 }
 
 struct GraphState<T: EvalexprFloat> {
-	entries:              Vec<Entry<T>>,
-	saved_graph_config:   GraphConfig,
-	current_graph_config: GraphConfig,
-	name:                 String,
-	id_generator:         IdGenerator,
+	pub entries:              Vec<Entry<T>>,
+	pub saved_graph_config:   GraphConfig,
+	pub current_graph_config: GraphConfig,
+	pub name:                 String,
+	pub id_gen:               IdGenerator,
+	pub prev_plot_transform:  Option<egui_plot::PlotTransform>,
 }
-struct State2<T: EvalexprFloat> {
-	graph_state: GraphState<T>,
-	ctx:         evalexpr::HashMapContext<T>,
-	clear_cache:          bool,
+impl<T: EvalexprFloat> GraphState<T> {
+	pub fn new(default_graph_config: GraphConfig) -> Self {
+		let mut id_generator = IdGenerator::default();
+		let first_id = id_generator.next();
+		Self {
+			entries:              vec![Entry::new_function(first_id, "sin(x)")],
+			saved_graph_config:   default_graph_config.clone(),
+			current_graph_config: default_graph_config,
+			name:                 String::new(),
+			id_gen:               id_generator,
+			prev_plot_transform:  None,
+		}
+	}
+	pub fn prev_plot_bounds(&self) -> PlotBounds {
+		self.prev_plot_transform
+			.as_ref()
+			.map(|t| *t.bounds())
+			.unwrap_or_else(|| PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]))
+	}
+}
+struct State<T: EvalexprFloat> {
+	graph_state:          GraphState<T>,
+	ctx:                  evalexpr::HashMapContext<T>,
 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
 	processed_colors:     ProcessedColors<T>,
+}
+impl<T: EvalexprFloat> State<T> {
+	pub fn new(graph_state: GraphState<T>) -> Self {
+		Self {
+			graph_state,
+			ctx: HashMapContext::new(),
+			thread_local_context: Arc::new(ThreadLocal::new()),
+			processed_colors: ProcessedColors::new(),
+		}
+	}
 }
 
-struct State<T: EvalexprFloat> {
-	entries:              Vec<Entry<T>>,
-	ctx:                  evalexpr::HashMapContext<T>,
-	saved_graph_config:   GraphConfig,
-	name:                 String,
-	clear_cache:          bool,
-	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
-	processed_colors:     ProcessedColors<T>,
-}
+// struct State<T: EvalexprFloat> {
+// 	entries:              Vec<Entry<T>>,
+// 	ctx:                  evalexpr::HashMapContext<T>,
+// 	saved_graph_config:   GraphConfig,
+// 	name:                 String,
+// 	clear_cache:          bool,
+// 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
+// 	processed_colors:     ProcessedColors<T>,
+// }
 
 #[derive(Serialize, Deserialize)]
 struct AppConfig {
@@ -179,66 +209,56 @@ impl Default for AppConfig {
 }
 
 struct UiState {
-	conf:              AppConfig,
+	conf: AppConfig,
 
-	// cross frame signals
-	reset_graph:            bool,
-	force_process_elements: bool,
+	// UI
+	showing_help:      bool,
+	// UI - Persistance
+	cur_dir:           String,
+	serialized_states: BTreeMap<String, String>,
+	file_to_remove:    Option<String>,
 
-  // UI 
-	showing_help: bool,
-  // UI - Persistance
-	cur_dir:             String,
-	serialized_states:   BTreeMap<String, String>,
-	file_to_remove:       Option<String>,
-
-  // Errors
+	// UI: Errors
 	serialization_error: Option<String>,
 	parsing_errors:      FxHashMap<u64, String>,
 	prepare_errors:      FxHashMap<u64, String>,
 	optimization_errors: FxHashMap<u64, String>,
 	eval_errors:         FxHashMap<u64, String>,
 
-  // Graph UI interactions
+	// UI: Graph interactions
 	selected_plot_line:   Option<(Id, bool)>,
 	dragging_point_i:     Option<draw_buffer::PointInteraction>,
 	plot_mouese_pos:      Option<egui::Pos2>,
 	showing_custom_label: bool,
 
-  // URL
+	// URL
 	permalink_string:     String,
 	scheduled_url_update: bool,
 	last_url_update:      f64,
 
+	// cross frame signals
+	reset_graph:            bool,
+	force_process_elements: bool,
+	clear_cache:            bool,
 
-
-
-  // Drawing
-	processed_shapes: ProcessedShapes,
-	draw_buffers: Box<ThreadLocal<DrawBufferRC>>,
-	fan_fill_renderer:             Option<FanFillRenderer>,
+	// Drawing
+	processed_shapes:            ProcessedShapes,
+	draw_buffers:                Box<ThreadLocal<DrawBufferRC>>,
+	fan_fill_renderer:           Option<FanFillRenderer>,
 	multi_draw_buffer_scheduler: MultiDrawBufferScheduler,
 
-  // Misc
-	debug_info:                  DebugInfo,
-	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-	full_frame_scope: Option<puffin::ProfilerScope>,
-
-  // TODO: move to graph state
-	plot_bounds:       PlotBounds,
-	prev_plot_transform:         Option<egui_plot::PlotTransform>,
-
-  // todo: remove
-	graph_config:      GraphConfig,
-	next_id:           u64,
+	// Misc
+	debug_info: DebugInfo,
 }
 // #[derive(Clone, Debug)]
 pub struct Application {
-	state_f64: State<DefaultNumericTypes>,
-	state_f32: State<F32NumericTypes>,
-	ui:        UiState,
+	state_f64:        State<DefaultNumericTypes>,
+	state_f32:        State<F32NumericTypes>,
+	ui:               UiState,
 	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-	_puffin:   puffin_http::Server,
+	_puffin:          puffin_http::Server,
+	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+	full_frame_scope: Option<puffin::ProfilerScope>,
 }
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -254,16 +274,7 @@ pub fn run_puffin_server() -> puffin_http::Server {
 impl Application {
 	#[allow(unused_mut)]
 	pub fn new(cc: &CreationContext) -> Self {
-		// let mut fonts = egui::FontDefinitions::default();
-		// egui_nerdfonts::add_to_fonts(&mut fonts, egui_nerdfonts::Variant::Regular);
-		// cc.egui_ctx.set_fonts(fonts);
-
-		let mut entries_s = Vec::new();
-		let mut entries_d = Vec::new();
-
-		// TODO
 		let mut serialized_states = BTreeMap::default();
-
 		let mut serialization_error = None;
 
 		let conf: AppConfig = cc
@@ -271,15 +282,15 @@ impl Application {
 			.and_then(|s| s.get_string(CONF_KEY).and_then(|d| serde_json::from_str(&d).ok()))
 			.unwrap_or_default();
 
-		let mut default_graph_config_s = conf.default_graph_config.clone();
-		let mut default_graph_config_d = conf.default_graph_config.clone();
+		let mut graph_state_s = GraphState::new(conf.default_graph_config.clone());
+		let mut graph_state_d = GraphState::new(conf.default_graph_config.clone());
+
 		if !conf.fullscreen {
 			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 		}
 
 		init_mesh_renderer(cc);
 
-		let mut next_id = 0;
 		#[rustfmt::skip]
 		cfg_if::cfg_if! {
       if #[cfg(target_arch = "wasm32")] {
@@ -318,58 +329,25 @@ impl Application {
       }
 		}
 
-		if entries_s.is_empty() {
-			next_id += 1;
-			entries_s.push(Entry::new_function(0, "sin(x)"));
-		}
-		let ctx_s = evalexpr::HashMapContext::new();
-
-		if entries_d.is_empty() {
-			next_id += 1;
-			entries_d.push(Entry::new_function(0, "sin(x)"));
-		}
-		let ctx_d = evalexpr::HashMapContext::new();
-
 		Self {
 			#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 			_puffin: run_puffin_server(),
-			state_f32: State {
-				entries:              entries_s,
-				ctx:                  ctx_s,
-				name:                 String::new(),
-				saved_graph_config:   default_graph_config_s.clone(),
-				// points_cache: PointsCache::default(),
-				clear_cache:          true,
-				thread_local_context: Arc::new(ThreadLocal::new()),
-				processed_colors:     ProcessedColors::new(),
-			},
-			state_f64: State {
-				entries:              entries_d,
-				saved_graph_config:   default_graph_config_d,
-				ctx:                  ctx_d,
-				name:                 String::new(),
-				// points_cache: PointsCache::default(),
-				clear_cache:          true,
-				thread_local_context: Arc::new(ThreadLocal::new()),
-				processed_colors:     ProcessedColors::new(),
-			},
+			#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+			full_frame_scope: None,
+			state_f32: State::new(graph_state_s),
+			state_f64: State::new(graph_state_d),
 			ui: UiState {
 				debug_info: DebugInfo::new(),
 				multi_draw_buffer_scheduler: MultiDrawBufferScheduler::new(),
 				force_process_elements: true,
 				processed_shapes: ProcessedShapes::new(),
 				fan_fill_renderer: FanFillRenderer::new(cc),
-				#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-				full_frame_scope: None,
-				// animating: Arc::new(AtomicBool::new(true)),
 				conf,
 				scheduled_url_update: false,
 				last_url_update: 0.0,
 				serialized_states,
-				next_id,
-				plot_bounds: PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]),
-				graph_config: default_graph_config_s,
 				reset_graph: false,
+				clear_cache: true,
 
 				cur_dir,
 				serialization_error,
@@ -385,7 +363,6 @@ impl Application {
 				permalink_string: String::new(),
 				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),
-				prev_plot_transform: None,
 				showing_help: false,
 			},
 		}
@@ -393,6 +370,13 @@ impl Application {
 }
 impl App for Application {
 	fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+		#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
+		{
+			self.ui.full_frame_scope.take();
+			puffin::GlobalProfiler::lock().new_frame();
+			self.ui.full_frame_scope = puffin::profile_scope_custom!("full_frame");
+		}
+
 		if self.ui.conf.dark_mode {
 			ctx.set_visuals(Visuals::dark());
 		} else {
@@ -409,37 +393,22 @@ impl App for Application {
 			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame, changed);
 		}
 		if use_f32 != self.ui.conf.use_f32 {
+			let mut output = Vec::with_capacity(1024);
 			if use_f32 {
-				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to_json(
-					&mut output,
-					&self.state_f32.entries,
-					self.ui.graph_config.clone(),
-				)
-				.is_ok()
+				let name = self.state_f32.graph_state.name.clone();
+				if persistence::serialize_graph_state_to_json(&mut output, &self.state_f32.graph_state).is_ok()
 				{
-					let (entries, default_graph_config) =
-						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
-					self.state_f64.entries = entries;
-					self.state_f64.saved_graph_config = default_graph_config;
-					self.state_f64.clear_cache = true;
-					self.state_f64.name = self.state_f32.name.clone();
+					let new_graph_state =
+						persistence::deserialize_graph_state_from_json(name, &output).unwrap();
+					load_graph_state(&mut self.ui, &mut self.state_f64, Ok(new_graph_state));
 				}
 			} else {
-				let mut output = Vec::with_capacity(1024);
-				if persistence::serialize_to_json(
-					&mut output,
-					&self.state_f64.entries,
-					self.ui.graph_config.clone(),
-				)
-				.is_ok()
+				let name = self.state_f64.graph_state.name.clone();
+				if persistence::serialize_graph_state_to_json(&mut output, &self.state_f64.graph_state).is_ok()
 				{
-					let (entries, default_graph_config) =
-						persistence::deserialize_from_json(&output, &mut self.ui.next_id).unwrap();
-					self.state_f32.entries = entries;
-					self.state_f32.saved_graph_config = default_graph_config;
-					self.state_f32.clear_cache = true;
-					self.state_f32.name = self.state_f64.name.clone();
+					let new_graph_state =
+						persistence::deserialize_graph_state_from_json(name, &output).unwrap();
+					load_graph_state(&mut self.ui, &mut self.state_f32, Ok(new_graph_state));
 				}
 			}
 		}
@@ -478,5 +447,21 @@ pub fn thread_local_get<T: Send + Default>(tl: &ThreadLocal<T>) -> &T {
 	} else {
 		cold();
 		tl.get_or_default()
+	}
+}
+
+fn load_graph_state<T: EvalexprFloat>(
+	ui_state: &mut UiState, state: &mut State<T>, graph_state: Result<GraphState<T>, String>,
+) {
+	match graph_state {
+		Ok(graph_state) => {
+			state.graph_state = graph_state;
+			ui_state.serialization_error = None;
+			ui_state.clear_cache = true;
+			ui_state.reset_graph = true;
+		},
+		Err(e) => {
+			ui_state.serialization_error = Some(e);
+		},
 	}
 }

@@ -53,7 +53,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 	ui.horizontal(|ui| {
 		if ui
 			.add(
-				Button::new(RichText::new(entry.symbol()).strong().monospace().color(text_col))
+				Button::new(RichText::new(entry.entry_symbol().symbol(entry.active)).strong().monospace().color(text_col))
 					.fill(fill_col)
 					.corner_radius(10),
 			)
@@ -100,11 +100,11 @@ pub fn entry_ui<T: EvalexprFloat>(
 		// controls
 		ui.horizontal(|ui| {
 			ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
-				if remove_entry_btn(ui, entry.name()) {
+				if remove_entry_btn(ui, entry.entry_symbol().name()) {
 					result.remove = true;
 					result.needs_recompilation = true;
 				}
-				if duplicate_entry_btn(ui, entry.name()) {
+				if duplicate_entry_btn(ui, entry.entry_symbol().name()) {
 					result.duplicate = true;
 					result.needs_recompilation = true;
 				}

@@ -351,44 +351,64 @@ impl LineStyleConfig {
 	}
 }
 
-impl<T: EvalexprFloat> Entry<T> {
-	pub fn symbol(&self) -> &'static str {
-		match self.ty {
-			EntryType::Function { .. } => "λ",
-			EntryType::Constant { .. } => {
-				if self.active {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum EntrySymbol {
+	Function,
+	Constant,
+	Points,
+	Folder,
+	Color,
+}
+impl EntrySymbol {
+	pub fn symbol(self,active:bool) -> &'static str {
+		match self {
+			EntrySymbol::Function => "λ",
+			EntrySymbol::Constant => {
+				if active {
 					"⏸"
 				} else {
 					"⏵"
 				}
 			},
-			EntryType::Points { .. } => "◊",
-			EntryType::Folder { .. } => {
-				if self.active {
+			EntrySymbol::Points => "◊",
+			EntrySymbol::Folder => {
+				if active {
 					"📂"
 				} else {
 					"📁"
 				}
 			},
-			EntryType::Color { .. } => "🎨",
+			EntrySymbol::Color => "🎨",
 		}
 	}
-	pub fn symbol_with_name(&self) -> &'static str {
-		match self.ty {
-			EntryType::Function { .. } => "λ   Function",
-			EntryType::Constant { .. } => "⏵ Constant",
-			EntryType::Points { .. } => "◊ Points",
-			EntryType::Folder { .. } => "📂 Folder",
-			EntryType::Color { .. } => "🎨 Color",
+	pub fn symbol_with_name(self) -> &'static str {
+		match self{
+			EntrySymbol::Function => "λ   Function",
+			EntrySymbol::Constant => "⏵ Constant",
+			EntrySymbol::Points => "◊ Points",
+			EntrySymbol::Folder => "📂 Folder",
+			EntrySymbol::Color => "🎨 Color",
 		}
 	}
-	pub fn name(&self) -> &'static str {
+	pub fn name(self) -> &'static str {
+		match self{
+			EntrySymbol::Function => "Function",
+			EntrySymbol::Constant => "Constant",
+			EntrySymbol::Points => "Points",
+			EntrySymbol::Folder => "Folder",
+			EntrySymbol::Color => "Color",
+		}
+	}
+}
+
+impl<T: EvalexprFloat> Entry<T> {
+	pub fn entry_symbol(&self) -> EntrySymbol {
 		match self.ty {
-			EntryType::Function { .. } => "Function",
-			EntryType::Constant { .. } => "Constant",
-			EntryType::Points { .. } => "Points",
-			EntryType::Folder { .. } => "Folder",
-			EntryType::Color { .. } => "Color",
+			EntryType::Function { .. } => EntrySymbol::Function,
+			EntryType::Constant { .. } => EntrySymbol::Constant,
+			EntryType::Points { .. } => EntrySymbol::Points,
+			EntryType::Folder { .. } => EntrySymbol::Folder,
+			EntryType::Color { .. } => EntrySymbol::Color,
 		}
 	}
 	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }

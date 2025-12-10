@@ -19,7 +19,7 @@ use crate::math::{
 	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
 };
 use crate::widgets::TextPlotItem;
-use crate::{ThreadLocalContext, UiState, marching_squares, thread_local_get};
+use crate::{GraphState, ThreadLocalContext, UiState, marching_squares, thread_local_get};
 
 #[derive(Clone)]
 pub struct PlotParams {
@@ -35,11 +35,12 @@ pub struct PlotParams {
 	pub invert_axes:         [bool; 2],
 }
 impl PlotParams {
-	pub fn new<T:EvalexprFloat>(ui_state: &UiState) -> Self {
-		let first_x = ui_state.plot_bounds.min()[0];
-		let last_x = ui_state.plot_bounds.max()[0];
-		let first_y = ui_state.plot_bounds.min()[1];
-		let last_y = ui_state.plot_bounds.max()[1];
+	pub fn new<T:EvalexprFloat>(ui_state: &UiState, graph_state:&GraphState<T>) -> Self {
+    let plot_bounds = graph_state.prev_plot_bounds();
+		let first_x = plot_bounds.min()[0];
+		let last_x = plot_bounds.max()[0];
+		let first_y = plot_bounds.min()[1];
+		let last_y = plot_bounds.max()[1];
 
 		// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
 		let plot_width = last_x - first_x;
@@ -67,8 +68,8 @@ impl PlotParams {
 			step_size,
 			step_size_y,
 			resolution: ui_state.conf.resolution,
-			prev_plot_transform: ui_state.prev_plot_transform,
-			invert_axes: ui_state.graph_config.invert_axes,
+			prev_plot_transform: graph_state.prev_plot_transform,
+			invert_axes: graph_state.current_graph_config.invert_axes,
 		}
 	}
 }

@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
-use crate::entry::{self, Entry, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements};
+use crate::entry::{
+	self, Entry, EntrySymbol, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements
+};
 use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
-use crate::{AppConfig, State, UiState, persistence, scope};
+use crate::{AppConfig, IdGenerator, State, UiState, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -30,12 +32,6 @@ fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 pub fn side_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) -> bool {
-	#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-	{
-		ui_state.full_frame_scope.take();
-		puffin::GlobalProfiler::lock().new_frame();
-		ui_state.full_frame_scope = puffin::profile_scope_custom!("full_frame");
-	}
 
 	scope!("side_panel");
 	let changed = SidePanel::left("left_panel")
@@ -60,14 +56,16 @@ pub fn side_panel<T: EvalexprFloat>(
 					let mut needs_recompilation = false;
 
 					ui.horizontal_top(|ui| {
-						if add_new_entry_btn(ui, "New entry", &mut ui_state.next_id, &mut state.entries, true)
-						{
+						if add_new_entry_btn(
+							ui, "New entry", &mut state.graph_state.id_gen, &mut state.graph_state.entries,
+							true,
+						) {
 							needs_recompilation = true;
 						}
 
 						if ui.button("❌ Remove all").on_hover_text("Remove all entries").clicked() {
-							state.entries.clear();
-							state.clear_cache = true;
+							state.graph_state.entries.clear();
+							ui_state.clear_cache = true;
 						}
 					});
 
@@ -104,10 +102,10 @@ pub fn side_panel<T: EvalexprFloat>(
 					let mut needs_redraw = false;
 					// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 					egui_dnd::dnd(ui, "entries_dnd").show_vec(
-						&mut state.entries,
+						&mut state.graph_state.entries,
 						|ui, entry, handle, _state| {
 							entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
-								let symbol = entry.symbol();
+								let symbol = entry.entry_symbol().symbol(entry.active);
 								if let EntryType::Folder { entries } = &mut entry.ty {
 									ui.vertical(|ui| {
 										ui.horizontal(|ui| {
@@ -139,7 +137,7 @@ pub fn side_panel<T: EvalexprFloat>(
 													duplicate = Some(entry.id);
 												}
 												if add_new_entry_btn(
-													ui, "", &mut ui_state.next_id, entries, false,
+													ui, "", &mut state.graph_state.id_gen, entries, false,
 												) {
 													needs_recompilation = true;
 												}
@@ -173,7 +171,7 @@ pub fn side_panel<T: EvalexprFloat>(
 															ui.horizontal(|ui| {
 																let fe_result = entry::entry_ui(
 																	ui, &state.ctx, &state.processed_colors,
-																	entry, state.clear_cache,
+																	entry, ui_state.clear_cache,
 																);
 																if fe_result.remove {
 																	remove_from_folder = Some(entry.id);
@@ -200,7 +198,8 @@ pub fn side_panel<T: EvalexprFloat>(
 											},
 										);
 										if add_new_entry_btn(
-											ui, "New Folder Entry", &mut ui_state.next_id, entries, false,
+											ui, "New Folder Entry", &mut state.graph_state.id_gen, entries,
+											false,
 										) {
 											needs_recompilation = true;
 										}
@@ -209,7 +208,7 @@ pub fn side_panel<T: EvalexprFloat>(
 												entries.remove(index);
 											}
 										} else if let Some(id) = duplicate_in_folder {
-											duplicate_entry(id, &mut ui_state.next_id, entries);
+											duplicate_entry(id, &mut state.graph_state.id_gen, entries);
 										}
 									});
 								} else {
@@ -220,7 +219,7 @@ pub fn side_panel<T: EvalexprFloat>(
 										ui.horizontal(|ui| {
 											let result = entry::entry_ui(
 												ui, &state.ctx, &state.processed_colors, entry,
-												state.clear_cache,
+												ui_state.clear_cache,
 											);
 											if result.remove {
 												remove = Some(entry.id);
@@ -244,16 +243,18 @@ pub fn side_panel<T: EvalexprFloat>(
 							});
 						},
 					);
-					if add_new_entry_btn(ui, "New Entry", &mut ui_state.next_id, &mut state.entries, true) {
+					if add_new_entry_btn(
+						ui, "New Entry", &mut state.graph_state.id_gen, &mut state.graph_state.entries, true,
+					) {
 						needs_recompilation = true;
 					}
 
 					if let Some(id) = remove {
-						if let Some(index) = state.entries.iter().position(|e| e.id == id) {
-							state.entries.remove(index);
+						if let Some(index) = state.graph_state.entries.iter().position(|e| e.id == id) {
+							state.graph_state.entries.remove(index);
 						}
 					} else if let Some(id) = duplicate {
-						duplicate_entry(id, &mut ui_state.next_id, &mut state.entries);
+						duplicate_entry(id, &mut state.graph_state.id_gen, &mut state.graph_state.entries);
 					}
 					ui.separator();
 
@@ -321,10 +322,10 @@ pub fn side_panel<T: EvalexprFloat>(
 					ui.separator();
 					ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
 
-					if needs_recompilation || state.clear_cache {
+					if needs_recompilation || ui_state.clear_cache {
 						scope!("prepare_entries");
 						// state.points_cache.clear();
-						match persistence::serialize_to_url(&state.entries, ui_state.graph_config.clone()) {
+						match persistence::serialize_to_url(&state.graph_state) {
 							Ok(output) => {
 								// let mut data_str = String::with_capacity(output.len() + 1);
 								// let url_encoded = urlencoding::encode(str::from_utf8(&output).unwrap());
@@ -344,27 +345,29 @@ pub fn side_panel<T: EvalexprFloat>(
 
 						// state.context_stash.lock().unwrap().clear();
 
-						prepare_entries(&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors);
+						prepare_entries(
+							&mut state.graph_state.entries, &mut state.ctx, &mut ui_state.prepare_errors,
+						);
 					} else if animating {
 						scope!("prepare_constants");
 						state.ctx.clear();
 						init_builtins::<T>(&mut state.ctx);
 						entry::prepare_constants(
-							&mut state.entries, &mut state.ctx, &mut ui_state.prepare_errors,
+							&mut state.graph_state.entries, &mut state.ctx, &mut ui_state.prepare_errors,
 						);
 					}
-					let changed_any = needs_recompilation || state.clear_cache || animating;
+					let changed_any = needs_recompilation || ui_state.clear_cache || animating;
 					if changed_any {
 						state.processed_colors.clear();
 						entry::optimize_entries(
-							&mut state.entries,
+							&mut state.graph_state.entries,
 							&mut state.ctx,
 							&mut state.processed_colors,
 							&mut ui_state.optimization_errors,
 						);
 					}
 
-					state.clear_cache = false;
+					ui_state.clear_cache = false;
 
 					if ui_state.scheduled_url_update {
 						let time = ui.input(|i| i.time);
@@ -397,12 +400,12 @@ pub fn side_panel<T: EvalexprFloat>(
 pub fn graph_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, eframe: &eframe::Frame, changed: bool,
 ) {
-	let plot_params = entry::PlotParams::new::<T>(ui_state);
+	let plot_params = entry::PlotParams::new::<T>(ui_state, &state.graph_state);
 
 	scope!("graph");
 
 	let mouse_pos_in_graph =
-		if let (Some(pos), Some(trans)) = (ui_state.plot_mouese_pos, ui_state.prev_plot_transform) {
+		if let (Some(pos), Some(trans)) = (ui_state.plot_mouese_pos, state.graph_state.prev_plot_transform) {
 			let p = trans.value_from_position(pos);
 			Some((p.x, p.y))
 		} else {
@@ -412,21 +415,18 @@ pub fn graph_panel<T: EvalexprFloat>(
 	egui::CentralPanel::default().show(ctx, |ui| {
 		let mut force_create_elements = false;
 
-		if let Some(plot_transform) = ui_state.prev_plot_transform {
+		if let Some(plot_transform) = state.graph_state.prev_plot_transform {
 			let parent_rect = plot_transform.frame();
 			let screen_pos = parent_rect.min + egui::vec2(5.0, 5.0);
-			let prev_invert_axes = ui_state.graph_config.invert_axes;
+			let prev_invert_axes = state.graph_state.current_graph_config.invert_axes;
 			Area::new(Id::new("Graph Config")).fixed_pos(screen_pos).show(ui.ctx(), |ui| {
 				MenuButton::new("⚙")
 					.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
 					.ui(ui, |ui| {
-						ui_state.graph_config.ui(ui, &mut ui_state.conf);
+						state.graph_state.current_graph_config.ui(ui, &mut ui_state.conf);
 					});
 			});
-			// if prev_show_axes != ui_state.graph_config.show_axes {
-			// 	ui_state.force_process_elements = true;
-			// }
-			if prev_invert_axes != ui_state.graph_config.invert_axes {
+			if prev_invert_axes != state.graph_state.current_graph_config.invert_axes {
 				ui_state.force_process_elements = true;
 				force_create_elements = true;
 			}
@@ -448,12 +448,12 @@ pub fn graph_panel<T: EvalexprFloat>(
 				for r in received {
 					match r {
 						Ok((id, draw_buffer)) => {
-							if let Some(entry) = get_entry_mut_by_id(&mut state.entries, id) {
+							if let Some(entry) = get_entry_mut_by_id(&mut state.graph_state.entries, id) {
 								entry.draw_buffer = draw_buffer;
 							}
 						},
 						Err((id, error)) => {
-							if let Some(entry) = get_entry_mut_by_id(&mut state.entries, id) {
+							if let Some(entry) = get_entry_mut_by_id(&mut state.graph_state.entries, id) {
 								ui_state.eval_errors.insert(id, error);
 								entry.draw_buffer.clear();
 							}
@@ -472,7 +472,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			scope!("process_draw_buffers");
 			ui_state.processed_shapes.process(
 				ui,
-				&mut state.entries,
+				&mut state.graph_state.entries,
 				&plot_params,
 				ui_state.selected_plot_line.map(|(id, _)| id),
 			);
@@ -483,7 +483,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let p_draw_buffer = {
 			scope!("process_draw_buffers");
 			process_draw_buffers(
-				&state.entries, ui_state.selected_plot_line, mouse_pos_in_graph, &plot_params,
+				&state.graph_state.entries, ui_state.selected_plot_line, mouse_pos_in_graph, &plot_params,
 				&mut ui_state.draw_buffers,
 			)
 		};
@@ -494,31 +494,33 @@ pub fn graph_panel<T: EvalexprFloat>(
 		if ui_state.reset_graph {
 			force_create_elements = true;
 			ui_state.reset_graph = false;
-			ui_state.graph_config = state.saved_graph_config.clone();
+			state.graph_state.current_graph_config = state.graph_state.saved_graph_config.clone();
 		}
 
 		let available_size = ui.available_size();
 		let view_aspect = available_size.x as f64 / available_size.y as f64;
-		let calcd_bounds = ui_state.graph_config.graph_plot_bounds.calc_plot_bounds(view_aspect);
+
+		let graph_conf = &state.graph_state.current_graph_config;
+		let calcd_bounds = graph_conf.graph_plot_bounds.calc_plot_bounds(view_aspect);
 
 		let can_drag =
 			ui_state.dragging_point_i.is_none() && p_draw_buffer.closest_point_to_mouse_on_selected.is_none();
-		let mut allow_drag = ui_state.graph_config.allow_scroll;
+		let mut allow_drag = graph_conf.allow_scroll;
 		allow_drag[0] &= can_drag;
 		allow_drag[1] &= can_drag;
 
 		plot = plot
-			.show_axes(ui_state.graph_config.show_axes)
-			.invert_x(ui_state.graph_config.invert_axes[0])
-			.invert_y(ui_state.graph_config.invert_axes[1])
-			.show_grid(ui_state.graph_config.show_grid)
+			.show_axes(graph_conf.show_axes)
+			.invert_x(graph_conf.invert_axes[0])
+			.invert_y(graph_conf.invert_axes[1])
+			.show_grid(graph_conf.show_grid)
 			.allow_drag(allow_drag)
-			.allow_zoom(ui_state.graph_config.allow_zoom)
-			.allow_scroll(ui_state.graph_config.allow_scroll)
-			.x_axis_label(ui_state.graph_config.x_axis_label.clone())
-			.y_axis_label(ui_state.graph_config.y_axis_label.clone())
-			.clamp_grid(ui_state.graph_config.clamp_grid)
-			.grid_spacing(ui_state.graph_config.grid_spacing.0..=ui_state.graph_config.grid_spacing.1);
+			.allow_zoom(graph_conf.allow_zoom)
+			.allow_scroll(graph_conf.allow_scroll)
+			.x_axis_label(graph_conf.x_axis_label.clone())
+			.y_axis_label(graph_conf.y_axis_label.clone())
+			.clamp_grid(graph_conf.clamp_grid)
+			.grid_spacing(graph_conf.grid_spacing.0..=graph_conf.grid_spacing.1);
 		// .show_x(ui_state.graph_config.show_mouse_coords[0])
 		// .show_y(ui_state.graph_config.show_mouse_coords[1]);
 
@@ -538,7 +540,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		let mut hovered_point: Option<(bool, PointInteraction)> = None;
 
 		if let (Some(custom_renderer), Some(prev_plot_transform)) =
-			(&mut ui_state.fan_fill_renderer, ui_state.prev_plot_transform)
+			(&mut ui_state.fan_fill_renderer, state.graph_state.prev_plot_transform)
 		{
 			// TODO: move this to process_draw_buffers
 			let render_state = eframe.wgpu_render_state().unwrap();
@@ -560,13 +562,16 @@ pub fn graph_panel<T: EvalexprFloat>(
 			custom_renderer.reset_textures();
 		}
 
+		let prev_plot_bounds = state
+			.graph_state.prev_plot_bounds();
+
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
 
-			if ui_state.graph_config.show_grid[0] {
+			if state.graph_state.current_graph_config.show_grid[0] {
 				plot_ui.hline(HLine::new("", 0.0).color(Color32::WHITE));
 			}
-			if ui_state.graph_config.show_grid[1] {
+			if state.graph_state.current_graph_config.show_grid[1] {
 				plot_ui.vline(VLine::new("", 0.0).color(Color32::WHITE));
 			}
 			for mesh in ui_state.processed_shapes.draw_meshes.iter() {
@@ -577,7 +582,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 					},
 					DrawMeshType::FillMesh(fill_mesh) => {
 						if let Some(texture_id) = fill_mesh.texture_id {
-							let bounds = ui_state.plot_bounds;
+							let bounds = prev_plot_bounds;
 							let center = bounds.center();
 							let size_x = bounds.width();
 							let size_y = bounds.height();
@@ -609,7 +614,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				.chain(ui_state.processed_shapes.draw_points.iter().cloned())
 			{
 				if let Some(mouse_pos) = ui_state.plot_mouese_pos {
-					let transform = ui_state.prev_plot_transform.as_ref().unwrap();
+					let transform = state.graph_state.prev_plot_transform.as_ref().unwrap();
 					let sel = &draw_point.interaction;
 					let is_draggable = matches!(sel.ty, PointInteractionType::Draggable { .. });
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
@@ -638,21 +643,20 @@ pub fn graph_panel<T: EvalexprFloat>(
 			ui_state.reset_graph = true;
 		}
 
-		if ui_state.graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect) {
+		if state.graph_state.current_graph_config.graph_plot_bounds.update(&plot_res.transform, view_aspect) {
 			force_create_elements = true;
 		}
 
-		if ui_state.plot_bounds != *plot_res.transform.bounds() {
+		if prev_plot_bounds != *plot_res.transform.bounds() {
 			ui.ctx().request_repaint();
-			ui_state.plot_bounds = *plot_res.transform.bounds();
 		}
-		if ui_state.prev_plot_transform.map(|t| *t.frame()) != Some(*plot_res.transform.frame()) {
+		if state.graph_state.prev_plot_transform.map(|t| *t.frame()) != Some(*plot_res.transform.frame()) {
 			ui_state.force_process_elements = true;
 			ui.ctx().request_repaint();
 		}
 
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos();
-		ui_state.prev_plot_transform = Some(plot_res.transform);
+		state.graph_state.prev_plot_transform = Some(plot_res.transform);
 
 		if force_create_elements || changed {
 			// println!("Scheduling element creation because force {force_create_elements} changed {changed}");
@@ -660,10 +664,10 @@ pub fn graph_panel<T: EvalexprFloat>(
 				ui_state.debug_info.plot_bounds = Some(*plot_res.transform.bounds());
 				scope!("schedule_entry_create_plot_elements");
 				ui_state.eval_errors.clear();
-				let plot_params = entry::PlotParams::new::<T>(ui_state);
+				let plot_params = entry::PlotParams::new::<T>(ui_state, &state.graph_state);
 				let main_context = Arc::new(state.ctx.clone());
 				schedule_create_plot_elements(
-					&mut state.entries,
+					&mut state.graph_state.entries,
 					&mut ui_state.multi_draw_buffer_scheduler,
 					ui_state.selected_plot_line.map(|(id, _)| id),
 					&main_context,
@@ -691,14 +695,14 @@ pub fn graph_panel<T: EvalexprFloat>(
 		}
 
 		if let Some(drag_result) = point_dragging(
-			&mut state.entries,
+			&mut state.graph_state.entries,
 			&mut state.ctx,
 			&plot_res,
 			&mut ui_state.dragging_point_i,
 			hovered_point.as_ref(),
 			&plot_params,
 		) {
-			state.clear_cache = true;
+			ui_state.clear_cache = true;
 			ui_state.showing_custom_label = true;
 			let screen_x = plot_res.transform.position_from_point_x(drag_result.x);
 			let screen_y = plot_res.transform.position_from_point_y(drag_result.y);
@@ -760,7 +764,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				|| plot_res.response.drag_started()
 				|| (ui_state.selected_plot_line.is_none() && plot_res.response.is_pointer_button_down_on())
 			{
-				if state.entries.iter().any(|e| match &e.ty {
+				if state.graph_state.entries.iter().any(|e| match &e.ty {
 					EntryType::Function { .. } => Id::new(e.id) == hovered_id,
 					EntryType::Folder { entries } => entries.iter().any(|e| Id::new(e.id) == hovered_id),
 					_ => false,
@@ -788,29 +792,28 @@ pub fn graph_panel<T: EvalexprFloat>(
 	});
 }
 
-fn prepare_copied_entry<T: EvalexprFloat>(entry: &mut Entry<T>, next_id: &mut u64) {
+fn prepare_copied_entry<T: EvalexprFloat>(entry: &mut Entry<T>, id_gen: &mut IdGenerator) {
 	if !entry.name.is_empty() {
 		entry.name = format!("{}_c", entry.name);
 	}
-	entry.id = *next_id;
-	*next_id += 1;
+	entry.id = id_gen.next();
 	if let EntryType::Folder { entries } = &mut entry.ty {
 		for e in entries {
-			prepare_copied_entry(e, next_id);
+			prepare_copied_entry(e, id_gen);
 		}
 	}
 }
-fn duplicate_entry<T: EvalexprFloat>(entry_id: u64, next_id: &mut u64, entries: &mut Vec<Entry<T>>) {
+fn duplicate_entry<T: EvalexprFloat>(entry_id: u64, id_gen: &mut IdGenerator, entries: &mut Vec<Entry<T>>) {
 	let Some(entry_i) = entries.iter().position(|e| e.id == entry_id) else {
 		return;
 	};
 	let entry = &entries[entry_i];
 	let mut new_entry = entry.clone();
-	prepare_copied_entry(&mut new_entry, next_id);
+	prepare_copied_entry(&mut new_entry, id_gen);
 	entries.insert(entry_i + 1, new_entry);
 }
 fn add_new_entry_btn<T: EvalexprFloat>(
-	ui: &mut egui::Ui, text: &str, next_id: &mut u64, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
+	ui: &mut egui::Ui, text: &str, id_gen: &mut IdGenerator, entries: &mut Vec<Entry<T>>, can_add_folder: bool,
 ) -> bool {
 	let mut needs_recompilation = false;
 
@@ -818,35 +821,30 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 		return false;
 	}
 	ui.menu_button(format!("➕ {text}"), |ui| {
-		let new_function = Entry::new_function(*next_id, "");
-		if ui.button(new_function.symbol_with_name()).clicked() {
+		if ui.button(EntrySymbol::Function.symbol_with_name()).clicked() {
+			let new_function = Entry::new_function(id_gen.next(), "");
 			entries.push(new_function);
-			*next_id += 1;
 			needs_recompilation = true;
 		}
-		let new_constant = Entry::new_constant(*next_id);
-		if ui.button(new_constant.symbol_with_name()).clicked() {
+		if ui.button(EntrySymbol::Constant.symbol_with_name()).clicked() {
+			let new_constant = Entry::new_constant(id_gen.next());
 			entries.push(new_constant);
-			*next_id += 1;
 			needs_recompilation = true;
 		}
-		let new_points = Entry::new_points(*next_id);
-		if ui.button(new_points.symbol_with_name()).clicked() {
+		if ui.button(EntrySymbol::Points.symbol_with_name()).clicked() {
+			let new_points = Entry::new_points(id_gen.next());
 			entries.push(new_points);
-			*next_id += 1;
 			needs_recompilation = true;
 		}
-		let new_color = Entry::new_color(*next_id);
-		if ui.button(new_color.symbol_with_name()).clicked() {
+		if ui.button(EntrySymbol::Color.symbol_with_name()).clicked() {
+			let new_color = Entry::new_color(id_gen.next());
 			entries.push(new_color);
-			*next_id += 1;
 			needs_recompilation = true;
 		}
 		if can_add_folder {
-			let new_folder = Entry::new_folder(*next_id);
-			if ui.button(new_folder.symbol_with_name()).clicked() {
+			if ui.button(EntrySymbol::Folder.symbol_with_name()).clicked() {
+				let new_folder = Entry::new_folder(id_gen.next());
 				entries.push(new_folder);
-				*next_id += 1;
 			}
 		}
 	})

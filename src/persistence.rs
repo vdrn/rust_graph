@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use rustc_hash::FxHashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -13,7 +14,7 @@ use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
 	ColorEntry, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
-use crate::{ConstantType, Entry, EntryType, PointEntry, State, UiState};
+use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state};
 
 pub fn default_true() -> bool { true }
 
@@ -22,10 +23,13 @@ pub struct StateSerialized {
 	pub entries:      Vec<EntrySerialized>,
 	#[serde(default)]
 	pub graph_config: GraphConfig,
+	#[serde(default)]
+	pub id_generator: IdGenerator,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct EntrySerialized {
+	id:      u64,
 	#[serde(default)]
 	name:    String,
 	#[serde(default = "default_true")]
@@ -208,10 +212,11 @@ impl PointStyleSerialized {
 	}
 }
 
-pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: GraphConfig) -> StateSerialized {
-	let mut state_serialized = StateSerialized { entries: Vec::with_capacity(entries.len()), graph_config };
+pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySerialized> {
+	let mut result = Vec::with_capacity(entries.len());
 	for entry in entries {
 		let entry_serialized = EntrySerialized {
+			id:      entry.id,
 			name:    entry.name.clone(),
 			visible: entry.active,
 			color:   entry.color,
@@ -271,27 +276,36 @@ pub fn entries_to_ser<T: EvalexprFloat>(entries: &[Entry<T>], graph_config: Grap
 					},
 				},
 				EntryType::Folder { entries } => {
-					let ser_entries = entries_to_ser(entries, GraphConfig::default());
-					EntryTypeSerialized::Folder { entries: ser_entries.entries }
+					let ser_entries = serialize_entries(entries);
+					EntryTypeSerialized::Folder { entries: ser_entries }
 				},
-				EntryType::Color(color) => EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr) },
+				EntryType::Color(color) => {
+					EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr) }
+				},
 			},
 		};
-		state_serialized.entries.push(entry_serialized);
+		result.push(entry_serialized);
 	}
+	result
+}
+pub fn serialize_graph_state<T: EvalexprFloat>(graph_state: &GraphState<T>) -> StateSerialized {
+	let state_serialized = StateSerialized {
+		entries:      serialize_entries(&graph_state.entries),
+		graph_config: graph_state.current_graph_config.clone(),
+		id_generator: graph_state.id_gen.clone(),
+	};
+
 	state_serialized
 }
-pub fn serialize_to_json<T: EvalexprFloat>(
-	writer: impl Write, state: &[Entry<T>], graph_config: GraphConfig,
+pub fn serialize_graph_state_to_json<T: EvalexprFloat>(
+	writer: impl Write, graph_state: &GraphState<T>,
 ) -> std::io::Result<()> {
-	let ser = entries_to_ser(state, graph_config);
+	let ser = serialize_graph_state(graph_state);
 	serde_json::to_writer(writer, &ser)?;
 	Ok(())
 }
-pub fn serialize_to_url<T: EvalexprFloat>(
-	entries: &[Entry<T>], graph_config: GraphConfig,
-) -> Result<String, String> {
-	let ser = entries_to_ser(entries, graph_config);
+pub fn serialize_to_url<T: EvalexprFloat>(graph_state: &GraphState<T>) -> Result<String, String> {
+	let ser = serialize_graph_state(graph_state);
 	let bincoded =
 		bincode::serde::encode_to_vec(&ser, bincode::config::standard()).map_err(|e| e.to_string())?;
 	let base64_encoded = base64::engine::general_purpose::STANDARD.encode(bincoded);
@@ -331,13 +345,42 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) -> (Vec<Entry<T>>, GraphConfig) {
+pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSerialized) -> GraphState<T> {
+  let entries = deserialize_entries::<T>(ser.entries);
+  let mut unique_ids = FxHashSet::default();
+  let mut max_id = 0;
+  for entry in entries.iter() {
+    max_id = entry.id.max(max_id);
+    if !unique_ids.insert(entry.id) {
+      panic!("Duplicate id: {}", entry.id);
+    }
+    if let EntryType::Folder { entries } = &entry.ty {
+      for sub_entry in entries.iter() {
+        max_id = sub_entry.id.max(max_id);
+        if !unique_ids.insert(sub_entry.id) {
+          panic!("Duplicate id: {}", sub_entry.id);
+        }
+      }
+    }
+  }
+
+  let max_id = max_id + 1;
+
+
+	GraphState {
+		entries,
+		saved_graph_config: ser.graph_config.clone(),
+		current_graph_config: ser.graph_config,
+		name,
+		id_gen: IdGenerator::new(max_id),
+    prev_plot_transform: None,
+	}
+}
+pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> Vec<Entry<T>> {
 	let mut result = Vec::new();
-	let graph_config = ser.graph_config;
-	for entry in ser.entries {
-		*id += 1;
+	for entry in entries {
 		let entry_deserialized = Entry {
-			id:          *id,
+			id:          entry.id,
 			active:      entry.visible,
 			color:       entry.color,
 			draw_buffer: DrawBuffer::empty(),
@@ -420,29 +463,25 @@ pub fn entries_from_ser<T: EvalexprFloat>(ser: StateSerialized, id: &mut u64) ->
 					}
 				},
 				EntryTypeSerialized::Folder { entries } => {
-					let (entries, _) = entries_from_ser(
-						StateSerialized { entries, graph_config: GraphConfig::default() },
-						id,
-					);
+					let entries = deserialize_entries(entries);
 					EntryType::Folder { entries }
 				},
-        EntryTypeSerialized::Color { expr } => {
-          EntryType::Color(ColorEntry { expr: expr.into_expr(false) })
-        },
+				EntryTypeSerialized::Color { expr } => {
+					EntryType::Color(ColorEntry { expr: expr.into_expr(false) })
+				},
 			},
 			name:        entry.name,
 		};
 
 		result.push(entry_deserialized);
 	}
-	*id += 1;
-	(result, graph_config)
+	result
 }
-pub fn deserialize_from_json<T: EvalexprFloat>(
-	reader: &[u8], id_counter: &mut u64,
-) -> Result<(Vec<Entry<T>>, GraphConfig), String> {
-	let entries: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
-	Ok(entries_from_ser(entries, id_counter))
+pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(
+	name: String, reader: &[u8],
+) -> Result<GraphState<T>, String> {
+	let graph_state: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
+	Ok(deserialize_graph_state(name, graph_state))
 }
 // pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
 // }
@@ -464,7 +503,7 @@ pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, fra
 pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame) {
 	use std::path::PathBuf;
 
-	let save_path = PathBuf::from(&ui_state.cur_dir).join(format!("{}.json", state.name));
+	let save_path = PathBuf::from(&ui_state.cur_dir).join(format!("{}.json", state.graph_state.name));
 	if let Some(parent) = save_path.parent() {
 		// Recursively create all parent directories if they don't exist
 
@@ -477,7 +516,7 @@ pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _fr
 		ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
 		return;
 	};
-	if let Err(e) = serialize_to_json(&mut file, &state.entries, ui_state.graph_config.clone()) {
+	if let Err(e) = serialize_graph_state_to_json(&mut file, &state.graph_state) {
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
@@ -511,7 +550,8 @@ pub fn load_file<T: EvalexprFloat>(
 	id_counter: &mut u64,
 ) -> Result<(), String> {
 	if let Some(file) = ser_states.get(file_name) {
-		let (entries, default_graph_config) = deserialize_from_json::<T>(file.as_bytes(), id_counter)?;
+		let (entries, default_graph_config) =
+			deserialize_graph_state_from_json::<T>(file.as_bytes(), id_counter)?;
 		state.entries = entries;
 		state.saved_graph_config = default_graph_config;
 
@@ -522,21 +562,14 @@ pub fn load_file<T: EvalexprFloat>(
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file<T: EvalexprFloat>(
-	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
-	id_counter: &mut u64,
-) -> Result<(), String> {
+	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str,
+) -> Result<GraphState<T>, String> {
 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
 		return Err(format!("Could not open file: {}", file_name));
 	};
-	let (entries, default_graph_config) = deserialize_from_json::<T>(&file, id_counter)
-		.map_err(|e| format!("Could not deserialize file: {}", e))?;
-	state.entries = entries;
-	state.saved_graph_config = default_graph_config;
-
-	state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
-	state.clear_cache = true;
-
-	Ok(())
+	let name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
+	deserialize_graph_state_from_json::<T>(name, &file)
+		.map_err(|e| format!("Could not deserialize file: {}", e))
 }
 
 pub fn persistence_ui<T: EvalexprFloat>(
@@ -544,8 +577,8 @@ pub fn persistence_ui<T: EvalexprFloat>(
 ) {
 	ui.horizontal_top(|ui| {
 		ui.label("Name:");
-		ui.text_edit_singleline(&mut state.name);
-		if !state.name.trim().is_empty() && ui.button("Save").clicked() {
+		ui.text_edit_singleline(&mut state.graph_state.name);
+		if !state.graph_state.name.trim().is_empty() && ui.button("Save").clicked() {
 			save_file(ui_state, state, frame);
 		}
 	});
@@ -571,15 +604,10 @@ pub fn persistence_ui<T: EvalexprFloat>(
 			for file_name in ui_state.serialized_states.keys() {
 				ui.label(file_name);
 				if ui.button("Load").clicked() {
-					if let Err(e) = load_file(
-						&ui_state.cur_dir, &ui_state.serialized_states, file_name, state,
-						&mut ui_state.next_id,
-					) {
-						ui_state.serialization_error = Some(format!("Could not open file: {}", e));
-						return;
-					};
-					ui_state.serialization_error = None;
-					ui_state.reset_graph = true;
+          let graph_state_res = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name);
+          load_graph_state(ui_state,state, graph_state_res);
+          // todo: hack for borrow checker, fix later
+          break;
 				}
 				if ui.button("Delete").clicked() {
 					ui_state.file_to_remove = Some(file_name.clone());
