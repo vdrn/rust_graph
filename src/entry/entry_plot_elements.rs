@@ -4,13 +4,15 @@ use core::mem;
 use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
-use egui_plot::{Line, PlotItemBase, PlotPoint, PlotPoints, PlotTransform, Points, Polygon};
+use egui_plot::{PlotItemBase, PlotPoint, PlotTransform, Points, Polygon};
 use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
-	DrawBuffer, DrawLine, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
+	DrawBuffer, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
 };
+use crate::drawing::TextPlotItem;
+use crate::drawing::line::DrawLine2;
 use crate::entry::{
 	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColor, ProcessedColors, f64_to_value, value_to_color
 };
@@ -18,8 +20,6 @@ use crate::marching_squares::MeshBuilder;
 use crate::math::{
 	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
 };
-use crate::widgets::TextPlotItem;
-use crate::widgets::line::DrawLine2;
 use crate::{GraphState, ThreadLocalContext, UiState, marching_squares, thread_local_get};
 
 #[derive(Clone)]
@@ -416,8 +416,8 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, _, y| expr_func.call(cc, ctx, &[f64_to_value::<T>(y)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-                  color,
-                  0.5
+									color,
+									0.5,
 								)?;
 							} else {
 								draw_implicit(
@@ -429,8 +429,8 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									|cc, x, _| expr_func.call(cc, ctx, &[f64_to_value::<T>(x)]),
 									&mut add_line,
 									&mut add_egui_plot_mesh,
-                  color,
-                  0.5
+									color,
+									0.5,
 								)?;
 							}
 						},
@@ -449,8 +449,8 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								},
 								&mut add_line,
 								&mut add_egui_plot_mesh,
-                color,
-                0.5
+								color,
+								0.5,
 							)?;
 						}
 					}
@@ -465,7 +465,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut DrawBuffer,
 ) {
-  draw_buffer.clear();
+	draw_buffer.clear();
 	// println!("step_size: {deriv_step_x}");
 	let egui_id = Id::new(id);
 
@@ -968,7 +968,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		max_segment_y
 	};
 
-	let eval_point_at = |stack:&mut Stack<T>, arg: f64| -> Result<Option<(f64, PlotPoint)>, String> {
+	let eval_point_at = |stack: &mut Stack<T>, arg: f64| -> Result<Option<(f64, PlotPoint)>, String> {
 		match func.call(stack, ctx, &[f64_to_value::<T>(arg)]) {
 			Ok(Value::Float(value)) => {
 				if is_float2 {
@@ -1166,7 +1166,9 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 										})
 										.or_else(|| {
 											discontinuity_detector2.detect(curr_arg, curr_p.x, |arg| {
-												eval_point_at(&mut stack, arg).ok().and_then(|v| v.map(|p| p.1.x))
+												eval_point_at(&mut stack, arg)
+													.ok()
+													.and_then(|v| v.map(|p| p.1.x))
 											})
 										}) {
 										add_line(mem::take(&mut pp_buffer), true);
@@ -1187,12 +1189,16 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 									if let Some((left, right)) = match TY {
 										SimpleFunctionType::X => {
 											discontinuity_detector.detect(curr_p.x, curr_p.y, |arg| {
-												eval_point_at(&mut stack, arg).ok().and_then(|v| v.map(|p| p.1.y))
+												eval_point_at(&mut stack, arg)
+													.ok()
+													.and_then(|v| v.map(|p| p.1.y))
 											})
 										},
 										SimpleFunctionType::Y => {
 											discontinuity_detector.detect(curr_p.y, curr_p.x, |arg| {
-												eval_point_at(&mut stack, arg).ok().and_then(|v| v.map(|p| p.1.x))
+												eval_point_at(&mut stack, arg)
+													.ok()
+													.and_then(|v| v.map(|p| p.1.x))
 											})
 										},
 									} {
@@ -1289,7 +1295,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			(None, Some((curr_arg, p))) => {
 				// coming back from NaN
 				let c = color(&mut stack, T::from_f64(p.x), T::from_f64(p.y), T::from_f64(curr_arg))?;
-				add_point(&mut pp_buffer, (p,c), plot_params, &mut add_line);
+				add_point(&mut pp_buffer, (p, c), plot_params, &mut add_line);
 			},
 			(None, None) => {
 				// Still NaN, nothing to do
@@ -1336,11 +1342,10 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 #[allow(clippy::too_many_arguments)]
 fn draw_implicit<T: EvalexprFloat>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, plot_params: &PlotParams, id: u64,
-	resolution: usize, equation_type: EquationType, 
+	resolution: usize, equation_type: EquationType,
 	eval_fn: impl Fn(&mut RefMut<Stack<T>>, f64, f64) -> Result<Value<T>, EvalexprError<T>> + Sync,
-	mut add_line: impl FnMut(Vec<(PlotPoint,Color32)>), mut add_mesh: impl FnMut(MeshBuilder),
-  eval_color: impl Fn(&mut Stack<T>, T, T, T) -> Result<Color32, String> + Sync,
-  fill_alpha: f32,
+	mut add_line: impl FnMut(Vec<(PlotPoint, Color32)>), mut add_mesh: impl FnMut(MeshBuilder),
+	eval_color: impl Fn(&mut Stack<T>, T, T, T) -> Result<Color32, String> + Sync, fill_alpha: f32,
 ) -> Result<(), (u64, String)> {
 	let mins = (plot_params.first_x, plot_params.first_y);
 	let maxs = (plot_params.last_x, plot_params.last_y);
@@ -1394,10 +1399,9 @@ fn draw_implicit<T: EvalexprFloat>(
 			match value {
 				Ok(v) => match v {
 					Value::Float(v) => {
-            let c = eval_color(cc, T::from_f64(x), T::from_f64(y), v)?;
-            Ok((v.to_f64(),c))
-
-          }
+						let c = eval_color(cc, T::from_f64(x), T::from_f64(y), v)?;
+						Ok((v.to_f64(), c))
+					},
 					Value::Empty => Ok((f64::NAN, Color32::TRANSPARENT)),
 					Value::Tuple(_) | Value::Float2(_, _) => {
 						Err("Implicit function must return a single value.".to_string())
@@ -1406,7 +1410,7 @@ fn draw_implicit<T: EvalexprFloat>(
 				},
 				Err(EvalexprError::ExpectedFloat { actual }) => {
 					if actual == Value::Empty {
-						Ok((f64::NAN,Color32::TRANSPARENT))
+						Ok((f64::NAN, Color32::TRANSPARENT))
 					} else {
 						Err(EvalexprError::ExpectedFloat { actual }.to_string())
 					}

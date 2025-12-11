@@ -21,7 +21,7 @@ mod entry;
 mod marching_squares;
 mod math;
 mod persistence;
-mod widgets;
+mod drawing;
 
 use app_ui::GraphConfig;
 use custom_rendering::fan_fill_renderer::FanFillRenderer;

@@ -14,7 +14,7 @@ use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, p
 use crate::entry::{
 	self, Entry, EntrySymbol, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements
 };
-use crate::widgets::{duplicate_entry_btn, popup_label, remove_entry_btn};
+use crate::drawing::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::{AppConfig, IdGenerator, State, UiState, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {

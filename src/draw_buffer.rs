@@ -8,8 +8,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
 use eframe::egui_wgpu;
-use eframe::epaint::TessellationOptions;
-use egui_plot::{Line, PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
+use egui_plot::{ PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
 use evalexpr::{EvalexprFloat, Stack};
 use thread_local::ThreadLocal;
 
@@ -19,13 +18,11 @@ use crate::entry::{Entry, EntryType, ProcessedColors};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
-use crate::widgets::TextPlotItem;
-use crate::widgets::line::DrawLine2;
+use crate::drawing::{TextPlotItem, line};
+use crate::drawing::line::DrawLine2;
 
 pub struct ProcessedShapes {
-	tesselator:           eframe::epaint::Tessellator,
-	tes_pixels_per_point: f32,
-	shapes_temp:          Vec<Shape>,
+	tesselator:           line::Tessellator,
 
 	pub lines:         Vec<ProcessedShape>,
 	pub draw_points:   Vec<DrawPoint>,
@@ -70,14 +67,13 @@ impl PlotItem for ProcessedShape {
 impl ProcessedShapes {
 	pub fn new() -> Self {
 		Self {
-			tesselator:           eframe::epaint::Tessellator::new(
-				1.0,
-				TessellationOptions::default(),
-				[12, 12],
-				vec![],
-			),
-			tes_pixels_per_point: 1.0,
-			shapes_temp:          Vec::new(),
+			// tesselator:           eframe::epaint::Tessellator::new(
+			// 	1.0,
+			// 	TessellationOptions::default(),
+			// 	[12, 12],
+			// 	vec![],
+			// ),
+      tesselator: line::Tessellator::new(1.0),
 			lines:                Vec::with_capacity(16),
 			draw_points:          Vec::with_capacity(16),
 			draw_polygons:        Vec::with_capacity(16),
@@ -92,16 +88,8 @@ impl ProcessedShapes {
 	) -> Result<(), (u64, String)> {
 		let mut stack = Stack::<T>::new();
 		let ppp = ui.pixels_per_point();
-		if self.tes_pixels_per_point != ppp {
-			self.tesselator =
-				eframe::epaint::Tessellator::new(ppp, TessellationOptions::default(), [12, 12], vec![]);
-			self.tes_pixels_per_point = ppp;
-		}
-		if let Some(prev_plot_transform) = plot_params.prev_plot_transform {
-			self.tesselator.set_clip_rect(*prev_plot_transform.frame());
-		}
+    self.tesselator.set_pixels_per_point(ppp);
 
-		// self.tesselator.set_clip_rect.
 		self.lines.clear();
 		self.draw_points.clear();
 		self.draw_polygons.clear();
@@ -128,11 +116,12 @@ impl ProcessedShapes {
 						if Some(line.id) == selected_plot_line {
               let prev_width = line.width;
               line.width += 2.0;
-              bounds.merge(&line.tessalate(&transform, &mut mesh));
+              bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
               line.width = prev_width;
 
 						} else {
-              bounds.merge(&line.tessalate(&transform, &mut mesh));
+              bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
+              // bounds.merge(&line.tessalate(&transform, &mut mesh));
 						}
 						// for shape in self.shapes_temp.drain(..) {
 						// 	self.tesselator.tessellate_shape(shape, &mut mesh);
@@ -621,39 +610,6 @@ impl PlotItem for EguiPlotMesh {
 
 	fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase { &mut self.plot_item_base }
 }
-pub struct DrawLine {
-	pub sorting_index: u32,
-	pub line:          egui_plot::Line<'static>,
-	pub id:            Id,
-	pub width:         f32,
-	pub style:         egui_plot::LineStyle,
-}
-
-impl Clone for DrawLine {
-	fn clone(&self) -> Self {
-		let line_pi = &self.line as &dyn PlotItem;
-		let points = match self.line.geometry() {
-			PlotGeometry::None => unreachable!(),
-			PlotGeometry::Rects => unreachable!(),
-			PlotGeometry::Points(plot_points) => plot_points.to_vec(),
-		};
-		let line = Line::new(line_pi.name(), PlotPoints::Owned(points))
-			.id(line_pi.id())
-			.allow_hover(line_pi.allow_hover())
-			.width(self.width)
-			.style(self.style)
-			.color(line_pi.color());
-
-		Self { sorting_index: self.sorting_index, line, style: self.style, id: self.id, width: self.width }
-	}
-}
-impl DrawLine {
-	pub fn new(
-		sorting_index: u32, id: Id, width: f32, style: egui_plot::LineStyle, line: egui_plot::Line<'static>,
-	) -> Self {
-		Self { sorting_index, id, width, line, style }
-	}
-}
 #[derive(Clone, Debug)]
 pub struct PointInteraction {
 	pub ty:     PointInteractionType,
@@ -768,8 +724,6 @@ impl DrawText {
 	pub fn new(text: TextPlotItem) -> Self { Self { text } }
 }
 
-/// SAFETY: Not Sync because of `ExplicitGenerator` callbacks, but we dont use those.
-unsafe impl Sync for DrawLine {}
 
 // pub type ExecutionResult = Result<DrawBuffer, (u64, String)>;
 
