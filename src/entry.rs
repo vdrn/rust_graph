@@ -29,10 +29,10 @@ pub struct Entry<T: EvalexprFloat> {
 	pub ty:          EntryType<T>,
 	pub draw_buffer: DrawBuffer,
 }
-pub struct ClonedEntry<T: EvalexprFloat >{
-	pub id:    u64,
+pub struct ClonedEntry<T: EvalexprFloat> {
+	pub id: u64,
 	// pub color: C,
-	pub ty:    EntryType<T>,
+	pub ty: EntryType<T>,
 }
 
 // impl<T: EvalexprFloat, C:Fn(T,T,T)->Result<Color32,String>> ClonedEntry<T,C> {
@@ -112,7 +112,7 @@ impl<T: EvalexprFloat> Expr<T> {
 	fn from_text(text: &str) -> Self {
 		// TODO preprocess here too
 		Self {
-			node:             evalexpr::build_flat_node::<T>(text).ok(),
+			node:             if text.is_empty() { None } else { evalexpr::build_flat_node::<T>(text).ok() },
 			equation_type:    EquationType::None,
 			display_rational: false,
 			expr_function:    None,
@@ -179,9 +179,18 @@ pub enum EntryType<T: EvalexprFloat> {
 		entries: Vec<Entry<T>>,
 	},
 }
+#[derive(Clone,PartialEq, Default, Copy, Debug, Serialize, Deserialize)]
+pub enum ColorEntryType {
+	Rgb,
+	#[default]
+	RgbNormalized,
+	Hsl,
+	HslNormalized,
+}
 #[derive(Clone, Debug)]
 pub struct ColorEntry<T: EvalexprFloat> {
 	pub expr: Expr<T>,
+	pub ty:   ColorEntryType,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
@@ -450,7 +459,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			active: true,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
-			ty: EntryType::Color(ColorEntry { expr: Expr::from_text("") }),
+			ty: EntryType::Color(ColorEntry { expr: Expr::from_text(""), ty: ColorEntryType::default() }),
 		}
 	}
 	pub fn new_folder(id: u64) -> Self {
@@ -609,57 +618,110 @@ pub struct ProcessedColors<T: EvalexprFloat> {
 }
 impl<T: EvalexprFloat> ProcessedColors<T> {
 	pub fn new() -> Self { Self { colors: Vec::new() } }
-	pub fn add_constant(&mut self, id: u64, color: Color32) {
-		self.colors.push((id, ProcessedColor::Constant(color)));
+	pub fn add_constant(&mut self, id: u64, name: String, color: &Value<T>, ty: ColorEntryType) {
+		let color = value_to_color(color, ty).unwrap_or(Color32::TRANSPARENT);
+		self.colors.push((id, ProcessedColor { color: ProcessedColorExpr::Constant(color), name }));
 	}
-	pub fn add_function(&mut self, id: u64, func: ExpressionFunction<T>) {
-		self.colors.push((id, ProcessedColor::Function(func)));
+	pub fn add_function(&mut self, id: u64, name: String, func: ExpressionFunction<T>, ty: ColorEntryType) {
+		self.colors.push((id, ProcessedColor { color: ProcessedColorExpr::Function(func, ty), name }));
 	}
 	pub fn clear(&mut self) { self.colors.clear(); }
+  pub fn sort(&mut self) {
+    self.colors.sort_unstable_by_key(|(id, _)| *id);
+  }
 	pub fn find_color(&self, id: u64) -> Option<&ProcessedColor<T>> {
 		self.colors.iter().find(|(i, _)| *i == id).map(|(_, c)| c)
 	}
 }
+#[derive(Clone)]
+pub struct ProcessedColor<T: EvalexprFloat> {
+	pub color: ProcessedColorExpr<T>,
+	pub name:  String,
+}
 
 #[derive(Clone)]
-pub enum ProcessedColor<T: EvalexprFloat> {
+pub enum ProcessedColorExpr<T: EvalexprFloat> {
 	Constant(Color32),
-	Function(ExpressionFunction<T>),
+	Function(ExpressionFunction<T>, ColorEntryType),
 }
 impl<T: EvalexprFloat> ProcessedColor<T> {
 	pub fn get_color32(
 		&self, stack: &mut Stack<T>, ctx: &HashMapContext<T>, x: T, y: T, v: T,
 	) -> Result<Color32, String> {
-		match self {
-			ProcessedColor::Constant(color) => Ok(*color),
-			ProcessedColor::Function(func) => value_to_color(
+		match &self.color {
+			ProcessedColorExpr::Constant(color) => Ok(*color),
+			ProcessedColorExpr::Function(func, ty) => value_to_color(
 				&func
 					.call(stack, ctx, &[Value::Float(x), Value::Float(y), Value::Float(v)])
 					.map_err(|e| e.to_string())?,
+				*ty,
 			),
 		}
 	}
 }
 
-pub fn value_to_color<T: EvalexprFloat>(value: &Value<T>) -> Result<Color32, String> {
+pub fn value_to_color<T: EvalexprFloat>(value: &Value<T>, ty: ColorEntryType) -> Result<Color32, String> {
 	match value {
 		Value::Tuple(thin_vec) => match thin_vec.len() {
 			3 | 4 => {
-				let r = thin_vec[0].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
-				let g = thin_vec[1].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
-				let b = thin_vec[2].as_float().map_err(|e| e.to_string())?.to_f64() * 255.0;
-				let a = (if thin_vec.len() == 4 {
-					thin_vec[3].as_float().map_err(|e| e.to_string())?.to_f64()
+				let r = thin_vec[0].as_float().map_err(|e| e.to_string())?.to_f64();
+				let g = thin_vec[1].as_float().map_err(|e| e.to_string())?.to_f64();
+				let b = thin_vec[2].as_float().map_err(|e| e.to_string())?.to_f64();
+				let a = if thin_vec.len() == 4 {
+					Some(thin_vec[3].as_float().map_err(|e| e.to_string())?.to_f64())
 				} else {
-					1.0
-				}) * 255.0;
-				return Ok(Color32::from_rgba_unmultiplied(r as u8, g as u8, b as u8, a as u8));
+          None
+				};
+				return Ok(match ty {
+					ColorEntryType::Rgb => Color32::from_rgba_unmultiplied(r as u8, g as u8, b as u8, a.unwrap_or(255.0) as u8),
+					ColorEntryType::RgbNormalized => Color32::from_rgba_unmultiplied(
+						(r * 255.0) as u8,
+						(g * 255.0) as u8,
+						(b * 255.0) as u8,
+						(a.unwrap_or(1.0) * 255.0) as u8,
+					),
+					ColorEntryType::Hsl => {
+						hsl_to_rgb(r as f32 / 360.0, g as f32 / 255.0, b as f32 / 255.0, (a).unwrap_or(255.0) as f32 / 255.0)
+					},
+					ColorEntryType::HslNormalized => hsl_to_rgb(r as f32, g as f32, b as f32, a.unwrap_or(1.0) as f32),
+				});
 			},
 			_ => {},
 		},
 		_ => {},
 	}
 	Err("Expected a 3 or 4 element tuple".to_string())
+}
+
+#[rustfmt::skip]
+pub fn hsl_to_rgb(h: f32, s: f32, l: f32, a:f32) -> Color32 {
+    let r;
+    let g;
+    let b;
+
+    if s == 0.0 {  r = l; g = l; b = l; }
+    else {
+        fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+            if t < 0.0 { t += 1.0 }
+            if t > 1.0 { t -= 1.0 }
+            if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
+            if t < 1.0 / 2.0 { return q; }
+            if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+            p
+        }
+
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
+        let p = 2.0 * l - q;
+        r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+        g = hue_to_rgb(p, q, h);
+        b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+    }
+
+    Color32::from_rgba_unmultiplied((r*255.0) as u8, (g*255.0) as u8, (b*255.0) as u8, (a*255.0) as u8)
 }
 pub const COLORS: &[Color32; 20] = &[
 	Color32::from_rgb(255, 107, 107), // Bright coral red

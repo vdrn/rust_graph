@@ -10,11 +10,11 @@ use eframe::egui::{
 use evalexpr::{EvalexprFloat, HashMapContext, Stack};
 
 use crate::custom_rendering::fan_fill_renderer::FillRule;
+use crate::drawing::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
+	COLORS, ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
 };
-use crate::drawing::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
@@ -42,14 +42,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 
 	let entry_is_color = matches!(entry.ty, EntryType::Color { .. });
 	let (text_col, fill_col) = if entry.active {
-		let color = entry.color.get_base_color(processed_colors, ctx, stack);
-		let color = match color {
-			Ok(color) => color,
-			Err(e) => {
-				result.error = Some(e);
-				Color32::WHITE
-			},
-		};
+		let color = entry.color.get_base_color(processed_colors, ctx, stack).unwrap_or(Color32::TRANSPARENT);
 		(Color32::BLACK, color)
 	} else {
 		(Color32::LIGHT_GRAY, egui::Color32::TRANSPARENT)
@@ -123,13 +116,11 @@ pub fn entry_ui<T: EvalexprFloat>(
 					result.needs_recompilation = true;
 				}
 			});
-			if !entry_is_color {
-				ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
-					if entry_style(ui, processed_colors, ctx, stack, entry, fill_col) {
-						result.needs_redraw = true;
-					}
-				});
-			}
+			ui.with_layout(egui::Layout::top_down(Align::RIGHT), |ui| {
+				if entry_style(ui, processed_colors, ctx, stack, entry, fill_col) {
+					result.needs_redraw = true;
+				}
+			});
 		});
 		// entry edit
 		ui.horizontal(|ui| {
@@ -145,38 +136,53 @@ fn entry_style<T: EvalexprFloat>(
 	entry: &mut Entry<T>, fill_col: Color32,
 ) -> bool {
 	let mut changed = false;
+	let is_color = matches!(entry.ty, EntryType::Color { .. });
+
 	let mut style_button = MenuButton::new(RichText::new("🎨").color(Color32::BLACK))
 		.config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside));
 	style_button.button = style_button.button.fill(fill_col);
 	style_button
 		.ui(ui, |ui| {
-			let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
-			color_button.button = color_button.button.fill(fill_col);
+			if !is_color {
+				let mut color_button = SubMenuButton::new(RichText::new("Color").color(Color32::BLACK));
+				color_button.button = color_button.button.fill(fill_col);
 
-			color_button.ui(ui, |ui| {
-				for i in 0..COLORS.len() {
-					if ui
-						.button(RichText::new("     ").background_color(COLORS[i]))
-						.on_hover_text("Change Color")
-						.clicked()
-					{
-						changed = true;
-						entry.color = EntryColor::DefaultColor(i);
-					}
-				}
-				for processed_color in processed_colors.colors.iter() {
-					if let Ok(color) = processed_color.1.get_color32(stack, ctx, T::ZERO, T::ZERO, T::ZERO) {
-						if ui
-							.button(RichText::new("     ").background_color(color))
-							.on_hover_text("Change Color")
-							.clicked()
-						{
-							changed = true;
-							entry.color = EntryColor::CustomColor(processed_color.0);
-						}
-					}
-				}
-			});
+				color_button.ui(ui, |ui| {
+					ui.allocate_ui(egui::vec2(150.0, 0.0), |ui| {
+						ui.horizontal_wrapped(|ui| {
+							for i in 0..COLORS.len() {
+								if ui
+									.button(RichText::new("     ").background_color(COLORS[i]))
+									.on_hover_text("Change Color")
+									.clicked()
+								{
+									changed = true;
+									entry.color = EntryColor::DefaultColor(i);
+								}
+							}
+						});
+						ui.separator();
+						ui.label("Custom colors:");
+						ui.columns(2, |ui| {
+							for processed_color in processed_colors.colors.iter() {
+								if let Ok(color) =
+									processed_color.1.get_color32(stack, ctx, T::ZERO, T::ZERO, T::ZERO)
+								{
+									ui[0].label(&processed_color.1.name);
+									if ui[1]
+										.button(RichText::new("     ").background_color(color))
+										.on_hover_text("Change Color")
+										.clicked()
+									{
+										changed = true;
+										entry.color = EntryColor::CustomColor(processed_color.0);
+									}
+								}
+							}
+						});
+					});
+				});
+			}
 			match &mut entry.ty {
 				EntryType::Function { style, parametric, parametric_fill, fill_rule, .. } => {
 					ui.separator();
@@ -264,7 +270,7 @@ fn entry_style<T: EvalexprFloat>(
 				},
 				EntryType::Constant { .. } => {},
 				EntryType::Folder { .. } => {},
-				EntryType::Color(_) => {},
+				EntryType::Color(color) => {},
 			}
 		})
 		.0
@@ -716,6 +722,34 @@ fn entry_type_ui<T: EvalexprFloat>(
 		},
 		EntryType::Color(color) => {
 			ui.horizontal(|ui| {
+				let color_type = match &color.ty {
+					ColorEntryType::Rgb => "RGB",
+					ColorEntryType::RgbNormalized => "RGB Normalized",
+					ColorEntryType::Hsl => "HSL",
+					ColorEntryType::HslNormalized => "HSL Normalized",
+				};
+				ui.menu_button(color_type, |ui| {
+					result.needs_recompilation |= ui
+						.selectable_value(&mut color.ty, ColorEntryType::Rgb, "RGB")
+						.on_hover_text("Red Green Blue (Alpha) with 0-255 range")
+						.changed();
+					result.needs_recompilation |= ui
+						.selectable_value(&mut color.ty, ColorEntryType::RgbNormalized, "RGB Normalized")
+						.on_hover_text("Red Green Blue (Alpha) with 0-1 range")
+						.changed();
+					result.needs_recompilation |= ui
+						.selectable_value(&mut color.ty, ColorEntryType::Hsl, "HSL")
+						.on_hover_text(
+							"Hue Saturation Lightness (Alpha) with 0-360 range for Hue and 0-255 ranges for \
+							 the rest.",
+						)
+						.changed();
+					result.needs_recompilation |= ui
+						.selectable_value(&mut color.ty, ColorEntryType::HslNormalized, "HSL Normalized")
+						.on_hover_text("Hue Saturation Lightness (Alpha) with 0-1 range")
+						.changed();
+				});
+
 				match expr_ui(&mut color.expr, ui, "(255,0,0)", None, clear_cache, true) {
 					Ok(changed) => {
 						result.parsed |= changed;
@@ -724,17 +758,6 @@ fn entry_type_ui<T: EvalexprFloat>(
 					Err(e) => {
 						result.error = Some(format!("Parsing error: {e}"));
 					},
-				}
-				if let Some(color) = processed_colors.find_color(entry.id) {
-					let mut stack = Stack::<T>::new();
-					match color.get_color32(&mut stack, ctx, T::ZERO, T::ZERO, T::ZERO) {
-						Ok(color) => {
-							ui.label(RichText::new("    ").background_color(color));
-						},
-						Err(e) => {
-							result.error = Some(e);
-						},
-					}
 				}
 			});
 		},
@@ -855,7 +878,7 @@ fn expr_ui<T: EvalexprFloat>(
 		text_edit = text_edit.hint_text(hint_text);
 		let response = ui.add(text_edit);
 		if response.changed() || force_update {
-			if expr.text.is_empty() {
+			if expr.text.trim().is_empty() {
 				expr.node = None;
 			} else {
 				replace_symbols(ui, response, &mut expr.text);

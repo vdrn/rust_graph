@@ -27,7 +27,7 @@ fn test_eval_and_fold_to_const(string: &str, expected: EvalexprResultValue) {
 			// make sure optimization folded a flat node to a constant
 			assert_eq!(
 				optimized.as_constant(),
-				Some(expected.clone().unwrap()),
+				Some(expected.as_ref().unwrap()),
 				"Node should be optimized to a single constant, got {:?}",
 				optimized
 			);
@@ -97,7 +97,7 @@ fn test_eval_and_fold_to_const_with_context(
 			// Make sure the final node is just a constant
 			assert_eq!(
 				optimized.as_constant(),
-				Some(expected.clone().unwrap()),
+				Some(expected.as_ref().unwrap()),
 				"Node should be optimized to a single constant, got {:?}",
 				optimized
 			);

@@ -14,7 +14,7 @@ use crate::draw_buffer::{
 use crate::drawing::TextPlotItem;
 use crate::drawing::line::DrawLine2;
 use crate::entry::{
-	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColor, ProcessedColors, f64_to_value, value_to_color
+	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColor, ProcessedColorExpr, ProcessedColors, f64_to_value, value_to_color
 };
 use crate::marching_squares::MeshBuilder;
 use crate::math::{
@@ -148,8 +148,8 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 								// todo error
 								return;
 							};
-							match pcolor.clone() {
-								ProcessedColor::Constant(color) => Box::new(move || {
+							match pcolor.clone().color {
+								ProcessedColorExpr::Constant(color) => Box::new(move || {
 									entry_create_plot_elements_async(
 										&entry_cloned,
 										sorting_idx,
@@ -159,7 +159,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 										|_, _, _, _| Ok(color),
 									)
 								}),
-								ProcessedColor::Function(expression_function) => Box::new(move || {
+								ProcessedColorExpr::Function(expression_function, ty) => Box::new(move || {
 									entry_create_plot_elements_async(
 										&entry_cloned,
 										sorting_idx,
@@ -174,7 +174,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 													&[Value::Float(x), Value::Float(y), Value::Float(v)],
 												)
 												.map_err(|e| e.to_string())
-												.and_then(|v| value_to_color(&v))
+												.and_then(|v| value_to_color(&v, ty))
 										},
 									)
 								}),

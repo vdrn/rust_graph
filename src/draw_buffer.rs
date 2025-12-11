@@ -8,21 +8,21 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
 use eframe::egui_wgpu;
-use egui_plot::{ PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
+use egui_plot::{PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
 use evalexpr::{EvalexprFloat, Stack};
 use thread_local::ThreadLocal;
 
 use crate::custom_rendering::fan_fill_renderer::{FillRule, TriangleFanVertex};
 use crate::custom_rendering::mesh_renderer::MeshCallback;
+use crate::drawing::line::DrawLine2;
+use crate::drawing::{TextPlotItem, line};
 use crate::entry::{Entry, EntryType, ProcessedColors};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
-use crate::drawing::{TextPlotItem, line};
-use crate::drawing::line::DrawLine2;
 
 pub struct ProcessedShapes {
-	tesselator:           line::Tessellator,
+	tesselator: line::Tessellator,
 
 	pub lines:         Vec<ProcessedShape>,
 	pub draw_points:   Vec<DrawPoint>,
@@ -73,22 +73,21 @@ impl ProcessedShapes {
 			// 	[12, 12],
 			// 	vec![],
 			// ),
-      tesselator: line::Tessellator::new(1.0),
-			lines:                Vec::with_capacity(16),
-			draw_points:          Vec::with_capacity(16),
-			draw_polygons:        Vec::with_capacity(16),
-			draw_texts:           Vec::with_capacity(16),
-			draw_meshes:          Vec::with_capacity(16),
+			tesselator:    line::Tessellator::new(1.0),
+			lines:         Vec::with_capacity(16),
+			draw_points:   Vec::with_capacity(16),
+			draw_polygons: Vec::with_capacity(16),
+			draw_texts:    Vec::with_capacity(16),
+			draw_meshes:   Vec::with_capacity(16),
 		}
 	}
 	pub fn process<T: EvalexprFloat>(
-		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], processed_colors: &ProcessedColors<T>,
-		ctx: &evalexpr::HashMapContext<T>, plot_params: &crate::entry::PlotParams,
+		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], 
+		plot_params: &crate::entry::PlotParams,
 		selected_plot_line: Option<Id>,
-	) -> Result<(), (u64, String)> {
-		let mut stack = Stack::<T>::new();
+	) {
 		let ppp = ui.pixels_per_point();
-    self.tesselator.set_pixels_per_point(ppp);
+		self.tesselator.set_pixels_per_point(ppp);
 
 		self.lines.clear();
 		self.draw_points.clear();
@@ -98,30 +97,30 @@ impl ProcessedShapes {
 
 		// let mut result = Vec::new();
 		if let Some(transform) = plot_params.prev_plot_transform {
-			let mut clone_draw_buffer = |color: Color32, draw_buffer: &mut DrawBuffer| {
+			let mut clone_draw_buffer = |draw_buffer: &mut DrawBuffer| {
 				let mut bounds = PlotBounds::NOTHING;
-				let mut id = None;
 				let mut name = None;
 				let mut allow_hover = false;
 				if !draw_buffer.lines.is_empty() {
 					let mut mesh = Mesh::default();
+					let mut id = Id::NULL;
+					let mut color = Color32::TRANSPARENT;
 					for line in draw_buffer.lines.iter_mut() {
-
-						id = Some(line.id);
+						id = line.id;
+						color = line.color;
 						if name.is_none() {
 							name = Some(line.name.clone());
 						}
 						allow_hover |= line.allow_hover;
 
 						if Some(line.id) == selected_plot_line {
-              let prev_width = line.width;
-              line.width += 2.0;
-              bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
-              line.width = prev_width;
-
+							let prev_width = line.width;
+							line.width += 2.0;
+							bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
+							line.width = prev_width;
 						} else {
-              bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
-              // bounds.merge(&line.tessalate(&transform, &mut mesh));
+							bounds.merge(&self.tesselator.tessalate_line(line, &transform, &mut mesh));
+							// bounds.merge(&line.tessalate(&transform, &mut mesh));
 						}
 						// for shape in self.shapes_temp.drain(..) {
 						// 	self.tesselator.tessellate_shape(shape, &mut mesh);
@@ -129,7 +128,7 @@ impl ProcessedShapes {
 					}
 					let base = PlotItemBase::new(name.unwrap_or_default());
 					self.lines.push(ProcessedShape {
-						id: id.unwrap_or(Id::NULL),
+						id,
 						shapes: mesh.into(),
 						allow_hover,
 						color,
@@ -160,24 +159,15 @@ impl ProcessedShapes {
 			for entry in entries.iter_mut() {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					for entry in entries.iter_mut() {
-						let color = entry
-							.color
-							.get_base_color(processed_colors, ctx, &mut stack)
-							.map_err(|e| (entry.id, e))?;
 						let draw_buffer = &mut entry.draw_buffer;
-						clone_draw_buffer(color, draw_buffer);
+						clone_draw_buffer(draw_buffer);
 					}
 				} else {
-					let color = entry
-						.color
-						.get_base_color(processed_colors, ctx, &mut stack)
-						.map_err(|e| (entry.id, e))?;
 					let draw_buffer = &mut entry.draw_buffer;
-					clone_draw_buffer(color, draw_buffer);
+					clone_draw_buffer(draw_buffer);
 				}
 			}
 		}
-		Ok(())
 	}
 }
 
@@ -297,12 +287,12 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 		{
 			let draw_buffer = &selected_entry.draw_buffer;
 			for line in draw_buffer.lines.iter() {
-        let plot_points = line.points();
+				let plot_points = line.points();
 				let pt_radius = line.width + 2.5;
 
 				// Find local optima
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-				for (pi, (point,_)) in plot_points.iter().enumerate() {
+				for (pi, (point, _)) in plot_points.iter().enumerate() {
 					let cur = (point.x, point.y);
 					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
 					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
@@ -432,7 +422,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 			let draw_buffer = &entry.draw_buffer;
 			for fline in draw_buffer.lines.iter() {
 				// draw_lines.par_iter().for_each(|fline| {
-        let plot_points = fline.points();
+				let plot_points = fline.points();
 				let mut draw_buffer = thread_local_get(draw_buffers).inner.borrow_mut();
 				if !fline.allow_hover {
 					continue;
@@ -444,7 +434,7 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 
 					if let Some(selected_draw_buffer) = selected_entry.map(|(s, _)| &s.draw_buffer) {
 						for selected_line in selected_draw_buffer.lines.iter() {
-              let sel_points = selected_line.points();
+							let sel_points = selected_line.points();
 							let pt_radius = selected_line.width + 2.5;
 							for sel_seg in sel_points.windows(2) {
 								if let Some(point) = intersect_segs(
@@ -723,7 +713,6 @@ pub struct DrawText {
 impl DrawText {
 	pub fn new(text: TextPlotItem) -> Self { Self { text } }
 }
-
 
 // pub type ExecutionResult = Result<DrawBuffer, (u64, String)>;
 

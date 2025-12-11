@@ -12,7 +12,7 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
-	ColorEntry, EntryColor, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
+	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state};
 
@@ -113,6 +113,8 @@ pub enum EntryTypeSerialized {
 	Color {
 		#[serde(default)]
 		expr: ExprSer,
+    #[serde(default)]
+    ty: ColorEntryType
 	},
 }
 
@@ -281,7 +283,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					EntryTypeSerialized::Folder { entries: ser_entries }
 				},
 				EntryType::Color(color) => {
-					EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr) }
+					EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr) ,ty: color.ty}
 				},
 			},
 		};
@@ -467,8 +469,8 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					let entries = deserialize_entries(entries);
 					EntryType::Folder { entries }
 				},
-				EntryTypeSerialized::Color { expr } => {
-					EntryType::Color(ColorEntry { expr: expr.into_expr(false) })
+				EntryTypeSerialized::Color { expr ,ty} => {
+					EntryType::Color(ColorEntry { expr: expr.into_expr(false), ty })
 				},
 			},
 			name:        entry.name,

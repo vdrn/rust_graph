@@ -532,9 +532,9 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 				ExpressionFunction::new(inlined_node, &[istr("x"), istr("y"), istr("v")], &mut Some(ctx))
 					.map_err(|e| e.to_string())?;
 			if let Some(value) = expr_function.as_constant() {
-				processed_colors.add_constant(entry.id, value_to_color(value)?);
+				processed_colors.add_constant(entry.id,entry.name.clone(), value, color.ty);
 			} else {
-				processed_colors.add_function(entry.id, expr_function);
+				processed_colors.add_function(entry.id,entry.name.clone(), expr_function, color.ty);
 			}
 		},
 		EntryType::Function { func, identifier, .. } => {

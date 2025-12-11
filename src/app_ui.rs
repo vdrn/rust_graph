@@ -365,6 +365,7 @@ pub fn side_panel<T: EvalexprFloat>(
 							&mut state.processed_colors,
 							&mut ui_state.optimization_errors,
 						);
+            state.processed_colors.sort();
 					}
 
 					ui_state.clear_cache = false;
@@ -449,6 +450,8 @@ pub fn graph_panel<T: EvalexprFloat>(
 					match r {
 						Ok((id, draw_buffer)) => {
 							if let Some(entry) = get_entry_mut_by_id(&mut state.graph_state.entries, id) {
+                
+								ui_state.eval_errors.remove(&id);
 								entry.draw_buffer = draw_buffer;
 							}
 						},
@@ -470,20 +473,12 @@ pub fn graph_panel<T: EvalexprFloat>(
 		// TODO: this is not enough for changedete4ction.
 		if changed || received_new || ui_state.reset_graph || ui_state.force_process_elements {
 			scope!("process_draw_buffers");
-			match ui_state.processed_shapes.process(
+			ui_state.processed_shapes.process(
 				ui,
 				&mut state.graph_state.entries,
-				&mut state.processed_colors,
-				&state.ctx,
 				&plot_params,
 				ui_state.selected_plot_line.map(|(id, _)| id),
-			) {
-				Ok(_) => {},
-				Err((id, e)) => {
-					// TODO; we need clearing too, cant work like this
-					ui_state.eval_errors.insert(id, e);
-				},
-			}
+			); 
 			ui.ctx().request_repaint();
 		}
 		ui_state.force_process_elements = false;
