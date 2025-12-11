@@ -12,7 +12,7 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
-	ColorEntry, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
+	ColorEntry, EntryColor, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state};
 
@@ -34,7 +34,8 @@ pub struct EntrySerialized {
 	name:    String,
 	#[serde(default = "default_true")]
 	visible: bool,
-	color:   usize,
+  #[serde(default)]
+	color:   EntryColor,
 	ty:      EntryTypeSerialized,
 }
 #[derive(Clone, Serialize, PartialEq, Deserialize, Default)]
@@ -219,7 +220,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 			id:      entry.id,
 			name:    entry.name.clone(),
 			visible: entry.active,
-			color:   entry.color,
+			color:   entry.color.clone(),
 			ty:      match &entry.ty {
 				EntryType::Function {
 					func,

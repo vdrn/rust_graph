@@ -10,16 +10,17 @@ use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
 use eframe::egui_wgpu;
 use eframe::epaint::TessellationOptions;
 use egui_plot::{Line, PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
-use evalexpr::EvalexprFloat;
+use evalexpr::{EvalexprFloat, Stack};
 use thread_local::ThreadLocal;
 
 use crate::custom_rendering::fan_fill_renderer::{FillRule, TriangleFanVertex};
 use crate::custom_rendering::mesh_renderer::MeshCallback;
-use crate::entry::{Entry, EntryType};
+use crate::entry::{Entry, EntryType, ProcessedColors};
 use crate::marching_squares::MeshBuilder;
 use crate::math::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::thread_local_get;
 use crate::widgets::TextPlotItem;
+use crate::widgets::line::DrawLine2;
 
 pub struct ProcessedShapes {
 	tesselator:           eframe::epaint::Tessellator,
@@ -85,9 +86,11 @@ impl ProcessedShapes {
 		}
 	}
 	pub fn process<T: EvalexprFloat>(
-		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], plot_params: &crate::entry::PlotParams,
+		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], processed_colors: &ProcessedColors<T>,
+		ctx: &evalexpr::HashMapContext<T>, plot_params: &crate::entry::PlotParams,
 		selected_plot_line: Option<Id>,
-	) {
+	) -> Result<(), (u64, String)> {
+		let mut stack = Stack::<T>::new();
 		let ppp = ui.pixels_per_point();
 		if self.tes_pixels_per_point != ppp {
 			self.tesselator =
@@ -112,39 +115,39 @@ impl ProcessedShapes {
 				let mut id = None;
 				let mut name = None;
 				let mut allow_hover = false;
-				let mut mesh = Mesh::default();
-				for line in draw_buffer.lines.iter_mut() {
-					bounds.merge(&line.line.bounds());
-					id = Some(line.id);
-					if name.is_none() {
-						name = Some((&line.line as &dyn PlotItem).name().to_string());
-					}
-					allow_hover |= (&line.line as &dyn PlotItem).allow_hover();
+				if !draw_buffer.lines.is_empty() {
+					let mut mesh = Mesh::default();
+					for line in draw_buffer.lines.iter_mut() {
 
-					if Some(line.id) == selected_plot_line {
-						// thanks to awesome builder api
-						let mut temp_line = Line::new("", vec![]);
-						core::mem::swap(&mut temp_line, &mut line.line);
-						temp_line = temp_line.width(line.width + 2.0);
-						temp_line.shapes(ui, &transform, &mut self.shapes_temp);
-						temp_line = temp_line.width(line.width);
-						core::mem::swap(&mut temp_line, &mut line.line);
-					} else {
-						line.line.shapes(ui, &transform, &mut self.shapes_temp);
+						id = Some(line.id);
+						if name.is_none() {
+							name = Some(line.name.clone());
+						}
+						allow_hover |= line.allow_hover;
+
+						if Some(line.id) == selected_plot_line {
+              let prev_width = line.width;
+              line.width += 2.0;
+              bounds.merge(&line.tessalate(&transform, &mut mesh));
+              line.width = prev_width;
+
+						} else {
+              bounds.merge(&line.tessalate(&transform, &mut mesh));
+						}
+						// for shape in self.shapes_temp.drain(..) {
+						// 	self.tesselator.tessellate_shape(shape, &mut mesh);
+						// }
 					}
-					for shape in self.shapes_temp.drain(..) {
-						self.tesselator.tessellate_shape(shape, &mut mesh);
-					}
+					let base = PlotItemBase::new(name.unwrap_or_default());
+					self.lines.push(ProcessedShape {
+						id: id.unwrap_or(Id::NULL),
+						shapes: mesh.into(),
+						allow_hover,
+						color,
+						bounds,
+						base,
+					});
 				}
-				let base = PlotItemBase::new(name.unwrap_or_default());
-				self.lines.push(ProcessedShape {
-					id: id.unwrap_or(Id::NULL),
-					shapes: mesh.into(),
-					allow_hover,
-					color,
-					bounds,
-					base,
-				});
 				for mesh in draw_buffer.meshes.iter() {
 					self.draw_meshes.push(mesh.clone());
 				}
@@ -168,17 +171,24 @@ impl ProcessedShapes {
 			for entry in entries.iter_mut() {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					for entry in entries.iter_mut() {
-						let color = entry.color();
+						let color = entry
+							.color
+							.get_base_color(processed_colors, ctx, &mut stack)
+							.map_err(|e| (entry.id, e))?;
 						let draw_buffer = &mut entry.draw_buffer;
 						clone_draw_buffer(color, draw_buffer);
 					}
 				} else {
-					let color = entry.color();
+					let color = entry
+						.color
+						.get_base_color(processed_colors, ctx, &mut stack)
+						.map_err(|e| (entry.id, e))?;
 					let draw_buffer = &mut entry.draw_buffer;
 					clone_draw_buffer(color, draw_buffer);
 				}
 			}
 		}
+		Ok(())
 	}
 }
 
@@ -191,7 +201,7 @@ impl Default for DrawBufferRC {
 }
 
 pub struct DrawBuffer {
-	pub lines:    Vec<DrawLine>,
+	pub lines:    Vec<DrawLine2>,
 	pub points:   Vec<DrawPoint>,
 	pub polygons: Vec<DrawPolygonGroup>,
 	pub texts:    Vec<DrawText>,
@@ -298,20 +308,18 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 		{
 			let draw_buffer = &selected_entry.draw_buffer;
 			for line in draw_buffer.lines.iter() {
-				let PlotGeometry::Points(plot_points) = line.line.geometry() else {
-					continue;
-				};
+        let plot_points = line.points();
 				let pt_radius = line.width + 2.5;
 
 				// Find local optima
 				let mut prev: [Option<(f64, f64)>; 2] = [None; 2];
-				for (pi, point) in plot_points.iter().enumerate() {
+				for (pi, (point,_)) in plot_points.iter().enumerate() {
 					let cur = (point.x, point.y);
 					fn less_then(a: f64, b: f64, e: f64) -> bool { b - a > e }
 					fn greater_then(a: f64, b: f64, e: f64) -> bool { a - b > e }
 					// Find closest point to mouse
 					if let Some(prev_1) = prev[1] {
-						if (&line.line as &dyn PlotItem).allow_hover() {
+						if line.allow_hover {
 							hover(prev_1, cur);
 						}
 						// if show_closest_point_to_mouse && let Some(mouse_pos_in_graph) =
@@ -435,29 +443,23 @@ pub fn process_draw_buffers<T: EvalexprFloat>(
 			let draw_buffer = &entry.draw_buffer;
 			for fline in draw_buffer.lines.iter() {
 				// draw_lines.par_iter().for_each(|fline| {
-				let PlotGeometry::Points(plot_points) = fline.line.geometry() else {
-					continue;
-				};
+        let plot_points = fline.points();
 				let mut draw_buffer = thread_local_get(draw_buffers).inner.borrow_mut();
-				if !<Line as PlotItem>::allow_hover(&fline.line) {
+				if !fline.allow_hover {
 					continue;
 				}
 				// find intersections
 				let mut pi = 0;
 				for plot_seg in plot_points.windows(2) {
-					hover((plot_seg[0].x, plot_seg[0].y), (plot_seg[1].x, plot_seg[1].y));
+					hover((plot_seg[0].0.x, plot_seg[0].0.y), (plot_seg[1].0.x, plot_seg[1].0.y));
 
-					if let Some(selected_draw_buffer) =
-						selected_entry.map(|(s, _)| &s.draw_buffer)
-					{
+					if let Some(selected_draw_buffer) = selected_entry.map(|(s, _)| &s.draw_buffer) {
 						for selected_line in selected_draw_buffer.lines.iter() {
-							let PlotGeometry::Points(sel_points) = selected_line.line.geometry() else {
-								continue;
-							};
+              let sel_points = selected_line.points();
 							let pt_radius = selected_line.width + 2.5;
 							for sel_seg in sel_points.windows(2) {
 								if let Some(point) = intersect_segs(
-									plot_seg[0], plot_seg[1], sel_seg[0], sel_seg[1], plot_params.eps,
+									plot_seg[0].0, plot_seg[1].0, sel_seg[0].0, sel_seg[1].0, plot_params.eps,
 								) {
 									draw_buffer.points.push(DrawPoint::new(
 										fline.sorting_index,
@@ -1207,7 +1209,7 @@ impl MultiDrawBufferScheduler {
 			result = Some(buffers);
 			self.average.1 += 1;
 			self.average.0 += duration;
-      // println!("duration {duration:?}");
+			// println!("duration {duration:?}");
 			// ido = Some(id);
 			// println!("Received timestamp {timestamp:?} earliest {:?} latest {:?}", self.earliest_one,
 			// self.latest_one);
@@ -1215,9 +1217,9 @@ impl MultiDrawBufferScheduler {
 		}
 
 		let has_outstanding = self.scheduled;
-    if result.is_some() {
-      // println!("average : {:?}", self.average.0 / self.average.1 as u32);
-    }
+		if result.is_some() {
+			// println!("average : {:?}", self.average.0 / self.average.1 as u32);
+		}
 		(
 			has_outstanding,
 			result, /* if received {

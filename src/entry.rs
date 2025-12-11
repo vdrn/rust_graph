@@ -21,46 +21,23 @@ pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 200;
 pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
 pub const MIN_IMPLICIT_RESOLUTION: usize = 10;
 
-pub const COLORS: &[Color32; 20] = &[
-	Color32::from_rgb(255, 107, 107), // Bright coral red
-	Color32::from_rgb(78, 205, 196),  // Turquoise
-	Color32::from_rgb(69, 183, 209),  // Sky blue
-	Color32::from_rgb(255, 160, 122), // Light salmon
-	Color32::from_rgb(152, 216, 200), // Mint green
-	Color32::from_rgb(255, 217, 61),  // Golden yellow
-	Color32::from_rgb(107, 207, 127), // Fresh green
-	Color32::from_rgb(199, 125, 255), // Bright purple
-	Color32::from_rgb(255, 133, 161), // Pink
-	Color32::from_rgb(93, 173, 226),  // Bright blue
-	Color32::from_rgb(248, 183, 57),  // Orange
-	Color32::from_rgb(127, 219, 255), // Aqua
-	Color32::from_rgb(57, 255, 20),   // Neon green
-	Color32::from_rgb(255, 20, 147),  // Deep pink
-	Color32::from_rgb(0, 217, 255),   // Cyan
-	Color32::from_rgb(255, 179, 71),  // Peach
-	Color32::from_rgb(139, 92, 246),  // Violet
-	Color32::from_rgb(52, 211, 153),  // Emerald
-	Color32::from_rgb(244, 114, 182), // Hot pink
-	Color32::from_rgb(251, 191, 36),  // Amber
-];
-pub const NUM_COLORS: usize = COLORS.len();
-
 pub struct Entry<T: EvalexprFloat> {
 	pub id:          u64,
 	pub name:        String,
 	pub active:      bool,
-	pub color:       usize,
+	pub color:       EntryColor,
 	pub ty:          EntryType<T>,
 	pub draw_buffer: DrawBuffer,
 }
-pub struct ClonedEntry<T: EvalexprFloat> {
+pub struct ClonedEntry<T: EvalexprFloat >{
 	pub id:    u64,
-	pub color: usize,
+	// pub color: C,
 	pub ty:    EntryType<T>,
 }
-impl<T: EvalexprFloat> ClonedEntry<T> {
-	fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
-}
+
+// impl<T: EvalexprFloat, C:Fn(T,T,T)->Result<Color32,String>> ClonedEntry<T,C> {
+// 	fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
+// }
 
 impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -80,7 +57,7 @@ impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
 			id:          self.id,
 			name:        self.name.clone(),
 			active:      self.active,
-			color:       self.color,
+			color:       self.color.clone(),
 			ty:          self.ty.clone(),
 			draw_buffer: DrawBuffer::empty(),
 		}
@@ -360,7 +337,7 @@ pub enum EntrySymbol {
 	Color,
 }
 impl EntrySymbol {
-	pub fn symbol(self,active:bool) -> &'static str {
+	pub fn symbol(self, active: bool) -> &'static str {
 		match self {
 			EntrySymbol::Function => "λ",
 			EntrySymbol::Constant => {
@@ -382,7 +359,7 @@ impl EntrySymbol {
 		}
 	}
 	pub fn symbol_with_name(self) -> &'static str {
-		match self{
+		match self {
 			EntrySymbol::Function => "λ   Function",
 			EntrySymbol::Constant => "⏵ Constant",
 			EntrySymbol::Points => "◊ Points",
@@ -391,7 +368,7 @@ impl EntrySymbol {
 		}
 	}
 	pub fn name(self) -> &'static str {
-		match self{
+		match self {
 			EntrySymbol::Function => "Function",
 			EntrySymbol::Constant => "Constant",
 			EntrySymbol::Points => "Points",
@@ -411,11 +388,11 @@ impl<T: EvalexprFloat> Entry<T> {
 			EntryType::Color { .. } => EntrySymbol::Color,
 		}
 	}
-	pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
+	// pub fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
 	pub fn new_function(id: u64, text: &str) -> Self {
 		Self {
 			id,
-			color: id as usize % NUM_COLORS,
+			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
@@ -438,7 +415,7 @@ impl<T: EvalexprFloat> Entry<T> {
 	pub fn new_constant(id: u64) -> Self {
 		Self {
 			id,
-			color: id as usize % NUM_COLORS,
+			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: false,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
@@ -455,7 +432,7 @@ impl<T: EvalexprFloat> Entry<T> {
 	pub fn new_points(id: u64) -> Self {
 		Self {
 			id,
-			color: id as usize % NUM_COLORS,
+			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
@@ -469,7 +446,7 @@ impl<T: EvalexprFloat> Entry<T> {
 	pub fn new_color(id: u64) -> Self {
 		Self {
 			id,
-			color: id as usize % NUM_COLORS,
+			color: EntryColor::CustomColor(id),
 			active: true,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
@@ -479,7 +456,7 @@ impl<T: EvalexprFloat> Entry<T> {
 	pub fn new_folder(id: u64) -> Self {
 		Self {
 			id,
-			color: id as usize % NUM_COLORS,
+			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
 			draw_buffer: DrawBuffer::empty(),
@@ -644,6 +621,7 @@ impl<T: EvalexprFloat> ProcessedColors<T> {
 	}
 }
 
+#[derive(Clone)]
 pub enum ProcessedColor<T: EvalexprFloat> {
 	Constant(Color32),
 	Function(ExpressionFunction<T>),
@@ -682,4 +660,53 @@ pub fn value_to_color<T: EvalexprFloat>(value: &Value<T>) -> Result<Color32, Str
 		_ => {},
 	}
 	Err("Expected a 3 or 4 element tuple".to_string())
+}
+pub const COLORS: &[Color32; 20] = &[
+	Color32::from_rgb(255, 107, 107), // Bright coral red
+	Color32::from_rgb(78, 205, 196),  // Turquoise
+	Color32::from_rgb(69, 183, 209),  // Sky blue
+	Color32::from_rgb(255, 160, 122), // Light salmon
+	Color32::from_rgb(152, 216, 200), // Mint green
+	Color32::from_rgb(255, 217, 61),  // Golden yellow
+	Color32::from_rgb(107, 207, 127), // Fresh green
+	Color32::from_rgb(199, 125, 255), // Bright purple
+	Color32::from_rgb(255, 133, 161), // Pink
+	Color32::from_rgb(93, 173, 226),  // Bright blue
+	Color32::from_rgb(248, 183, 57),  // Orange
+	Color32::from_rgb(127, 219, 255), // Aqua
+	Color32::from_rgb(57, 255, 20),   // Neon green
+	Color32::from_rgb(255, 20, 147),  // Deep pink
+	Color32::from_rgb(0, 217, 255),   // Cyan
+	Color32::from_rgb(255, 179, 71),  // Peach
+	Color32::from_rgb(139, 92, 246),  // Violet
+	Color32::from_rgb(52, 211, 153),  // Emerald
+	Color32::from_rgb(244, 114, 182), // Hot pink
+	Color32::from_rgb(251, 191, 36),  // Amber
+];
+pub const NUM_COLORS: usize = COLORS.len();
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum EntryColor {
+	DefaultColor(usize),
+	CustomColor(u64),
+}
+
+impl Default for EntryColor {
+	fn default() -> Self { Self::DefaultColor(0) }
+}
+
+impl EntryColor {
+	pub fn get_base_color<T: EvalexprFloat>(
+		&self, processed_colors: &ProcessedColors<T>, ctx: &evalexpr::HashMapContext<T>, stack: &mut Stack<T>,
+	) -> Result<Color32, String> {
+		match self {
+			EntryColor::DefaultColor(i) => Ok(COLORS[*i % COLORS.len()]),
+			EntryColor::CustomColor(id) => {
+				if let Some(color) = processed_colors.find_color(*id) {
+					Ok(color.get_color32(stack, ctx, T::ZERO, T::ZERO, T::ZERO)?)
+				} else {
+					Err(format!("Color with id {} not found", id))
+				}
+			},
+		}
+	}
 }

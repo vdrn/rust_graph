@@ -6,7 +6,7 @@ use eframe::egui::{
 };
 use eframe::epaint::Color32;
 use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, PlotUi, VLine};
-use evalexpr::EvalexprFloat;
+use evalexpr::{EvalexprFloat, Stack};
 use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
@@ -32,7 +32,6 @@ fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 pub fn side_panel<T: EvalexprFloat>(
 	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) -> bool {
-
 	scope!("side_panel");
 	let changed = SidePanel::left("left_panel")
 		.default_width(200.0)
@@ -100,6 +99,7 @@ pub fn side_panel<T: EvalexprFloat>(
 					let mut duplicate = None;
 					let mut animating = false;
 					let mut needs_redraw = false;
+					let mut stack = Stack::<T>::new();
 					// println!("state.entries: {:?}", state.entries.iter().map(|e|e.id).collect::<Vec<_>>());
 					egui_dnd::dnd(ui, "entries_dnd").show_vec(
 						&mut state.graph_state.entries,
@@ -171,7 +171,7 @@ pub fn side_panel<T: EvalexprFloat>(
 															ui.horizontal(|ui| {
 																let fe_result = entry::entry_ui(
 																	ui, &state.ctx, &state.processed_colors,
-																	entry, ui_state.clear_cache,
+																	&mut stack, entry, ui_state.clear_cache,
 																);
 																if fe_result.remove {
 																	remove_from_folder = Some(entry.id);
@@ -218,7 +218,7 @@ pub fn side_panel<T: EvalexprFloat>(
 										});
 										ui.horizontal(|ui| {
 											let result = entry::entry_ui(
-												ui, &state.ctx, &state.processed_colors, entry,
+												ui, &state.ctx, &state.processed_colors, &mut stack, entry,
 												ui_state.clear_cache,
 											);
 											if result.remove {
@@ -470,12 +470,20 @@ pub fn graph_panel<T: EvalexprFloat>(
 		// TODO: this is not enough for changedete4ction.
 		if changed || received_new || ui_state.reset_graph || ui_state.force_process_elements {
 			scope!("process_draw_buffers");
-			ui_state.processed_shapes.process(
+			match ui_state.processed_shapes.process(
 				ui,
 				&mut state.graph_state.entries,
+				&mut state.processed_colors,
+				&state.ctx,
 				&plot_params,
 				ui_state.selected_plot_line.map(|(id, _)| id),
-			);
+			) {
+				Ok(_) => {},
+				Err((id, e)) => {
+					// TODO; we need clearing too, cant work like this
+					ui_state.eval_errors.insert(id, e);
+				},
+			}
 			ui.ctx().request_repaint();
 		}
 		ui_state.force_process_elements = false;
@@ -562,8 +570,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 			custom_renderer.reset_textures();
 		}
 
-		let prev_plot_bounds = state
-			.graph_state.prev_plot_bounds();
+		let prev_plot_bounds = state.graph_state.prev_plot_bounds();
 
 		let plot_res = plot.show(ui, |plot_ui| {
 			scope!("graph_show");
@@ -673,6 +680,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 					&main_context,
 					&plot_params,
 					&state.thread_local_context,
+          &state.processed_colors,
 				);
 			}
 

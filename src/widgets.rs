@@ -1,10 +1,13 @@
 use core::ops::RangeInclusive;
 
+
 use eframe::egui::{
 	self, Align2, Area, Color32, DragValue, Frame, Id, Slider, SliderClamping, Stroke, TextStyle, Ui, Widget, WidgetText
 };
 use eframe::epaint::{Shape, TextShape};
 use egui_plot::{PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotTransform};
+
+pub mod line;
 
 pub fn duplicate_entry_btn(ui: &mut Ui, text: &str) -> bool {
 	ui.button("🗐").on_hover_text(format!("Duplicate {text}")).clicked()

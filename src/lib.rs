@@ -175,16 +175,6 @@ impl<T: EvalexprFloat> State<T> {
 	}
 }
 
-// struct State<T: EvalexprFloat> {
-// 	entries:              Vec<Entry<T>>,
-// 	ctx:                  evalexpr::HashMapContext<T>,
-// 	saved_graph_config:   GraphConfig,
-// 	name:                 String,
-// 	clear_cache:          bool,
-// 	thread_local_context: Arc<ThreadLocal<ThreadLocalContext<T>>>,
-// 	processed_colors:     ProcessedColors<T>,
-// }
-
 #[derive(Serialize, Deserialize)]
 struct AppConfig {
 	dark_mode:  bool,
