@@ -227,6 +227,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 			style,
 			fill_rule,
 			implicit_resolution,
+      fill_alpha,
 			..
 		} => {
 			let default_color =
@@ -274,7 +275,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 				});
 			};
 			let fill_color =
-				Color32::from_rgba_unmultiplied(default_color.r(), default_color.g(), default_color.b(), 128);
+				Color32::from_rgba_unmultiplied(default_color.r(), default_color.g(), default_color.b(), (default_color.a() as f32 *  fill_alpha.to_f32()) as u8);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
@@ -417,7 +418,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									&mut add_line,
 									&mut add_egui_plot_mesh,
 									color,
-									0.5,
+									fill_alpha.to_f32(),
 								)?;
 							} else {
 								draw_implicit(
@@ -430,7 +431,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 									&mut add_line,
 									&mut add_egui_plot_mesh,
 									color,
-									0.5,
+									fill_alpha.to_f32(),
 								)?;
 							}
 						},
@@ -450,7 +451,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								&mut add_line,
 								&mut add_egui_plot_mesh,
 								color,
-								0.5,
+									fill_alpha.to_f32(),
 							)?;
 						}
 					}
@@ -509,7 +510,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 				&& points_len > 2
 				&& let Some(plot_trans) = &plot_params.prev_plot_transform
 			{
-				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 128);
+				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (color.a() as f32  * style.fill_alpha.to_f32() ) as u8);
 				Some((FillMesh::new(fill_color, style.fill_rule), plot_trans))
 			} else {
 				None

@@ -12,6 +12,7 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
+  FillAlpha,
 	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
 use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state};
@@ -87,6 +88,8 @@ pub enum EntryTypeSerialized {
 		parametric_fill:     bool,
 		#[serde(default)]
 		fill_rule:           FillRule,
+		#[serde(default)]
+    fill_alpha: FillAlpha,
 	},
 	Constant {
 		value:       f64,
@@ -184,6 +187,8 @@ pub struct PointStyleSerialized {
 	fill_rule:              FillRule,
 	#[serde(default)]
 	connect_first_and_last: bool,
+  #[serde(default)]
+  fill_alpha: FillAlpha,
 }
 impl PointStyleSerialized {
 	fn from_point_style<T: EvalexprFloat>(point_style: &PointStyle<T>) -> Self {
@@ -198,6 +203,7 @@ impl PointStyleSerialized {
 				.map(LabelConfigSerialized::from_label_config),
 			fill:                   point_style.fill,
 			fill_rule:              point_style.fill_rule,
+      fill_alpha: point_style.fill_alpha,
 			connect_first_and_last: point_style.connect_first_and_last,
 		}
 	}
@@ -210,6 +216,7 @@ impl PointStyleSerialized {
 			label_config:           self.label_config.map(|label_config| label_config.into_label_config()),
 			fill:                   self.fill,
 			fill_rule:              self.fill_rule,
+      fill_alpha: self.fill_alpha,
 			connect_first_and_last: self.connect_first_and_last,
 		}
 	}
@@ -233,6 +240,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					implicit_resolution,
 					parametric_fill,
 					fill_rule,
+          fill_alpha,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -243,6 +251,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					fill_rule:           *fill_rule,
 					implicit_resolution: *implicit_resolution,
 					parametric_fill:     *parametric_fill,
+          fill_alpha: *fill_alpha,
 				},
 				EntryType::Constant { value, step, ty, istr_name: _, range_start, range_end } => {
 					EntryTypeSerialized::Constant {
@@ -397,11 +406,13 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					implicit_resolution,
 					fill_rule,
 					parametric_fill,
+          fill_alpha
 				} => EntryType::Function {
 					parametric: ranged,
 					parametric_fill,
 					fill_rule,
 					identifier: istr_empty(),
+          fill_alpha,
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,

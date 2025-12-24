@@ -152,6 +152,7 @@ pub enum EntryType<T: EvalexprFloat> {
 		parametric:          bool,
 		parametric_fill:     bool,
 		fill_rule:           FillRule,
+    fill_alpha: FillAlpha,
 		/// used when parametric is `true`
 		range_start:         Expr<T>,
 		/// used when parametric is `true`
@@ -179,13 +180,14 @@ pub enum EntryType<T: EvalexprFloat> {
 		entries: Vec<Entry<T>>,
 	},
 }
-#[derive(Clone,PartialEq, Default, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Default, Copy, Debug, Serialize, Deserialize)]
 pub enum ColorEntryType {
 	Rgb,
 	#[default]
 	RgbNormalized,
 	Hsl,
 	HslNormalized,
+	Oklaba,
 }
 #[derive(Clone, Debug)]
 pub struct ColorEntry<T: EvalexprFloat> {
@@ -271,6 +273,22 @@ impl<T: EvalexprFloat> Default for LabelConfig<T> {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillAlpha(u8);
+impl Default for FillAlpha {
+  fn default() -> Self {
+    Self(128)
+  }
+}
+impl FillAlpha{
+  pub fn from_f32(f: f32) -> Self {
+    Self((f  * 255.0) as u8) 
+  }
+  pub fn to_f32(&self) -> f32 {
+    self.0 as f32 / 255.0
+  }
+}
+
 #[derive(Clone, Debug)]
 pub struct PointStyle<T: EvalexprFloat> {
 	pub show_lines:             bool,
@@ -280,12 +298,14 @@ pub struct PointStyle<T: EvalexprFloat> {
 	pub label_config:           Option<LabelConfig<T>>,
 	pub fill:                   bool,
 	pub fill_rule:              FillRule,
+  pub fill_alpha: FillAlpha,
 	pub connect_first_and_last: bool,
 }
 
 impl<T: EvalexprFloat> Default for PointStyle<T> {
 	fn default() -> Self {
 		Self {
+      fill_alpha: FillAlpha::from_f32(0.5),
 			show_lines:             true,
 			show_points:            true,
 			show_arrows:            false,
@@ -411,6 +431,7 @@ impl<T: EvalexprFloat> Entry<T> {
 
 				func:                Expr::from_text(text),
 				parametric:          false,
+        fill_alpha: FillAlpha::from_f32(0.5),
 				parametric_fill:     false,
 				range_start:         Expr::from_text("-2"),
 				range_end:           Expr::from_text("2"),
@@ -626,9 +647,7 @@ impl<T: EvalexprFloat> ProcessedColors<T> {
 		self.colors.push((id, ProcessedColor { color: ProcessedColorExpr::Function(func, ty), name }));
 	}
 	pub fn clear(&mut self) { self.colors.clear(); }
-  pub fn sort(&mut self) {
-    self.colors.sort_unstable_by_key(|(id, _)| *id);
-  }
+	pub fn sort(&mut self) { self.colors.sort_unstable_by_key(|(id, _)| *id); }
 	pub fn find_color(&self, id: u64) -> Option<&ProcessedColor<T>> {
 		self.colors.iter().find(|(i, _)| *i == id).map(|(_, c)| c)
 	}
@@ -670,20 +689,30 @@ pub fn value_to_color<T: EvalexprFloat>(value: &Value<T>, ty: ColorEntryType) ->
 				let a = if thin_vec.len() == 4 {
 					Some(thin_vec[3].as_float().map_err(|e| e.to_string())?.to_f64())
 				} else {
-          None
+					None
 				};
 				return Ok(match ty {
-					ColorEntryType::Rgb => Color32::from_rgba_unmultiplied(r as u8, g as u8, b as u8, a.unwrap_or(255.0) as u8),
+					ColorEntryType::Rgb => {
+						Color32::from_rgba_unmultiplied(r as u8, g as u8, b as u8, a.unwrap_or(255.0) as u8)
+					},
 					ColorEntryType::RgbNormalized => Color32::from_rgba_unmultiplied(
 						(r * 255.0) as u8,
 						(g * 255.0) as u8,
 						(b * 255.0) as u8,
 						(a.unwrap_or(1.0) * 255.0) as u8,
 					),
-					ColorEntryType::Hsl => {
-						hsl_to_rgb(r as f32 / 360.0, g as f32 / 255.0, b as f32 / 255.0, (a).unwrap_or(255.0) as f32 / 255.0)
+					ColorEntryType::Hsl => hsl_to_rgb(
+						r as f32 / 360.0,
+						g as f32 / 255.0,
+						b as f32 / 255.0,
+						(a).unwrap_or(255.0) as f32 / 255.0,
+					),
+					ColorEntryType::HslNormalized => {
+						hsl_to_rgb(r as f32, g as f32, b as f32, a.unwrap_or(1.0) as f32)
 					},
-					ColorEntryType::HslNormalized => hsl_to_rgb(r as f32, g as f32, b as f32, a.unwrap_or(1.0) as f32),
+					ColorEntryType::Oklaba => {
+						oklaba_to_rgb(r as f32, g as f32, b as f32, (a).unwrap_or(1.0) as f32)
+					},
 				});
 			},
 			_ => {},
@@ -723,6 +752,43 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32, a:f32) -> Color32 {
 
     Color32::from_rgba_unmultiplied((r*255.0) as u8, (g*255.0) as u8, (b*255.0) as u8, (a*255.0) as u8)
 }
+
+/// Arguments:
+///
+/// * `l`: Perceived lightness
+/// * `a`: How green/red the color is
+/// * `b`: How blue/yellow the color is
+/// * `alpha`: Alpha [0..1]
+#[allow(clippy::excessive_precision)]
+#[inline]
+pub fn oklaba_to_rgb(l: f32, a: f32, b: f32, alpha: f32) -> Color32 {
+	let l_ = (l + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+	let m_ = (l - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+	let s_ = (l - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+
+	let r = 4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_;
+	let g = -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_;
+	let b = -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_;
+
+	linear_rgb_to_rgb(r, g, b, alpha)
+}
+
+#[inline]
+pub fn linear_rgb_to_rgb(r: f32, g: f32, b: f32, a: f32) -> Color32 {
+	fn from_linear(x: f32) -> f32 {
+		if x >= 0.0031308 {
+			return 1.055 * x.powf(1.0 / 2.4) - 0.055;
+		}
+		12.92 * x
+	}
+	Color32::from_rgba_unmultiplied(
+		(from_linear(r) * 255.) as u8,
+		(from_linear(g) * 255.) as u8,
+		(from_linear(b) * 255.) as u8,
+		(a * 255.) as u8,
+	)
+}
+
 pub const COLORS: &[Color32; 20] = &[
 	Color32::from_rgb(255, 107, 107), // Bright coral red
 	Color32::from_rgb(78, 205, 196),  // Turquoise

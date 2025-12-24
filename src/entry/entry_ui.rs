@@ -13,7 +13,7 @@ use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::drawing::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
+	COLORS, ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, FillAlpha, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
 };
 
 pub struct EditEntryResult {
@@ -163,28 +163,30 @@ fn entry_style<T: EvalexprFloat>(
 						});
 						ui.separator();
 						ui.label("Custom colors:");
-						ui.columns(2, |ui| {
-							for processed_color in processed_colors.colors.iter() {
-								if let Ok(color) =
-									processed_color.1.get_color32(stack, ctx, T::ZERO, T::ZERO, T::ZERO)
-								{
-									ui[0].label(&processed_color.1.name);
-									if ui[1]
-										.button(RichText::new("     ").background_color(color))
-										.on_hover_text("Change Color")
-										.clicked()
+						ui.vertical(|ui| {
+							ui.columns(2, |ui| {
+								for processed_color in processed_colors.colors.iter() {
+									if let Ok(color) =
+										processed_color.1.get_color32(stack, ctx, T::ZERO, T::ZERO, T::ZERO)
 									{
-										changed = true;
-										entry.color = EntryColor::CustomColor(processed_color.0);
+										ui[0].label(&processed_color.1.name);
+										if ui[1]
+											.button(RichText::new("     ").background_color(color))
+											.on_hover_text("Change Color")
+											.clicked()
+										{
+											changed = true;
+											entry.color = EntryColor::CustomColor(processed_color.0);
+										}
 									}
 								}
-							}
+							});
 						});
 					});
 				});
 			}
 			match &mut entry.ty {
-				EntryType::Function { style, parametric, parametric_fill, fill_rule, .. } => {
+				EntryType::Function { style, parametric, parametric_fill, fill_rule,fill_alpha, .. } => {
 					ui.separator();
 
 					changed |= line_style_config_ui(style, ui);
@@ -198,6 +200,7 @@ fn entry_style<T: EvalexprFloat>(
 							changed |= fill_rule_btn_ui(ui, fill_rule);
 						}
 					}
+					changed |= fill_alpha_ui(ui, fill_alpha);
 
 					egui::Sides::new().show(
 						ui,
@@ -248,6 +251,7 @@ fn entry_style<T: EvalexprFloat>(
 						.clicked();
 					if style.fill {
 						changed |= fill_rule_btn_ui(ui, &mut style.fill_rule);
+						changed |= fill_alpha_ui(ui, &mut style.fill_alpha);
 					}
 
 					ui.separator();
@@ -727,6 +731,7 @@ fn entry_type_ui<T: EvalexprFloat>(
 					ColorEntryType::RgbNormalized => "RGB Normalized",
 					ColorEntryType::Hsl => "HSL",
 					ColorEntryType::HslNormalized => "HSL Normalized",
+					ColorEntryType::Oklaba => "Oklaba",
 				};
 				ui.menu_button(color_type, |ui| {
 					result.needs_recompilation |= ui
@@ -747,6 +752,13 @@ fn entry_type_ui<T: EvalexprFloat>(
 					result.needs_recompilation |= ui
 						.selectable_value(&mut color.ty, ColorEntryType::HslNormalized, "HSL Normalized")
 						.on_hover_text("Hue Saturation Lightness (Alpha) with 0-1 range")
+						.changed();
+					result.needs_recompilation |= ui
+						.selectable_value(&mut color.ty, ColorEntryType::Oklaba, "Oklaba")
+						.on_hover_text(
+							"Oklaba L, A, B, (Alpha) with 0-1 range for L and Alpha, and -0.4 to 0.4 for A \
+							 and B",
+						)
 						.changed();
 				});
 
@@ -1041,4 +1053,16 @@ fn fill_rule_btn_ui(ui: &mut egui::Ui, fill_rule: &mut FillRule) -> bool {
 		});
 	});
 	changed
+}
+
+fn fill_alpha_ui(ui: &mut egui::Ui, fill_alpha: &mut FillAlpha) -> bool {
+	ui.horizontal(|ui| {
+		ui.label("Fill Alpha:");
+		let prev_alpha = *fill_alpha;
+		let mut float_alpha = fill_alpha.to_f32();
+		ui.add(egui::Slider::new(&mut float_alpha, 0.0..=1.0));
+		*fill_alpha = FillAlpha::from_f32(float_alpha);
+		prev_alpha != *fill_alpha
+	})
+	.inner
 }
