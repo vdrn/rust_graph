@@ -96,7 +96,6 @@ pub fn entry_ui<T: EvalexprFloat>(
 		}
 		if RESERVED_NAMES.contains(&entry.name.trim()) {
 			result.error = Some(format!("{} is reserved name.", entry.name));
-			// return;
 		} else if !name_was_ok {
 			result.parsed = true;
 		}
@@ -255,7 +254,7 @@ fn entry_style<T: EvalexprFloat>(
 					}
 
 					ui.separator();
-					changed |= ui.checkbox(&mut style.show_points, "Show Not Draggable Points").clicked();
+					changed |= ui.checkbox(&mut style.show_points, "Show Non Draggable Points").clicked();
 
 					egui::Sides::new().show(
 						ui,

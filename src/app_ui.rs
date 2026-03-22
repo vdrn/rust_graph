@@ -305,6 +305,11 @@ pub fn side_panel<T: EvalexprFloat>(
 					});
 
 					ui.separator();
+					if let Some(error) = &ui_state.serialization_error {
+						if ui.label(RichText::new(error).color(Color32::RED)).clicked() {
+							ui_state.serialization_error = None;
+						}
+					}
 					#[cfg(target_arch = "wasm32")]
 					const PERSISTANCE_TYPE: &str = "Local Storage";
 					#[cfg(not(target_arch = "wasm32"))]
@@ -313,11 +318,6 @@ pub fn side_panel<T: EvalexprFloat>(
 						persistence::persistence_ui(state, ui_state, ui, frame);
 					});
 
-					if let Some(error) = &ui_state.serialization_error {
-						if ui.label(RichText::new(error).color(Color32::RED)).clicked() {
-							ui_state.serialization_error = None;
-						}
-					}
 
 					ui.separator();
 					ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
@@ -342,8 +342,6 @@ pub fn side_panel<T: EvalexprFloat>(
 
 						state.ctx.clear();
 						init_builtins::<T>(&mut state.ctx);
-
-						// state.context_stash.lock().unwrap().clear();
 
 						prepare_entries(
 							&mut state.graph_state.entries, &mut state.ctx, &mut ui_state.prepare_errors,

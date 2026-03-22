@@ -357,20 +357,20 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSerialized) -> GraphState<T> {
+pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSerialized) -> Result<GraphState<T>,String> {
   let entries = deserialize_entries::<T>(ser.entries);
   let mut unique_ids = FxHashSet::default();
   let mut max_id = 0;
   for entry in entries.iter() {
     max_id = entry.id.max(max_id);
     if !unique_ids.insert(entry.id) {
-      panic!("Duplicate id: {}", entry.id);
+      return Err(format!("Error deserializing graph state: Duplicate id: {}", entry.id));
     }
     if let EntryType::Folder { entries } = &entry.ty {
       for sub_entry in entries.iter() {
         max_id = sub_entry.id.max(max_id);
         if !unique_ids.insert(sub_entry.id) {
-          panic!("Duplicate id: {}", sub_entry.id);
+      return Err(format!("Error deserializing graph state: Duplicate id: {}", sub_entry.id));
         }
       }
     }
@@ -379,14 +379,14 @@ pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSeriali
   let max_id = max_id + 1;
 
 
-	GraphState {
+	Ok(GraphState {
 		entries,
 		saved_graph_config: ser.graph_config.clone(),
 		current_graph_config: ser.graph_config,
 		name,
 		id_gen: IdGenerator::new(max_id),
     prev_plot_transform: None,
-	}
+	})
 }
 pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> Vec<Entry<T>> {
 	let mut result = Vec::new();
@@ -495,7 +495,7 @@ pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(
 	name: String, reader: &[u8],
 ) -> Result<GraphState<T>, String> {
 	let graph_state: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
-	Ok(deserialize_graph_state(name, graph_state))
+	deserialize_graph_state(name, graph_state)
 }
 // pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
 // }

@@ -593,21 +593,21 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 			FlatOperator::Leq => {
 				fold_binary_op(&mut new_ops, source_op, eval::less_eq)?;
 			},
-      FlatOperator::Eq => {
-        fold_binary_op(&mut new_ops, source_op,|a,b| Ok(eval::eq(a,b)))?;
-      },
-      FlatOperator::Neq => {
-        fold_binary_op(&mut new_ops, source_op,|a,b| Ok(eval::neq(a,b)))?;
-      },
-      FlatOperator::And => {
-        fold_binary_op(&mut new_ops, source_op, eval::and)?;
-      },
-      FlatOperator::Or => {
-        fold_binary_op(&mut new_ops, source_op, eval::or)?;
-      },
-      FlatOperator::Not => {
-        fold_unary_op(&mut new_ops, source_op, eval::not)?;
-      },
+			FlatOperator::Eq => {
+				fold_binary_op(&mut new_ops, source_op, |a, b| Ok(eval::eq(a, b)))?;
+			},
+			FlatOperator::Neq => {
+				fold_binary_op(&mut new_ops, source_op, |a, b| Ok(eval::neq(a, b)))?;
+			},
+			FlatOperator::And => {
+				fold_binary_op(&mut new_ops, source_op, eval::and)?;
+			},
+			FlatOperator::Or => {
+				fold_binary_op(&mut new_ops, source_op, eval::or)?;
+			},
+			FlatOperator::Not => {
+				fold_unary_op(&mut new_ops, source_op, eval::not)?;
+			},
 
 			FlatOperator::Tuple { len } => {
 				if *len == 2 {
@@ -831,10 +831,14 @@ fn fold_binary_op_with_two_const_variants<F: EvalexprFloat>(
 		new_ops.pop().unwrap();
 		new_ops.push(fold_1_1(last_const));
 	} else if let Some((second_last_const, idx)) = get_second_last_if_const(new_ops) {
-		// println!("State before {new_ops:?}");
-		// println!("folding secondd last const {op:?} removing {idx}");
-		new_ops.remove(idx);
-		new_ops.push(fold_1_2(second_last_const));
+		if is_last_op_label(new_ops) {
+			new_ops.push(op.clone());
+		} else {
+			// println!("State before {new_ops:?}");
+			// println!("folding secondd last const {op:?} removing {idx}");
+			new_ops.remove(idx);
+			new_ops.push(fold_1_2(second_last_const));
+		}
 		// println!("State after {new_ops:?}");
 	} else {
 		new_ops.push(op.clone());
@@ -892,6 +896,12 @@ fn fold_ternary_op_with_partial<F: EvalexprFloat>(
 	Ok(())
 }
 
+fn is_last_op_label<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> bool {
+	if let Some(FlatOperator::Label { .. }) = ops.last() {
+		return true;
+	}
+	false
+}
 fn get_last_if_const<F: EvalexprFloat>(ops: &[FlatOperator<F>]) -> Option<Value<F>> {
 	let Some(last) = ops.last() else {
 		panic!("Must have last op");

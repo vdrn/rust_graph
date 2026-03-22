@@ -108,12 +108,17 @@ fn prepare_entry<T: EvalexprFloat>(
 
 						let both_dirs_available =
 							x_state.constants.iter().all(|c| !y_state.constants.contains(c));
-						if !both_dirs_available
-							&& point.drag.both_drag_dirs_available
-							&& !matches!(point.drag.drag_type, PointDragType::NoDrag)
-						{
-							point.drag.drag_type = PointDragType::X;
-						}
+						// if !both_dirs_available
+						// 	&& point.drag.both_drag_dirs_available
+						// 	&& !matches!(point.drag.drag_type, PointDragType::NoDrag)
+						// {
+              // if debug {
+                // println!("State x: {:?}", x_state);
+                // println!("State y: {:?}", y_state);
+                // println!("Overriding with X drag");
+              // }
+						// 	point.drag.drag_type = PointDragType::X;
+						// }
 						point.drag.both_drag_dirs_available = both_dirs_available;
 
 						match point.drag.drag_type {
@@ -134,7 +139,6 @@ fn prepare_entry<T: EvalexprFloat>(
 								} else if let (Some(x_const), Some(y_const)) =
 									(x_state.constants.first(), y_state.constants.first())
 								{
-									// todo:
 									if x_const == y_const {
 										if let Some(y_const) = y_state.constants.get(1) {
 											point.drag.drag_point = Some(DragPoint::BothCoordConstants(
@@ -154,7 +158,6 @@ fn prepare_entry<T: EvalexprFloat>(
 											Some(DragPoint::BothCoordConstants(istr(x_const), istr(y_const)));
 									}
 								} else if let Some(x_const) = x_state.constants.first()
-								// && y_state.first_constant.is_none()
 								{
 									point.drag.drag_point = Some(DragPoint::XConstant(istr(x_const)));
 								} else if let Some(y_const) = y_state.constants.first() {
@@ -310,6 +313,7 @@ fn prepare_constant<T: EvalexprFloat>(
 	}
 	Ok(())
 }
+#[derive(Debug)]
 struct NodeAnalysis<'a> {
 	is_literal:                      bool,
 	num_identifiers_and_special_ops: u32,
@@ -321,8 +325,8 @@ fn analyze_node<T: EvalexprFloat>(node: &FlatNode<T>) -> NodeAnalysis<'_> {
 	let mut constants = SmallVec::new();
 	let mut num_identifiers = 0;
 
-	for i in node.iter_variable_identifiers() {
-		constants.push(i);
+	for ident in node.iter_variable_identifiers() {
+		constants.push(ident);
 		is_literal = false;
 	}
 
