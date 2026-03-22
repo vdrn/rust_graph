@@ -227,7 +227,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 			style,
 			fill_rule,
 			implicit_resolution,
-      fill_alpha,
+			fill_alpha,
 			..
 		} => {
 			let default_color =
@@ -274,8 +274,12 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 					}),
 				});
 			};
-			let fill_color =
-				Color32::from_rgba_unmultiplied(default_color.r(), default_color.g(), default_color.b(), (default_color.a() as f32 *  fill_alpha.to_f32()) as u8);
+			let fill_color = Color32::from_rgba_unmultiplied(
+				default_color.r(),
+				default_color.g(),
+				default_color.b(),
+				(default_color.a() as f32 * fill_alpha.to_f32()) as u8,
+			);
 
 			if let Some(expr_func) = &func.expr_function {
 				if func.args.is_empty() {
@@ -451,7 +455,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 								&mut add_line,
 								&mut add_egui_plot_mesh,
 								color,
-									fill_alpha.to_f32(),
+								fill_alpha.to_f32(),
 							)?;
 						}
 					}
@@ -510,7 +514,12 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 				&& points_len > 2
 				&& let Some(plot_trans) = &plot_params.prev_plot_transform
 			{
-				let fill_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (color.a() as f32  * style.fill_alpha.to_f32() ) as u8);
+				let fill_color = Color32::from_rgba_unmultiplied(
+					color.r(),
+					color.g(),
+					color.b(),
+					(color.a() as f32 * style.fill_alpha.to_f32()) as u8,
+				);
 				Some((FillMesh::new(fill_color, style.fill_rule), plot_trans))
 			} else {
 				None
@@ -624,40 +633,35 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 			}
 
 			// let width = if selected { 3.5 } else { 1.0 };
-			let width = 1.0;
 
-			if line_buffer.len() > 1 && style.show_lines {
-				if style.connect_first_and_last {
-					line_buffer.push(line_buffer[0]);
-				}
-				// let line = Line::new(name.to_string(), line_buffer)
-				// 	.color(color)
-				// 	.id(egui_id)
-				// 	.width(style.line_style.line_width)
-				// 	.allow_hover(style.line_style.selectable)
-				// 	.style(style.line_style.egui_line_style());
-				draw_buffer.lines.push(DrawLine2::new(
-					sorting_idx,
-					egui_id,
-					name.to_string(),
-					style.line_style.selectable,
-					width,
-					style.line_style.egui_line_style(),
-					color,
-					line_buffer,
-				));
-				if !arrow_buffer.is_empty() {
-					draw_buffer.polygons.push(DrawPolygonGroup::new(
+			if line_buffer.len() > 1 {
+				if style.show_lines {
+					if style.connect_first_and_last {
+						line_buffer.push(line_buffer[0]);
+					}
+
+					draw_buffer.lines.push(DrawLine2::new(
 						sorting_idx,
+						egui_id,
+						name.to_string(),
+						style.line_style.selectable,
+						style.line_style.line_width,
+						style.line_style.egui_line_style(),
 						color,
-						Stroke::new(0.0, color),
-						arrow_buffer,
+						line_buffer,
 					));
+					if !arrow_buffer.is_empty() {
+						draw_buffer.polygons.push(DrawPolygonGroup::new(
+							sorting_idx,
+							color,
+							Stroke::new(0.0, color),
+							arrow_buffer,
+						));
+					}
 				}
-				if let Some((fill_mesh, _)) = fill_mesh {
-					draw_buffer.meshes.push(DrawMesh { ty: DrawMeshType::FillMesh(fill_mesh) });
-				}
-				// plot_ui.line(line);
+			}
+			if let Some((fill_mesh, _)) = fill_mesh {
+				draw_buffer.meshes.push(DrawMesh { ty: DrawMeshType::FillMesh(fill_mesh) });
 			}
 		},
 	}
