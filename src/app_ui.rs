@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
+use crate::drawing::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::entry::{
 	self, Entry, EntrySymbol, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements
 };
-use crate::drawing::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::{AppConfig, IdGenerator, State, UiState, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
@@ -318,7 +318,6 @@ pub fn side_panel<T: EvalexprFloat>(
 						persistence::persistence_ui(state, ui_state, ui, frame);
 					});
 
-
 					ui.separator();
 					ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
 
@@ -363,7 +362,7 @@ pub fn side_panel<T: EvalexprFloat>(
 							&mut state.processed_colors,
 							&mut ui_state.optimization_errors,
 						);
-            state.processed_colors.sort();
+						state.processed_colors.sort();
 					}
 
 					ui_state.clear_cache = false;
@@ -448,7 +447,6 @@ pub fn graph_panel<T: EvalexprFloat>(
 					match r {
 						Ok((id, draw_buffer)) => {
 							if let Some(entry) = get_entry_mut_by_id(&mut state.graph_state.entries, id) {
-                
 								ui_state.eval_errors.remove(&id);
 								entry.draw_buffer = draw_buffer;
 							}
@@ -476,7 +474,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				&mut state.graph_state.entries,
 				&plot_params,
 				ui_state.selected_plot_line.map(|(id, _)| id),
-			); 
+			);
 			ui.ctx().request_repaint();
 		}
 		ui_state.force_process_elements = false;
@@ -490,7 +488,11 @@ pub fn graph_panel<T: EvalexprFloat>(
 		};
 
 		let plot_id = ui.make_persistent_id("Plot");
-		let mut plot = Plot::new(plot_id).id(plot_id).legend(Legend::default().text_style(TextStyle::Body));
+		let mut plot = Plot::new(plot_id).id(plot_id);
+    if state.graph_state.current_graph_config.show_legend {
+      plot = plot.legend(Legend::default().text_style(TextStyle::Body));
+    }
+
 
 		if ui_state.reset_graph {
 			force_create_elements = true;
@@ -673,7 +675,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 					&main_context,
 					&plot_params,
 					&state.thread_local_context,
-          &state.processed_colors,
+					&state.processed_colors,
 				);
 			}
 
@@ -892,9 +894,13 @@ impl GraphPlotBounds {
 	}
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GraphConfig {
 	pub graph_plot_bounds: GraphPlotBounds,
+	#[serde(default = "default_true")]
+	pub show_legend:       bool,
 	pub allow_zoom:        [bool; 2],
 	pub allow_scroll:      [bool; 2],
 	// pub show_mouse_coords: [bool; 2],
@@ -910,6 +916,7 @@ impl Default for GraphConfig {
 	fn default() -> Self {
 		Self {
 			graph_plot_bounds: GraphPlotBounds::default(),
+			show_legend:       true,
 			allow_zoom:        [true, true],
 			allow_scroll:      [true, true],
 			show_axes:         [true, true],
@@ -925,6 +932,10 @@ impl Default for GraphConfig {
 impl GraphConfig {
 	fn ui(&mut self, ui: &mut egui::Ui, config: &mut AppConfig) {
 		Grid::new("graph_config").num_columns(2).striped(true).show(ui, |ui| {
+			ui.label("Show Legend");
+			ui.checkbox(&mut self.show_legend, "");
+			ui.end_row();
+
 			ui.label("Allow Zoom");
 			ui.horizontal(|ui| {
 				ui.checkbox(&mut self.allow_zoom[0], "X");

@@ -449,6 +449,7 @@ fn load_graph_state<T: EvalexprFloat>(
 			ui_state.serialization_error = None;
 			ui_state.clear_cache = true;
 			ui_state.reset_graph = true;
+      ui_state.multi_draw_buffer_scheduler = MultiDrawBufferScheduler::new();
 		},
 		Err(e) => {
 			ui_state.serialization_error = Some(e);
