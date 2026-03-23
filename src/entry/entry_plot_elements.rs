@@ -5,7 +5,9 @@ use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
 use egui_plot::{PlotItemBase, PlotPoint, PlotTransform, Points, Polygon};
-use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value, istr};
+use evalexpr::{
+	EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value, istr
+};
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
@@ -465,6 +467,8 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 	}
 	Ok((entry.id, draw_buffer))
 }
+
+pub fn point_radius_outer(selected: bool) -> f32 { if selected { 12.5 } else { 7.5 } }
 pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: Color32, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
@@ -528,10 +532,10 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 				if let Some(((x, y), drag_point)) = p {
 					let x = x.to_f64();
 					let y = y.to_f64();
-					let point_id = egui_id.with(i);
+					let point_id = egui_id.with(i as u32);
 					let selected = selected_id == Some(egui_id);
 					let radius = if selected { 6.5 } else { 4.5 };
-					let radius_outer = if selected { 12.5 } else { 7.5 };
+					let radius_outer = point_radius_outer(selected);
 
 					if let Some((fill_mesh, plot_trans)) = &mut fill_mesh {
 						let screen_point = gpu_position_from_point(
@@ -551,14 +555,14 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 								radius,
 								ty: PointInteractionType::Other(OtherPointType::Point),
 							},
-							Points::new(name.to_string(), [x, y]).color(color).radius(radius),
+							Points::new(name.to_string(), [x, y]).id(point_id).color(color).radius(radius),
 						));
 						if drag_point.is_some() {
 							let selectable_point = PointInteraction {
-								ty: PointInteractionType::Draggable { i: (egui_id, i as u32) },
 								x,
 								y,
 								radius: radius_outer,
+								ty: PointInteractionType::Draggable { i: (egui_id, i as u32) },
 							};
 							draw_buffer.points.push(DrawPoint::new(
 								sorting_idx,

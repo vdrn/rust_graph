@@ -1,4 +1,4 @@
-use eframe::egui::Id;
+use eframe::egui::{Id, PointerButton};
 use egui_plot::PlotResponse;
 use evalexpr::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack};
 
@@ -14,16 +14,16 @@ pub struct DragPointResult {
 pub fn point_dragging<T: EvalexprFloat>(
 	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>, plot_res: &PlotResponse<()>,
 	dragging_point_i: &mut Option<draw_buffer::PointInteraction>,
-	hovered_point: Option<&(bool, draw_buffer::PointInteraction)>, plot_params: &PlotParams,
+	hovered_point: Option<&(bool, draw_buffer::PointInteraction, f32)>, plot_params: &PlotParams,
 ) -> Option<DragPointResult> {
 	let mut result = None;
 
-	if let Some((is_draggable, hovered_point)) = &hovered_point {
-		if *is_draggable && plot_res.response.drag_started() {
+	if let Some((is_draggable, hovered_point,_)) = &hovered_point {
+		if *is_draggable && plot_res.response.is_pointer_button_down_on() && dragging_point_i.is_none() {
 			*dragging_point_i = Some(hovered_point.clone());
 		}
 	}
-	if plot_res.response.drag_stopped() {
+	if plot_res.response.drag_stopped() || !plot_res.response.is_pointer_button_down_on() {
 		*dragging_point_i = None;
 	}
 	let Some(dragging_point_i) = dragging_point_i else {
@@ -109,7 +109,7 @@ pub fn point_dragging<T: EvalexprFloat>(
 			};
 
 			let mut stack = Stack::<T>::new();
-			let new_value = minimize(value.to_f64(), (pos.x, pos.y), eps , |x| {
+			let new_value = minimize(value.to_f64(), (pos.x, pos.y), eps, |x| {
 				ctx.set_value(x_const, f64_to_value::<T>(x)).unwrap();
 				Some((
 					x_node.eval_float_with_context(&mut stack, ctx).ok()?.to_f64(),

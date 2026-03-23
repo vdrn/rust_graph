@@ -5,7 +5,9 @@ use eframe::egui::{
 	self, Align, Area, Button, CollapsingHeader, DragValue, Grid, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
 };
 use eframe::epaint::Color32;
-use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, PlotUi, VLine};
+use egui_plot::{
+	HLine, Legend, Plot, PlotBounds, PlotImage, PlotItem, PlotPoint, PlotTransform, PlotUi, VLine
+};
 use evalexpr::{EvalexprFloat, Stack, istr};
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +15,7 @@ use crate::builtins::{init_builtins, show_builtin_information};
 use crate::draw_buffer::{DrawMeshType, PointInteraction, PointInteractionType, process_draw_buffers};
 use crate::drawing::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::entry::{
-	self, Entry, EntrySymbol, EntryType, point_dragging, prepare_entries, schedule_create_plot_elements
+	self, Entry, EntrySymbol, EntryType, point_dragging, point_radius_outer, prepare_entries, schedule_create_plot_elements
 };
 use crate::{AppConfig, IdGenerator, State, UiState, persistence, scope};
 
@@ -489,10 +491,9 @@ pub fn graph_panel<T: EvalexprFloat>(
 
 		let plot_id = ui.make_persistent_id("Plot");
 		let mut plot = Plot::new(plot_id).id(plot_id);
-    if state.graph_state.current_graph_config.show_legend {
-      plot = plot.legend(Legend::default().text_style(TextStyle::Body));
-    }
-
+		if state.graph_state.current_graph_config.show_legend {
+			plot = plot.legend(Legend::default().text_style(TextStyle::Body));
+		}
 
 		if ui_state.reset_graph {
 			force_create_elements = true;
@@ -540,7 +541,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		}
 
 		// plot.center_y_axis
-		let mut hovered_point: Option<(bool, PointInteraction)> = None;
+		let mut hovered_point: Option<(bool, PointInteraction, f32)> = None;
 
 		if let (Some(custom_renderer), Some(prev_plot_transform)) =
 			(&mut ui_state.fan_fill_renderer, state.graph_state.prev_plot_transform)
@@ -610,26 +611,52 @@ pub fn graph_panel<T: EvalexprFloat>(
 			for line in ui_state.processed_shapes.lines.iter() {
 				plot_ui.add(line.clone());
 			}
-			for draw_point in p_draw_buffer
-				.draw_points
-				.into_iter()
-				.chain(ui_state.processed_shapes.draw_points.iter().cloned())
+			for draw_point in
+				p_draw_buffer.draw_points.iter().chain(ui_state.processed_shapes.draw_points.iter())
 			{
 				if let Some(mouse_pos) = ui_state.plot_mouese_pos {
 					let transform = state.graph_state.prev_plot_transform.as_ref().unwrap();
 					let sel = &draw_point.interaction;
 					let is_draggable = matches!(sel.ty, PointInteractionType::Draggable { .. });
 					let sel_p = transform.position_from_point(&PlotPoint::new(sel.x, sel.y));
-					let dist_sq = (sel_p.x - mouse_pos.x).powf(2.0) + (sel_p.y - mouse_pos.y).powf(2.0);
+					let dist_sq = (sel_p.x - mouse_pos.x).powf(2.0) + (sel_p.y - mouse_pos.y).powi(2);
 
-					if dist_sq < sel.radius * sel.radius {
+					let hover_radius = if is_draggable { point_radius_outer(false) } else { sel.radius };
+					if dist_sq < hover_radius.powi(2) {
 						if let Some(current_hovered) = &hovered_point {
-							if !current_hovered.0 {
-								hovered_point = Some((is_draggable, sel.clone()));
+							let replace_current = match (current_hovered.0, is_draggable) {
+								(false, true) => true,
+								(true, false) => false,
+								(false, false) | (true, true) => current_hovered.2 > dist_sq,
+							};
+							if replace_current {
+								hovered_point = Some((is_draggable, sel.clone(), dist_sq));
 							}
 						} else {
-							hovered_point = Some((is_draggable, sel.clone()));
+							hovered_point = Some((is_draggable, sel.clone(), dist_sq));
 						}
+					}
+				}
+			}
+			let dragging_or_hovered_id =
+				ui_state.dragging_point_i.as_ref().or(hovered_point.as_ref().map(|h| &h.1)).and_then(|dp| {
+					if let PointInteractionType::Draggable { i, .. } = dp.ty {
+						Some(i.0.with(i.1))
+					} else {
+						None
+					}
+				});
+
+			for mut draw_point in p_draw_buffer
+				.draw_points
+				.into_iter()
+				.chain(ui_state.processed_shapes.draw_points.iter().cloned())
+			{
+				if let Some(id) = dragging_or_hovered_id {
+					if (&draw_point.points as &dyn PlotItem).id() == id {
+						let is_selected = Some(id) == ui_state.selected_plot_line.map(|i| i.0);
+						let radius = point_radius_outer(is_selected);
+						draw_point.points = draw_point.points.radius(radius);
 					}
 				}
 				plot_ui.points(draw_point.points);
@@ -660,13 +687,12 @@ pub fn graph_panel<T: EvalexprFloat>(
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos();
 		state.graph_state.prev_plot_transform = Some(plot_res.transform);
 
-    // println!("new frame");
+		// println!("new frame");
 		if force_create_elements || changed {
 			// println!("Scheduling element creation because force {force_create_elements} changed {changed}");
 			if !ui_state.debug_info.pause_redraw {
 				ui_state.debug_info.plot_bounds = Some(*plot_res.transform.bounds());
 				scope!("schedule_entry_create_plot_elements");
-
 
 				ui_state.eval_errors.clear();
 				let plot_params = entry::PlotParams::new::<T>(ui_state, &state.graph_state);
@@ -742,7 +768,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 		}
 
 		if !ui_state.showing_custom_label
-			&& let Some((_, hovered_point)) = &hovered_point
+			&& let Some((_, hovered_point, _)) = &hovered_point
 		{
 			let screen_x = plot_res.transform.position_from_point_x(hovered_point.x);
 			let screen_y = plot_res.transform.position_from_point_y(hovered_point.y);

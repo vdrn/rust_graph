@@ -13,7 +13,7 @@ mod entry_processing;
 mod entry_ui;
 
 pub use drag_point::point_dragging;
-pub use entry_plot_elements::{PlotParams, schedule_create_plot_elements};
+pub use entry_plot_elements::{point_radius_outer,PlotParams, schedule_create_plot_elements};
 pub use entry_processing::{optimize_entries, prepare_constants, prepare_entries, preprocess_ast};
 pub use entry_ui::entry_ui;
 
