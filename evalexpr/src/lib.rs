@@ -13,7 +13,6 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 #![allow(clippy::get_first)]
-#![feature(vec_into_raw_parts)]
 
 pub use crate::context::HashMapContext;
 pub use crate::error::{EvalexprError, EvalexprResult};

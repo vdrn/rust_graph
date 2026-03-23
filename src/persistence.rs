@@ -1,10 +1,8 @@
-use alloc::collections::BTreeMap;
 use rustc_hash::FxHashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use eframe::egui::{self, Grid, Id, Modal};
 use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
@@ -14,9 +12,7 @@ use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
 	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FillAlpha, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
-use crate::{
-	ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state
-};
+use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState};
 
 pub fn default_true() -> bool { true }
 
@@ -102,10 +98,6 @@ pub enum EntryTypeSerialized {
 		range_end:   ExprSer,
 	},
 	Points {
-		// // TODO: remove `points` and unwrap Option around `points_ty`
-		// #[serde(default)]
-		// points:    Vec<EntryPointSerialized>,
-		// #[serde(default)]
 		points_ty: EntryPointTypeSerialized,
 		#[serde(default)]
 		style:     PointStyleSerialized,
@@ -498,7 +490,7 @@ pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(
 // pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
 // }
 #[cfg(target_arch = "wasm32")]
-pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame) {
+pub fn save_file_wasm<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame) {
 	let file = format!("{}.json", state.name);
 	let mut output = Vec::new();
 	if let Err(e) = serialize_to_json(&mut output, &state.entries, ui_state.graph_config.clone()) {
@@ -512,10 +504,9 @@ pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, fra
 	}
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame) {
-	use std::path::PathBuf;
-
-	let save_path = PathBuf::from(&ui_state.cur_dir).join(format!("{}.json", state.graph_state.name));
+pub fn save_file_desktop<T: EvalexprFloat>(
+	save_path: PathBuf, ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame,
+) {
 	if let Some(parent) = save_path.parent() {
 		// Recursively create all parent directories if they don't exist
 
@@ -532,34 +523,33 @@ pub fn save_file<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, _fr
 		ui_state.serialization_error = Some(e.to_string());
 	} else {
 		ui_state.serialization_error = None;
-		load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
+		// load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
 	}
 }
-pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String>) {
-	ser_states.clear();
-	let Ok(entries) = std::fs::read_dir(PathBuf::from(cur_dir)) else {
-		// ui.label("No entries found");
-		return;
-	};
-	for entry in entries {
-		let Ok(entry) = entry else {
-			continue;
-		};
-		let file_name = entry.file_name();
-		let Some(file_name) = file_name.to_str() else {
-			continue;
-		};
-		if !file_name.ends_with(".json") {
-			continue;
-		}
+// pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String>) {
+// 	ser_states.clear();
+// 	let Ok(entries) = std::fs::read_dir(PathBuf::from(cur_dir)) else {
+// 		// ui.label("No entries found");
+// 		return;
+// 	};
+// 	for entry in entries {
+// 		let Ok(entry) = entry else {
+// 			continue;
+// 		};
+// 		let file_name = entry.file_name();
+// 		let Some(file_name) = file_name.to_str() else {
+// 			continue;
+// 		};
+// 		if !file_name.ends_with(".json") {
+// 			continue;
+// 		}
 
-		ser_states.insert(file_name.to_string(), String::new());
-	}
-}
+// 		ser_states.insert(file_name.to_string(), String::new());
+// 	}
+// }
 #[cfg(target_arch = "wasm32")]
-pub fn load_file<T: EvalexprFloat>(
-	cur_dir: &str, ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>,
-	id_counter: &mut u64,
+pub fn load_file_wasm<T: EvalexprFloat>(
+	ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>, id_counter: &mut u64,
 ) -> Result<(), String> {
 	if let Some(file) = ser_states.get(file_name) {
 		let (entries, default_graph_config) =
@@ -572,103 +562,25 @@ pub fn load_file<T: EvalexprFloat>(
 	}
 	Ok(())
 }
+// #[cfg(not(target_arch = "wasm32"))]
+// pub fn load_file<T: EvalexprFloat>(
+// 	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str,
+// ) -> Result<GraphState<T>, String> {
+// 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
+// 		return Err(format!("Could not open file: {}", file_name));
+// 	};
+// 	let name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
+// 	deserialize_graph_state_from_json::<T>(name, &file)
+// 		.map_err(|e| format!("Could not deserialize file: {}", e))
+// }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_file<T: EvalexprFloat>(
-	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str,
-) -> Result<GraphState<T>, String> {
-	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
-		return Err(format!("Could not open file: {}", file_name));
+pub fn load_file_desktop<T: EvalexprFloat>(path: &Path) -> Result<GraphState<T>, String> {
+	let Ok(file) = std::fs::read(path) else {
+		return Err(format!("Could not open file: {}", path.display()));
 	};
-	let name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
-	deserialize_graph_state_from_json::<T>(name, &file)
+	let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+		return Err(format!("Could not open file: {}", path.display()));
+	};
+	deserialize_graph_state_from_json::<T>(name.to_string(), &file)
 		.map_err(|e| format!("Could not deserialize file: {}", e))
-}
-
-pub fn persistence_ui<T: EvalexprFloat>(
-	state: &mut State<T>, ui_state: &mut UiState, ui: &mut egui::Ui, frame: &mut eframe::Frame,
-) {
-	ui.horizontal_top(|ui| {
-		ui.label("Name:");
-		ui.text_edit_singleline(&mut state.graph_state.name);
-		if !state.graph_state.name.trim().is_empty() && ui.button("Save").clicked() {
-			save_file(ui_state, state, frame);
-		}
-	});
-
-	#[cfg(not(target_arch = "wasm32"))]
-	{
-		ui.separator();
-		ui.horizontal_top(|ui| {
-			ui.label("CWD:");
-			let changed = ui.text_edit_singleline(&mut ui_state.cur_dir).changed();
-
-			if ui.button("⟳").clicked() || changed {
-				load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
-			}
-		});
-	}
-
-	if !ui_state.serialized_states.is_empty() {
-		ui.separator();
-	}
-	ui.horizontal(|ui| {
-		Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
-			for file_name in ui_state.serialized_states.keys() {
-				ui.label(file_name);
-				if ui.button("Load").clicked() {
-					let graph_state_res = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name);
-					load_graph_state(ui_state, state, graph_state_res);
-					// todo: hack for borrow checker, fix later
-					break;
-				}
-				if ui.button("Delete").clicked() {
-					ui_state.file_to_remove = Some(file_name.clone());
-				}
-				ui.end_row();
-			}
-			confirm_remove_dialog(ui, frame, ui_state);
-		});
-	});
-}
-
-fn confirm_remove_dialog(ui: &egui::Ui, _frame: &mut eframe::Frame, ui_state: &mut UiState) {
-	if let Some(file) = &ui_state.file_to_remove {
-		let modal = Modal::new(Id::new("Confirm remove file")).show(ui.ctx(), |ui| {
-			ui.set_width(400.0);
-			ui.heading(format!("Are you sure you want to delete '{file}'?"));
-
-			ui.add_space(32.0);
-
-			egui::Sides::new().show(
-				ui,
-				|_ui| {},
-				|ui| {
-					if ui.button("Yes").clicked() {
-						#[cfg(target_arch = "wasm32")]
-						{
-							if let Some(storage) = _frame.storage_mut() {
-								storage.flush();
-							}
-							ui_state.serialized_states.remove(file);
-						}
-						#[cfg(not(target_arch = "wasm32"))]
-						{
-							if let Ok(()) = std::fs::remove_file(PathBuf::from(&ui_state.cur_dir).join(file)) {
-								ui_state.serialized_states.remove(file);
-							}
-						}
-						ui.close();
-					}
-
-					if ui.button("No").clicked() {
-						ui.close();
-					}
-				},
-			);
-		});
-
-		if modal.should_close() {
-			ui_state.file_to_remove = None;
-		}
-	}
 }

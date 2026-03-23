@@ -4,30 +4,36 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cell::RefCell;
 use std::env;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 use eframe::egui::{self, Id, Visuals};
+#[cfg(target_arch = "wasm32")]
+use eframe::wasm_bindgen::{self, prelude::*};
 use eframe::{App, CreationContext};
 use egui_plot::PlotBounds;
 use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, HashMapContext, Stack};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thread_local::ThreadLocal;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 mod app_ui;
 mod builtins;
 mod custom_rendering;
 mod draw_buffer;
+mod drawing;
 mod entry;
 mod marching_squares;
 mod math;
 mod persistence;
-mod drawing;
 
-use app_ui::GraphConfig;
+use app_ui::{DebugInfo, GraphConfig};
 use custom_rendering::fan_fill_renderer::FanFillRenderer;
 use custom_rendering::mesh_renderer::init_mesh_renderer;
 use draw_buffer::{DrawBufferRC, MultiDrawBufferScheduler, ProcessedShapes};
-use entry::{ConstantType, Entry, EntryType, PointEntry};
+use entry::{ConstantType, Entry, EntryType, PointEntry, ProcessedColors};
 use marching_squares::MarchingSquaresCache;
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
@@ -41,16 +47,10 @@ macro_rules! scope {
 	($($tt:tt)*) => {};
 }
 pub(crate) use scope;
+
 pub const DEFAULT_RESOLUTION: usize = 500;
 
-#[cfg(target_arch = "wasm32")]
-use eframe::wasm_bindgen::{self, prelude::*};
-
-#[cfg(target_arch = "wasm32")]
-pub use wasm_bindgen_rayon::init_thread_pool;
-
-use crate::app_ui::DebugInfo;
-use crate::entry::ProcessedColors;
+static EXAMPLES_DIR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -199,14 +199,20 @@ impl Default for AppConfig {
 }
 
 struct UiState {
-	conf: AppConfig,
+	app_config: AppConfig,
 
 	// UI
-	showing_help:      bool,
+	showing_help:     bool,
+	showing_settings: bool,
+	showing_open:     bool,
+	showing_save:     bool,
+
 	// UI - Persistance
 	cur_dir:           String,
 	serialized_states: BTreeMap<String, String>,
 	file_to_remove:    Option<String>,
+	#[cfg(not(target_arch = "wasm32"))]
+	file_dialog:       egui_file_dialog::FileDialog,
 
 	// UI: Errors
 	serialization_error: Option<String>,
@@ -315,7 +321,6 @@ impl Application {
         let cur_dir = env::home_dir()
           .and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
           .unwrap_or_default();
-        persistence::load_file_entries(&cur_dir, &mut serialized_states);
       }
 		}
 
@@ -327,12 +332,24 @@ impl Application {
 			state_f32: State::new(graph_state_s),
 			state_f64: State::new(graph_state_d),
 			ui: UiState {
+				#[cfg(not(target_arch = "wasm32"))]
+				file_dialog: egui_file_dialog::FileDialog::new()
+					.initial_directory(PathBuf::from(&cur_dir))
+					.add_save_extension("Rust Graph JSON file", "json")
+					.default_save_extension("Rust Graph JSON file")
+					.allow_path_edit_to_save_file_without_extension(false)
+					.add_file_filter(
+						"Rust Graph JSON file",
+						Arc::new(|p| p.extension().unwrap_or_default() == "json"),
+					)
+					.default_file_filter("Rust Graph JSON file"),
+
 				debug_info: DebugInfo::new(),
 				multi_draw_buffer_scheduler: MultiDrawBufferScheduler::new(),
 				force_process_elements: true,
 				processed_shapes: ProcessedShapes::new(),
 				fan_fill_renderer: FanFillRenderer::new(cc),
-				conf,
+				app_config: conf,
 				scheduled_url_update: false,
 				last_url_update: 0.0,
 				serialized_states,
@@ -354,6 +371,9 @@ impl Application {
 				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),
 				showing_help: false,
+				showing_settings: false,
+				showing_open: false,
+				showing_save: false,
 			},
 		}
 	}
@@ -367,14 +387,14 @@ impl App for Application {
 			self.ui.full_frame_scope = puffin::profile_scope_custom!("full_frame");
 		}
 
-		if self.ui.conf.dark_mode {
+		if self.ui.app_config.dark_mode {
 			ctx.set_visuals(Visuals::dark());
 		} else {
 			ctx.set_visuals(Visuals::light());
 		}
-		ctx.set_pixels_per_point(self.ui.conf.ui_scale);
+		ctx.set_pixels_per_point(self.ui.app_config.ui_scale);
 
-		let use_f32 = self.ui.conf.use_f32;
+		let use_f32 = self.ui.app_config.use_f32;
 		if use_f32 {
 			let changed = app_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
 			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx, frame, changed);
@@ -382,7 +402,7 @@ impl App for Application {
 			let changed = app_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
 			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame, changed);
 		}
-		if use_f32 != self.ui.conf.use_f32 {
+		if use_f32 != self.ui.app_config.use_f32 {
 			let mut output = Vec::with_capacity(1024);
 			if use_f32 {
 				let name = self.state_f32.graph_state.name.clone();
@@ -409,7 +429,7 @@ impl App for Application {
 
 	fn save(&mut self, storage: &mut dyn eframe::Storage) {
 		storage.set_string(DATA_KEY, serde_json::to_string(&self.ui.serialized_states).unwrap());
-		storage.set_string(CONF_KEY, serde_json::to_string(&self.ui.conf).unwrap());
+		storage.set_string(CONF_KEY, serde_json::to_string(&self.ui.app_config).unwrap());
 	}
 
 	fn auto_save_interval(&self) -> core::time::Duration { core::time::Duration::from_secs(5) }
@@ -449,7 +469,7 @@ fn load_graph_state<T: EvalexprFloat>(
 			ui_state.serialization_error = None;
 			ui_state.clear_cache = true;
 			ui_state.reset_graph = true;
-      ui_state.multi_draw_buffer_scheduler = MultiDrawBufferScheduler::new();
+			ui_state.multi_draw_buffer_scheduler = MultiDrawBufferScheduler::new();
 		},
 		Err(e) => {
 			ui_state.serialization_error = Some(e);

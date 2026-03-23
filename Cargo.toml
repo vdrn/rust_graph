@@ -47,6 +47,7 @@ bytemuck = "1"
 cfg-if = "1"
 egui_plot="0.34"
 send_wrapper = "0.6"
+egui-file-dialog ="0.12"
 # enum-map="2.7"
 
 # egui_extras={version = "0.33", features=["syntect"]}
@@ -64,6 +65,7 @@ smallvec = {version = "1", features = ["union"]}
 rayon={version="1", features=["web_spin_lock"]}
 thread_local="1"
 regex = "1"
+include_dir="0.7"
 # needed so dependencies downstream can compile to wasm
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # egui_nerdfonts = {path = "../../contrib/egui_nerdfonts"}

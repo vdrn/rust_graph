@@ -49,14 +49,14 @@ impl PlotParams {
 		let plot_width = last_x - first_x;
 		let plot_height = last_y - first_y;
 
-		let mut points_to_draw = ui_state.conf.resolution.max(1);
+		let mut points_to_draw = ui_state.app_config.resolution.max(1);
 		let mut step_size = plot_width / points_to_draw as f64;
 		while points_to_draw > 2 && first_x + step_size == first_x {
 			points_to_draw /= 2;
 			step_size = plot_width / points_to_draw as f64;
 		}
 
-		let mut points_to_draw_y = ui_state.conf.resolution.max(1);
+		let mut points_to_draw_y = ui_state.app_config.resolution.max(1);
 		let mut step_size_y = plot_height / points_to_draw as f64;
 		while points_to_draw_y > 2 && first_y + step_size_y == first_y {
 			points_to_draw_y /= 2;
@@ -70,7 +70,7 @@ impl PlotParams {
 			last_y,
 			step_size,
 			step_size_y,
-			resolution: ui_state.conf.resolution,
+			resolution: ui_state.app_config.resolution,
 			prev_plot_transform: graph_state.prev_plot_transform,
 			invert_axes: graph_state.current_graph_config.invert_axes,
 		}

@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
-	self, Align, Area, Button, CollapsingHeader, DragValue, Grid, Id, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window
+	self, Align, Area, Button, CollapsingHeader, DragValue, Grid, Id, Modal, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, TextStyle, Window, menu
 };
 use eframe::epaint::Color32;
 use egui_plot::{
@@ -17,7 +17,8 @@ use crate::drawing::{duplicate_entry_btn, popup_label, remove_entry_btn};
 use crate::entry::{
 	self, Entry, EntrySymbol, EntryType, point_dragging, point_radius_outer, prepare_entries, schedule_create_plot_elements
 };
-use crate::{AppConfig, IdGenerator, State, UiState, persistence, scope};
+use crate::persistence::deserialize_graph_state_from_json;
+use crate::{AppConfig, GraphState, IdGenerator, State, UiState, load_graph_state, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -38,18 +39,284 @@ pub fn side_panel<T: EvalexprFloat>(
 	let changed = SidePanel::left("left_panel")
 		.default_width(200.0)
 		.show(ctx, |ui| {
+			menu::bar(ui, |ui| {
+				// File
+				ui.menu_button("📂 File", |ui| {
+					// New
+					if ui.button("New").clicked() {
+						load_graph_state(
+							ui_state,
+							state,
+							Ok(GraphState::new(ui_state.app_config.default_graph_config.clone())),
+						);
+					}
+					if ui.button("Open").clicked() {
+						ui_state.showing_open = true;
+
+						#[cfg(not(target_arch = "wasm32"))]
+						{
+							ui_state.file_dialog.pick_file();
+						}
+					}
+					if ui.button("Save").clicked() {
+						ui_state.showing_save = true;
+						#[cfg(not(target_arch = "wasm32"))]
+						{
+              ui_state.file_dialog.config_mut().default_file_name = format!("{}.json", state.graph_state.name);
+
+							ui_state.file_dialog.save_file();
+						}
+					}
+					#[cfg(not(target_arch = "wasm32"))]
+					{
+						ui.separator();
+						if ui.button("Exit").clicked() {
+							ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+						}
+					}
+				});
+
+				if ui_state.showing_open {
+					// Open on WASM
+					#[cfg(target_arch = "wasm32")]
+					{
+						let open_modal = Modal::new(Id::new("Open File WASM")).show(ui.ctx(), |ui| {
+							ui.set_width(400.0);
+							ui.horizontal(|ui| {
+								ui.heading("Saved Graphs");
+								if ui.button("Close").clicked() {
+									ui.close();
+								}
+							});
+							ui.separator();
+
+							ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+								Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
+									for file_name in ui_state.serialized_states.keys() {
+										ui.label(file_name);
+										if ui.button("Open").clicked() {
+											let graph_state_res =
+												load_file_wasm(&ui_state.serialized_states, file_name);
+											load_graph_state(ui_state, state, graph_state_res);
+											ui.close();
+											// todo: hack for borrow checker, fix later
+											break;
+										}
+										if ui.button("Delete").clicked() {
+											ui_state.file_to_remove = Some(file_name.clone());
+										}
+										ui.end_row();
+									}
+
+									// confirm_remove_dialog
+									if let Some(file) = &ui_state.file_to_remove {
+										let modal =
+											Modal::new(Id::new("Confirm remove file")).show(ui.ctx(), |ui| {
+												ui.set_width(400.0);
+												ui.heading(format!(
+													"Are you sure you want to delete '{file}'?"
+												));
+
+												ui.add_space(32.0);
+
+												egui::Sides::new().show(
+													ui,
+													|_ui| {},
+													|ui| {
+														if ui.button("Yes").clicked() {
+															#[cfg(target_arch = "wasm32")]
+															{
+																if let Some(storage) = _frame.storage_mut() {
+																	storage.flush();
+																}
+																ui_state.serialized_states.remove(file);
+															}
+															#[cfg(not(target_arch = "wasm32"))]
+															{
+																use std::path::PathBuf;
+
+																if let Ok(()) = std::fs::remove_file(
+																	PathBuf::from(&ui_state.cur_dir)
+																		.join(file),
+																) {
+																	ui_state.serialized_states.remove(file);
+																}
+															}
+															ui.close();
+														}
+
+														if ui.button("No").clicked() {
+															ui.close();
+														}
+													},
+												);
+											});
+
+										if modal.should_close() {
+											ui_state.file_to_remove = None;
+										}
+									}
+								})
+							});
+						});
+						if open_modal.should_close() {
+							ui_state.showing_open = false;
+						}
+					}
+					// Open on Desktop
+					#[cfg(not(target_arch = "wasm32"))]
+					{
+						ui_state.file_dialog.update(ctx);
+
+						// Check if the user picked a file.
+						if let Some(path) = ui_state.file_dialog.take_picked() {
+							let graph_state_res = crate::persistence::load_file_desktop(&path);
+							load_graph_state(ui_state, state, graph_state_res);
+
+							ui_state.showing_open = false;
+						}
+					}
+				}
+
+				if ui_state.showing_save {
+					// Save on WASM
+					#[cfg(target_arch = "wasm32")]
+					{
+						let save_modal = Modal::new(Id::new("Save File File WASM")).show(ui.ctx(), |ui| {
+							ui.set_width(400.0);
+							ui.heading("Save Graph");
+
+							ui.horizontal(|ui| {
+								ui.label("Name:");
+								ui.text_edit_singleline(&mut state.graph_state.name);
+							});
+							ui.separator();
+
+							ui.horizontal(|ui| {
+								if ui
+									.add_enabled(
+										!state.graph_state.name.trim().is_empty(),
+										Button::new("Save"),
+									)
+									.clicked()
+								{
+									crate::persistence::save_file_wasm(ui_state, state, frame);
+									ui.close();
+								}
+
+								if ui.button("Cancel").clicked() {
+									ui.close();
+								}
+							});
+						});
+
+						if save_modal.should_close() {
+							ui_state.showing_save = false;
+						}
+					}
+					// Save on Desktop
+					#[cfg(not(target_arch = "wasm32"))]
+					{
+						ui_state.file_dialog.update(ctx);
+
+						// Check if the user picked a file.
+						if let Some(path) = ui_state.file_dialog.take_picked() {
+							ui_state.showing_save = false;
+
+							if !path.is_dir()
+								&& let Some(file_name) = path.file_name()
+								&& !file_name.is_empty()
+							{
+								crate::persistence::save_file_desktop(path, ui_state, state, frame);
+								ui_state.serialization_error = None;
+							} else {
+								ui_state.serialization_error = Some("Please provide a valid name".to_string());
+							}
+						}
+					}
+				}
+
+				// Examples
+				ui.menu_button("📂 Examples", |ui| {
+					for entry in crate::EXAMPLES_DIR.entries() {
+						if let Some(entry_file) = entry.as_file() {
+							if let Some(entry_name) = entry_file.path().file_stem().and_then(|s| s.to_str()) {
+								if ui.button(entry_name).clicked() {
+									let graph_state_res = deserialize_graph_state_from_json::<T>(
+										entry_name.to_string(),
+										entry_file.contents(),
+									)
+									.map_err(|e| format!("Could not deserialize file: {}", e));
+									load_graph_state(ui_state, state, graph_state_res);
+								}
+							}
+						}
+					}
+				});
+
+				// Settings
+				if ui.button("⚙ Settings").clicked() {
+					ui_state.showing_settings = !ui_state.showing_settings;
+				}
+				if ui_state.showing_settings {
+					Window::new("⚙ Settings").open(&mut ui_state.showing_settings).show(ctx, |ui| {
+						ScrollArea::vertical().show(ui, |ui| {
+							ui.separator();
+							ui.checkbox(&mut ui_state.app_config.use_f32, "Use f32");
+
+							ui.separator();
+							ui.add(
+								Slider::new(&mut ui_state.app_config.resolution, 10..=2000)
+									.text("Point Resolution"),
+							);
+
+							ui.separator();
+							ui.add(Slider::new(&mut ui_state.app_config.ui_scale, 1.0..=3.0).text("Ui Scale"));
+
+							ui.separator();
+							#[cfg(not(target_arch = "wasm32"))]
+							if ui.button("Toggle Fullscreen").clicked()
+								|| ui.input(|i| i.key_pressed(egui::Key::F11))
+								|| ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter))
+							{
+								ui_state.app_config.fullscreen = !ui_state.app_config.fullscreen;
+								ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+									ui_state.app_config.fullscreen,
+								));
+							}
+						});
+					});
+				}
+
+				// Help
+				if ui.button(format!("{} Help", if ui_state.showing_help { "📖" } else { "📚" })).clicked()
+				{
+					ui_state.showing_help = !ui_state.showing_help;
+				}
+				if ui_state.showing_help {
+					Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
+						ScrollArea::vertical().show(ui, |ui| {
+							show_builtin_information(ui);
+						});
+					});
+				}
+
+				// Dark mode toggle
+				if ui
+					.button(if ui_state.app_config.dark_mode { "🌙" } else { "☀" })
+					.on_hover_text("Toggle Dark Mode")
+					.clicked()
+				{
+					ui_state.app_config.dark_mode = !ui_state.app_config.dark_mode;
+				}
+			});
 			ScrollArea::vertical()
 				.show(ui, |ui| {
 					ui.add_space(10.0);
 					ui.horizontal_top(|ui| {
-						ui.heading("Rust Graph");
-						if ui
-							.button(if ui_state.conf.dark_mode { "🌙" } else { "☀" })
-							.on_hover_text("Toggle Dark Mode")
-							.clicked()
-						{
-							ui_state.conf.dark_mode = !ui_state.conf.dark_mode;
-						}
+						ui.heading("Rust Graph: ");
+						ui.text_edit_singleline(&mut state.graph_state.name);
+
 					});
 
 					ui.separator();
@@ -106,7 +373,7 @@ pub fn side_panel<T: EvalexprFloat>(
 					egui_dnd::dnd(ui, "entries_dnd").show_vec(
 						&mut state.graph_state.entries,
 						|ui, entry, handle, _state| {
-							entry_frame(ui, ui_state.conf.dark_mode, |ui: &mut egui::Ui| {
+							entry_frame(ui, ui_state.app_config.dark_mode, |ui: &mut egui::Ui| {
 								let symbol = entry.entry_symbol().symbol(entry.active);
 								if let EntryType::Folder { entries } = &mut entry.ty {
 									ui.vertical(|ui| {
@@ -163,7 +430,7 @@ pub fn side_panel<T: EvalexprFloat>(
 											|ui, entry, handle, _state| {
 												entry_frame(
 													ui,
-													ui_state.conf.dark_mode,
+													ui_state.app_config.dark_mode,
 													|ui: &mut egui::Ui| {
 														ui.horizontal(|ui| {
 															handle.ui(ui, |ui| {
@@ -269,56 +536,11 @@ pub fn side_panel<T: EvalexprFloat>(
 					});
 					ui.separator();
 
-					CollapsingHeader::new("Settings").default_open(true).show(ui, |ui| {
-						ui.separator();
-						ui.checkbox(&mut ui_state.conf.use_f32, "Use f32");
-
-						ui.separator();
-						ui.add(Slider::new(&mut ui_state.conf.resolution, 10..=2000).text("Point Resolution"));
-
-						ui.separator();
-						ui.add(Slider::new(&mut ui_state.conf.ui_scale, 1.0..=3.0).text("Ui Scale"));
-
-						ui.separator();
-						#[cfg(not(target_arch = "wasm32"))]
-						if ui.button("Toggle Fullscreen").clicked()
-							|| ui.input(|i| i.key_pressed(egui::Key::F11))
-							|| ui.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter))
-						{
-							ui_state.conf.fullscreen = !ui_state.conf.fullscreen;
-							ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-								ui_state.conf.fullscreen,
-							));
-						}
-
-						if ui
-							.button(format!("{} Help", if ui_state.showing_help { "📖" } else { "📚" }))
-							.clicked()
-						{
-							ui_state.showing_help = !ui_state.showing_help;
-						}
-						if ui_state.showing_help {
-							Window::new("📖 Help").open(&mut ui_state.showing_help).show(ctx, |ui| {
-								ScrollArea::vertical().show(ui, |ui| {
-									show_builtin_information(ui);
-								});
-							});
-						}
-					});
-
-					ui.separator();
 					if let Some(error) = &ui_state.serialization_error {
 						if ui.label(RichText::new(error).color(Color32::RED)).clicked() {
 							ui_state.serialization_error = None;
 						}
 					}
-					#[cfg(target_arch = "wasm32")]
-					const PERSISTANCE_TYPE: &str = "Local Storage";
-					#[cfg(not(target_arch = "wasm32"))]
-					const PERSISTANCE_TYPE: &str = "Persistence";
-					CollapsingHeader::new(PERSISTANCE_TYPE).default_open(true).show(ui, |ui| {
-						persistence::persistence_ui(state, ui_state, ui, frame);
-					});
 
 					ui.separator();
 					ui.hyperlink_to("Github", "https://github.com/vdrn/rust_graph");
@@ -423,7 +645,7 @@ pub fn graph_panel<T: EvalexprFloat>(
 				MenuButton::new("⚙")
 					.config(MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
 					.ui(ui, |ui| {
-						state.graph_state.current_graph_config.ui(ui, &mut ui_state.conf);
+						state.graph_state.current_graph_config.ui(ui, &mut ui_state.app_config);
 					});
 			});
 			if prev_invert_axes != state.graph_state.current_graph_config.invert_axes {
