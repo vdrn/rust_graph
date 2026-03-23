@@ -6,7 +6,7 @@ use eframe::egui::{
 };
 use eframe::epaint::Color32;
 use egui_plot::{HLine, Legend, Plot, PlotBounds, PlotImage, PlotPoint, PlotTransform, PlotUi, VLine};
-use evalexpr::{EvalexprFloat, Stack};
+use evalexpr::{EvalexprFloat, Stack, istr};
 use serde::{Deserialize, Serialize};
 
 use crate::builtins::{init_builtins, show_builtin_information};
@@ -660,11 +660,14 @@ pub fn graph_panel<T: EvalexprFloat>(
 		ui_state.plot_mouese_pos = plot_res.response.hover_pos();
 		state.graph_state.prev_plot_transform = Some(plot_res.transform);
 
+    // println!("new frame");
 		if force_create_elements || changed {
 			// println!("Scheduling element creation because force {force_create_elements} changed {changed}");
 			if !ui_state.debug_info.pause_redraw {
 				ui_state.debug_info.plot_bounds = Some(*plot_res.transform.bounds());
 				scope!("schedule_entry_create_plot_elements");
+
+
 				ui_state.eval_errors.clear();
 				let plot_params = entry::PlotParams::new::<T>(ui_state, &state.graph_state);
 				let main_context = Arc::new(state.ctx.clone());

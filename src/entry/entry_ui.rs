@@ -83,6 +83,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 			if !entry_is_color {
 				entry.active = !entry.active;
 				result.needs_redraw = true;
+        // result.needs_recompilation = true;
 			}
 		}
 
@@ -100,8 +101,8 @@ pub fn entry_ui<T: EvalexprFloat>(
 			result.parsed = true;
 		}
 	});
-	// entry_edit and controls
 
+	// entry_edit and controls
 	ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::RightToLeft), |ui| {
 		// controls
 		ui.horizontal(|ui| {
@@ -123,7 +124,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 		});
 		// entry edit
 		ui.horizontal(|ui| {
-			entry_type_ui(ui, ctx, processed_colors, entry, clear_cache, prev_visible, &mut result);
+			entry_type_ui(ui, ctx, entry, clear_cache, prev_visible, &mut result);
 		});
 	});
 
@@ -281,7 +282,7 @@ fn entry_style<T: EvalexprFloat>(
 	changed
 }
 fn entry_type_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, ctx: &HashMapContext<T>, processed_colors: &ProcessedColors<T>, entry: &mut Entry<T>,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>,  entry: &mut Entry<T>,
 	clear_cache: bool, prev_active: bool, result: &mut EditEntryResult,
 ) {
 	match &mut entry.ty {

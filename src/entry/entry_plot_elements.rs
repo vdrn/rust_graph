@@ -5,7 +5,7 @@ use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
 use egui_plot::{PlotItemBase, PlotPoint, PlotTransform, Points, Polygon};
-use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
+use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value, istr};
 use thread_local::ThreadLocal;
 
 use crate::draw_buffer::{
@@ -14,7 +14,7 @@ use crate::draw_buffer::{
 use crate::drawing::TextPlotItem;
 use crate::drawing::line::DrawLine2;
 use crate::entry::{
-	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColor, ProcessedColorExpr, ProcessedColors, f64_to_value, value_to_color
+	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColorExpr, ProcessedColors, f64_to_value, value_to_color
 };
 use crate::marching_squares::MeshBuilder;
 use crate::math::{
