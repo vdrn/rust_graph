@@ -12,10 +12,11 @@ use crate::app_ui::GraphConfig;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
 use crate::draw_buffer::DrawBuffer;
 use crate::entry::{
-  FillAlpha,
-	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
+	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FillAlpha, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
-use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state};
+use crate::{
+	ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState, load_graph_state
+};
 
 pub fn default_true() -> bool { true }
 
@@ -35,7 +36,7 @@ pub struct EntrySerialized {
 	name:    String,
 	#[serde(default = "default_true")]
 	visible: bool,
-  #[serde(default)]
+	#[serde(default)]
 	color:   EntryColor,
 	ty:      EntryTypeSerialized,
 }
@@ -89,7 +90,7 @@ pub enum EntryTypeSerialized {
 		#[serde(default)]
 		fill_rule:           FillRule,
 		#[serde(default)]
-    fill_alpha: FillAlpha,
+		fill_alpha:          FillAlpha,
 	},
 	Constant {
 		value:       f64,
@@ -101,11 +102,11 @@ pub enum EntryTypeSerialized {
 		range_end:   ExprSer,
 	},
 	Points {
-		// TODO: remove `points` and unwrap Option around `points_ty`
-		#[serde(default)]
-		points:    Vec<EntryPointSerialized>,
-		#[serde(default)]
-		points_ty: Option<EntryPointTypeSerialized>,
+		// // TODO: remove `points` and unwrap Option around `points_ty`
+		// #[serde(default)]
+		// points:    Vec<EntryPointSerialized>,
+		// #[serde(default)]
+		points_ty: EntryPointTypeSerialized,
 		#[serde(default)]
 		style:     PointStyleSerialized,
 	},
@@ -116,8 +117,8 @@ pub enum EntryTypeSerialized {
 	Color {
 		#[serde(default)]
 		expr: ExprSer,
-    #[serde(default)]
-    ty: ColorEntryType
+		#[serde(default)]
+		ty:   ColorEntryType,
 	},
 }
 
@@ -187,8 +188,8 @@ pub struct PointStyleSerialized {
 	fill_rule:              FillRule,
 	#[serde(default)]
 	connect_first_and_last: bool,
-  #[serde(default)]
-  fill_alpha: FillAlpha,
+	#[serde(default)]
+	fill_alpha:             FillAlpha,
 }
 impl PointStyleSerialized {
 	fn from_point_style<T: EvalexprFloat>(point_style: &PointStyle<T>) -> Self {
@@ -203,7 +204,7 @@ impl PointStyleSerialized {
 				.map(LabelConfigSerialized::from_label_config),
 			fill:                   point_style.fill,
 			fill_rule:              point_style.fill_rule,
-      fill_alpha: point_style.fill_alpha,
+			fill_alpha:             point_style.fill_alpha,
 			connect_first_and_last: point_style.connect_first_and_last,
 		}
 	}
@@ -216,7 +217,7 @@ impl PointStyleSerialized {
 			label_config:           self.label_config.map(|label_config| label_config.into_label_config()),
 			fill:                   self.fill,
 			fill_rule:              self.fill_rule,
-      fill_alpha: self.fill_alpha,
+			fill_alpha:             self.fill_alpha,
 			connect_first_and_last: self.connect_first_and_last,
 		}
 	}
@@ -240,7 +241,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					implicit_resolution,
 					parametric_fill,
 					fill_rule,
-          fill_alpha,
+					fill_alpha,
 					..
 				} => EntryTypeSerialized::Function {
 					func:                ExprSer::from_expr(func),
@@ -251,7 +252,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					fill_rule:           *fill_rule,
 					implicit_resolution: *implicit_resolution,
 					parametric_fill:     *parametric_fill,
-          fill_alpha: *fill_alpha,
+					fill_alpha:          *fill_alpha,
 				},
 				EntryType::Constant { value, step, ty, istr_name: _, range_start, range_end } => {
 					EntryTypeSerialized::Constant {
@@ -274,16 +275,14 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 							points_serialized.push(point_serialized);
 						}
 						EntryTypeSerialized::Points {
-							points_ty: Some(EntryPointTypeSerialized::Separate { points: points_serialized }),
-							points:    Vec::new(),
+							points_ty: EntryPointTypeSerialized::Separate { points: points_serialized },
+							// points:    Vec::new(),
 							style:     PointStyleSerialized::from_point_style(style),
 						}
 					},
 					PointsType::SingleExpr { expr, .. } => EntryTypeSerialized::Points {
-						points_ty: Some(EntryPointTypeSerialized::SingleExpr {
-							expr: ExprSer::from_expr(expr),
-						}),
-						points:    Vec::new(),
+						points_ty: EntryPointTypeSerialized::SingleExpr { expr: ExprSer::from_expr(expr) },
+						// points:    Vec::new(),
 						style:     PointStyleSerialized::from_point_style(style),
 					},
 				},
@@ -292,7 +291,7 @@ pub fn serialize_entries<T: EvalexprFloat>(entries: &[Entry<T>]) -> Vec<EntrySer
 					EntryTypeSerialized::Folder { entries: ser_entries }
 				},
 				EntryType::Color(color) => {
-					EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr) ,ty: color.ty}
+					EntryTypeSerialized::Color { expr: ExprSer::from_expr(&color.expr), ty: color.ty }
 				},
 			},
 		};
@@ -357,27 +356,28 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	// deserialize_from_json(decoded.as_bytes())
 }
 
-pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSerialized) -> Result<GraphState<T>,String> {
-  let entries = deserialize_entries::<T>(ser.entries);
-  let mut unique_ids = FxHashSet::default();
-  let mut max_id = 0;
-  for entry in entries.iter() {
-    max_id = entry.id.max(max_id);
-    if !unique_ids.insert(entry.id) {
-      return Err(format!("Error deserializing graph state: Duplicate id: {}", entry.id));
-    }
-    if let EntryType::Folder { entries } = &entry.ty {
-      for sub_entry in entries.iter() {
-        max_id = sub_entry.id.max(max_id);
-        if !unique_ids.insert(sub_entry.id) {
-      return Err(format!("Error deserializing graph state: Duplicate id: {}", sub_entry.id));
-        }
-      }
-    }
-  }
+pub fn deserialize_graph_state<T: EvalexprFloat>(
+	name: String, ser: StateSerialized,
+) -> Result<GraphState<T>, String> {
+	let entries = deserialize_entries::<T>(ser.entries);
+	let mut unique_ids = FxHashSet::default();
+	let mut max_id = 0;
+	for entry in entries.iter() {
+		max_id = entry.id.max(max_id);
+		if !unique_ids.insert(entry.id) {
+			return Err(format!("Error deserializing graph state: Duplicate id: {}", entry.id));
+		}
+		if let EntryType::Folder { entries } = &entry.ty {
+			for sub_entry in entries.iter() {
+				max_id = sub_entry.id.max(max_id);
+				if !unique_ids.insert(sub_entry.id) {
+					return Err(format!("Error deserializing graph state: Duplicate id: {}", sub_entry.id));
+				}
+			}
+		}
+	}
 
-  let max_id = max_id + 1;
-
+	let max_id = max_id + 1;
 
 	Ok(GraphState {
 		entries,
@@ -385,7 +385,7 @@ pub fn deserialize_graph_state<T: EvalexprFloat>(name: String, ser: StateSeriali
 		current_graph_config: ser.graph_config,
 		name,
 		id_gen: IdGenerator::new(max_id),
-    prev_plot_transform: None,
+		prev_plot_transform: None,
 	})
 }
 pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> Vec<Entry<T>> {
@@ -406,13 +406,13 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					implicit_resolution,
 					fill_rule,
 					parametric_fill,
-          fill_alpha
+					fill_alpha,
 				} => EntryType::Function {
 					parametric: ranged,
 					parametric_fill,
 					fill_rule,
 					identifier: istr_empty(),
-          fill_alpha,
+					fill_alpha,
 					func: func.into_expr(true),
 					// Actual type will be set in compilation step later
 					ty: FunctionType::Expression,
@@ -436,51 +436,49 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 						range_end: range_end.into_expr(false),
 					}
 				},
-				EntryTypeSerialized::Points { points, points_ty, style } => {
-					let points = if points_ty.is_none() {
-						Some(&points)
-					} else if let Some(EntryPointTypeSerialized::Separate { points }) = &points_ty {
-						Some(points)
-					} else {
-						None
-					};
-					if let Some(points) = points {
-						let mut points_deserialized = Vec::new();
-						for point in points {
-							let point_deserialized = PointEntry {
-								x:    point.x.clone().into_expr(false),
-								y:    point.y.clone().into_expr(false),
-								drag: PointDrag {
-									drag_point:               None,
-									drag_type:                point.drag_type,
-									both_drag_dirs_available: true,
-								},
-								val:  None,
-							};
-							points_deserialized.push(point_deserialized);
-						}
-						EntryType::Points {
-							points_ty: PointsType::Separate(points_deserialized),
+				EntryTypeSerialized::Points { points_ty, style } => {
+					// let points = if points_ty.is_none() {
+					// 	Some(&points)
+					// } else if let Some(EntryPointTypeSerialized::Separate { points }) = &points_ty {
+					// 	Some(points)
+					// } else {
+					// 	None
+					// };
+					match points_ty {
+						EntryPointTypeSerialized::Separate { points } => {
+							let mut points_deserialized = Vec::new();
+							for point in points {
+								let point_deserialized = PointEntry {
+									x:    point.x.clone().into_expr(false),
+									y:    point.y.clone().into_expr(false),
+									drag: PointDrag {
+										drag_point:               None,
+										drag_type:                point.drag_type,
+										both_drag_dirs_available: true,
+									},
+									val:  None,
+								};
+								points_deserialized.push(point_deserialized);
+							}
+							EntryType::Points {
+								points_ty: PointsType::Separate(points_deserialized),
 
-							style:      PointStyleSerialized::into_point_style(style),
-							identifier: istr_empty(),
-						}
-					} else {
-						let Some(EntryPointTypeSerialized::SingleExpr { expr }) = points_ty else {
-							unreachable!()
-						};
-						EntryType::Points {
+								style:      PointStyleSerialized::into_point_style(style),
+								identifier: istr_empty(),
+							}
+						},
+						EntryPointTypeSerialized::SingleExpr { expr } => EntryType::Points {
 							points_ty:  PointsType::SingleExpr { expr: expr.into_expr(false), val: vec![] },
 							style:      PointStyleSerialized::into_point_style(style),
 							identifier: istr_empty(),
-						}
+						},
 					}
 				},
 				EntryTypeSerialized::Folder { entries } => {
 					let entries = deserialize_entries(entries);
 					EntryType::Folder { entries }
 				},
-				EntryTypeSerialized::Color { expr ,ty} => {
+				EntryTypeSerialized::Color { expr, ty } => {
 					EntryType::Color(ColorEntry { expr: expr.into_expr(false), ty })
 				},
 			},
@@ -618,10 +616,10 @@ pub fn persistence_ui<T: EvalexprFloat>(
 			for file_name in ui_state.serialized_states.keys() {
 				ui.label(file_name);
 				if ui.button("Load").clicked() {
-          let graph_state_res = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name);
-          load_graph_state(ui_state,state, graph_state_res);
-          // todo: hack for borrow checker, fix later
-          break;
+					let graph_state_res = load_file(&ui_state.cur_dir, &ui_state.serialized_states, file_name);
+					load_graph_state(ui_state, state, graph_state_res);
+					// todo: hack for borrow checker, fix later
+					break;
 				}
 				if ui.button("Delete").clicked() {
 					ui_state.file_to_remove = Some(file_name.clone());
