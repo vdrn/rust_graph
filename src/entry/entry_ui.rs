@@ -9,12 +9,13 @@ use eframe::egui::{
 
 use evalexpr::{EvalexprFloat, HashMapContext, Stack};
 
+use crate::color::{COLORS, ProcessedColors};
 use crate::custom_rendering::fan_fill_renderer::FillRule;
-use crate::drawing::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
-	COLORS, ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, FillAlpha, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, ProcessedColors, RESERVED_NAMES
+	ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, FillAlpha, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, RESERVED_NAMES
 };
+use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,
@@ -83,7 +84,7 @@ pub fn entry_ui<T: EvalexprFloat>(
 			if !entry_is_color {
 				entry.active = !entry.active;
 				result.needs_redraw = true;
-        // result.needs_recompilation = true;
+				// result.needs_recompilation = true;
 			}
 		}
 
@@ -186,7 +187,7 @@ fn entry_style<T: EvalexprFloat>(
 				});
 			}
 			match &mut entry.ty {
-				EntryType::Function { style, parametric, parametric_fill, fill_rule,fill_alpha, .. } => {
+				EntryType::Function { style, parametric, parametric_fill, fill_rule, fill_alpha, .. } => {
 					ui.separator();
 
 					changed |= line_style_config_ui(style, ui);
@@ -274,7 +275,7 @@ fn entry_style<T: EvalexprFloat>(
 				},
 				EntryType::Constant { .. } => {},
 				EntryType::Folder { .. } => {},
-				EntryType::Color(color) => {},
+				EntryType::Color(_) => {},
 			}
 		})
 		.0
@@ -282,8 +283,8 @@ fn entry_style<T: EvalexprFloat>(
 	changed
 }
 fn entry_type_ui<T: EvalexprFloat>(
-	ui: &mut egui::Ui, ctx: &HashMapContext<T>,  entry: &mut Entry<T>,
-	clear_cache: bool, prev_active: bool, result: &mut EditEntryResult,
+	ui: &mut egui::Ui, ctx: &HashMapContext<T>, entry: &mut Entry<T>, clear_cache: bool, prev_active: bool,
+	result: &mut EditEntryResult,
 ) {
 	match &mut entry.ty {
 		EntryType::Folder { .. } => {
@@ -871,21 +872,6 @@ fn expr_ui<T: EvalexprFloat>(
 		} else {
 			TextEdit::multiline(&mut expr.text).desired_rows(1).desired_width(ui.available_width())
 		};
-		// .min_size(vec2(desired_width.unwrap_or_else(|| ui.available_width()),0.0));
-		// .desired_width(desired_width.unwrap_or_else(|| ui.available_width()));
-
-		// let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-		// 	let mut layout_job: egui::text::LayoutJob = egui_extras::syntax_highlighting::highlight(
-		// 		ui.ctx(),
-		// 		ui.style(),
-		// 		&CodeTheme::dark(12.0),
-		// 		buf.as_str(),
-		// 		"Rust",
-		// 	);
-		// 	layout_job.wrap.max_width = wrap_width;
-		// 	ui.fonts_mut(|f| f.layout_job(layout_job))
-		// };
-		// text_edit = text_edit.layouter(&mut layouter);
 
 		text_edit = text_edit.hint_text(hint_text);
 		let response = ui.add(text_edit);
@@ -894,9 +880,6 @@ fn expr_ui<T: EvalexprFloat>(
 				expr.node = None;
 			} else {
 				replace_symbols(ui, response, &mut expr.text);
-
-				// let temp;
-				// let mut txt = &expr.text;
 
 				let mut ast = evalexpr::build_ast::<T>(&expr.text).map_err(|e| e.to_string())?;
 

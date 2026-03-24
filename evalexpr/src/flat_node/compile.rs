@@ -527,8 +527,8 @@ fn compile_special_function<F: EvalexprFloat>(
 		},
 		"Map" | "map" => {
 			let len = node.children.len();
-			let mut expr = None;
-			let mut value_name = None;
+			let expr;
+			let value_name;
 			let mut index_name = None;
 			let mut total_name = None;
 			match len {
@@ -617,9 +617,9 @@ fn compile_special_function<F: EvalexprFloat>(
 					compile_to_flat_inner(condition, ops)?;
 					let l1 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
 					let l2 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
-					ops.push(FlatOperator::JumpIfFalse { id: l1 , offset:None});
+					ops.push(FlatOperator::JumpIfFalse { id: l1, offset: None });
 					compile_to_flat_inner(true_expr, ops)?;
-					ops.push(FlatOperator::Jump { id: l2 , offset:None});
+					ops.push(FlatOperator::Jump { id: l2, offset: None });
 					ops.push(FlatOperator::Label { id: l1 });
 					ops.push(FlatOperator::PushConst { value: Value::Empty });
 					ops.push(FlatOperator::Label { id: l2 });
@@ -640,9 +640,9 @@ fn compile_special_function<F: EvalexprFloat>(
 					compile_to_flat_inner(condition, ops)?;
 					let l1 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
 					let l2 = LABEL_ID.fetch_add(1, Ordering::Relaxed);
-					ops.push(FlatOperator::JumpIfFalse { id: l1 , offset:None});
+					ops.push(FlatOperator::JumpIfFalse { id: l1, offset: None });
 					compile_to_flat_inner(true_expr, ops)?;
-					ops.push(FlatOperator::Jump { id: l2 , offset:None});
+					ops.push(FlatOperator::Jump { id: l2, offset: None });
 					ops.push(FlatOperator::Label { id: l1 });
 					compile_to_flat_inner(false_expr, ops)?;
 					ops.push(FlatOperator::Label { id: l2 });

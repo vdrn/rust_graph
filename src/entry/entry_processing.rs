@@ -7,10 +7,9 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::builtins::is_builtin;
-use crate::entry::entry_plot_elements::eval_point2;
-use crate::entry::{
-	DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType, ProcessedColors
-};
+use crate::color::ProcessedColors;
+use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType};
+use crate::graph::create_plot_elements::eval_point2;
 use crate::scope;
 
 pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {

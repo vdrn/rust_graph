@@ -1,7 +1,7 @@
 use eframe::egui::{Color32, Id, Mesh, Pos2, Vec2};
 use egui_plot::{LineStyle, PlotBounds, PlotPoint, PlotTransform};
 
-pub struct DrawLine2 {
+pub struct DrawLineEx {
 	pub id:            Id,
 	pub name:          String,
 	pub sorting_index: u32,
@@ -11,7 +11,7 @@ pub struct DrawLine2 {
 	pub style:         LineStyle,
 	pub width:         f32,
 }
-impl DrawLine2 {
+impl DrawLineEx {
 	pub fn new(
 		sorting_index: u32, id: Id, name: String, allow_hower: bool, width: f32, style: LineStyle,
 		base_color: Color32, series: Vec<(PlotPoint, Color32)>,
@@ -35,7 +35,7 @@ impl Tessellator {
     self.feathering = 1.0 / pixels_per_point;
   }
 	pub fn tessalate_line(
-		&self, line: &DrawLine2, transform: &PlotTransform, out: &mut Mesh,
+		&self, line: &DrawLineEx, transform: &PlotTransform, out: &mut Mesh,
 	) -> PlotBounds {
 		let mut bounds = PlotBounds::NOTHING;
 		match line.series.len() {

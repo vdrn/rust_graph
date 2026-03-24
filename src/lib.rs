@@ -19,22 +19,27 @@ use thread_local::ThreadLocal;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-mod app_ui;
 mod builtins;
+mod color;
 mod custom_rendering;
-mod draw_buffer;
-mod drawing;
 mod entry;
+mod graph;
 mod marching_squares;
-mod math;
+mod math_utils;
 mod persistence;
+mod plot_extensions;
+mod side_panel;
+mod widgets;
 
-use app_ui::{DebugInfo, GraphConfig};
+use color::ProcessedColors;
 use custom_rendering::fan_fill_renderer::FanFillRenderer;
 use custom_rendering::mesh_renderer::init_mesh_renderer;
-use draw_buffer::{DrawBufferRC, MultiDrawBufferScheduler, ProcessedShapes};
-use entry::{ConstantType, Entry, EntryType, PointEntry, ProcessedColors};
+use entry::{ConstantType, Entry, EntryType, PointEntry};
+use graph::plot_elements::{PlotElementsRC,  ProcessedShapes};
+use graph::graph_config::GraphConfig;
+use graph::graph_ui;
 use marching_squares::MarchingSquaresCache;
+use side_panel::DebugInfo;
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -47,6 +52,8 @@ macro_rules! scope {
 	($($tt:tt)*) => {};
 }
 pub(crate) use scope;
+
+use crate::graph::plot_elements_scheduler::PlotElementsScheduler;
 
 pub const DEFAULT_RESOLUTION: usize = 500;
 
@@ -208,8 +215,8 @@ struct UiState {
 	showing_save:     bool,
 
 	// UI - Persistance
-	cur_dir:           String,
 	serialized_states: BTreeMap<String, String>,
+	#[cfg(target_arch = "wasm32")]
 	file_to_remove:    Option<String>,
 	#[cfg(not(target_arch = "wasm32"))]
 	file_dialog:       egui_file_dialog::FileDialog,
@@ -223,7 +230,7 @@ struct UiState {
 
 	// UI: Graph interactions
 	selected_plot_line:   Option<(Id, bool)>,
-	dragging_point_i:     Option<draw_buffer::PointInteraction>,
+	dragging_point_i:     Option<graph::plot_elements::PointInteraction>,
 	plot_mouese_pos:      Option<egui::Pos2>,
 	showing_custom_label: bool,
 
@@ -239,9 +246,9 @@ struct UiState {
 
 	// Drawing
 	processed_shapes:            ProcessedShapes,
-	draw_buffers:                Box<ThreadLocal<DrawBufferRC>>,
+	draw_buffers:                Box<ThreadLocal<PlotElementsRC>>,
 	fan_fill_renderer:           Option<FanFillRenderer>,
-	multi_draw_buffer_scheduler: MultiDrawBufferScheduler,
+	multi_draw_buffer_scheduler: PlotElementsScheduler,
 
 	// Misc
 	debug_info: DebugInfo,
@@ -345,7 +352,7 @@ impl Application {
 					.default_file_filter("Rust Graph JSON file"),
 
 				debug_info: DebugInfo::new(),
-				multi_draw_buffer_scheduler: MultiDrawBufferScheduler::new(),
+				multi_draw_buffer_scheduler: PlotElementsScheduler::new(),
 				force_process_elements: true,
 				processed_shapes: ProcessedShapes::new(),
 				fan_fill_renderer: FanFillRenderer::new(cc),
@@ -356,7 +363,6 @@ impl Application {
 				reset_graph: false,
 				clear_cache: true,
 
-				cur_dir,
 				serialization_error,
 				parsing_errors: FxHashMap::default(),
 				prepare_errors: FxHashMap::default(),
@@ -368,6 +374,7 @@ impl Application {
 				dragging_point_i: None,
 				plot_mouese_pos: None,
 				permalink_string: String::new(),
+				#[cfg(target_arch = "wasm32")]
 				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),
 				showing_help: false,
@@ -395,13 +402,16 @@ impl App for Application {
 		ctx.set_pixels_per_point(self.ui.app_config.ui_scale);
 
 		let use_f32 = self.ui.app_config.use_f32;
-		if use_f32 {
-			let changed = app_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f32, &mut self.ui, ctx, frame, changed);
-		} else {
-			let changed = app_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
-			app_ui::graph_panel(&mut self.state_f64, &mut self.ui, ctx, frame, changed);
-		}
+
+		egui::CentralPanel::default().show(ctx, |ui| {
+			if use_f32 {
+				let changed = side_panel::side_panel(&mut self.state_f32, &mut self.ui, ctx);
+				graph_ui(ui, &mut self.state_f32, &mut self.ui, frame, changed);
+			} else {
+				let changed = side_panel::side_panel(&mut self.state_f64, &mut self.ui, ctx);
+				graph_ui(ui, &mut self.state_f64, &mut self.ui, frame, changed);
+			}
+		});
 		if use_f32 != self.ui.app_config.use_f32 {
 			let mut output = Vec::with_capacity(1024);
 			if use_f32 {
@@ -469,7 +479,7 @@ fn load_graph_state<T: EvalexprFloat>(
 			ui_state.serialization_error = None;
 			ui_state.clear_cache = true;
 			ui_state.reset_graph = true;
-			ui_state.multi_draw_buffer_scheduler = MultiDrawBufferScheduler::new();
+			ui_state.multi_draw_buffer_scheduler = PlotElementsScheduler::new();
 		},
 		Err(e) => {
 			ui_state.serialization_error = Some(e);

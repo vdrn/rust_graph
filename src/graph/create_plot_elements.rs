@@ -5,80 +5,27 @@ use std::marker::ConstParamTy;
 
 use eframe::egui::{self, Align2, Color32, Id, Pos2, RichText, Stroke, pos2, remap};
 use egui_plot::{PlotItemBase, PlotPoint, PlotTransform, Points, Polygon};
-use evalexpr::{
-	EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value, istr
-};
+use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, Stack, Value};
 use thread_local::ThreadLocal;
 
-use crate::draw_buffer::{
-	DrawBuffer, DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, ExecutionResult2, FillMesh, MultiDrawBufferScheduler, OtherPointType, PointInteraction, PointInteractionType
+use crate::color::{COLORS, EntryColor, NUM_COLORS, ProcessedColorExpr, ProcessedColors, value_to_color};
+use crate::entry::{ClonedEntry, DragPoint, Entry, EntryType, EquationType, PointsType, f64_to_value};
+use crate::graph::PlotParams;
+use crate::graph::plot_elements::{
+	DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, FillMesh, OtherPointType, PlotElements, PointInteraction, PointInteractionType
 };
-use crate::drawing::TextPlotItem;
-use crate::drawing::line::DrawLine2;
-use crate::entry::{
-	COLORS, ClonedEntry, DragPoint, Entry, EntryColor, EntryType, EquationType, NUM_COLORS, PointsType, ProcessedColorExpr, ProcessedColors, f64_to_value, value_to_color
-};
+use crate::graph::plot_elements_scheduler::{ExecutionResult, PlotElementsScheduler};
 use crate::marching_squares::MeshBuilder;
-use crate::math::{
+use crate::math_utils::{
 	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
 };
-use crate::{GraphState, ThreadLocalContext, UiState, marching_squares, thread_local_get};
+use crate::plot_extensions::line::DrawLineEx;
+use crate::plot_extensions::text::TextPlotItem;
+use crate::{ThreadLocalContext, marching_squares, thread_local_get};
 
-#[derive(Clone)]
-pub struct PlotParams {
-	pub eps:                 f64,
-	pub first_x:             f64,
-	pub last_x:              f64,
-	pub first_y:             f64,
-	pub last_y:              f64,
-	pub step_size:           f64,
-	pub step_size_y:         f64,
-	pub resolution:          usize,
-	pub prev_plot_transform: Option<egui_plot::PlotTransform>,
-	pub invert_axes:         [bool; 2],
-}
-impl PlotParams {
-	pub fn new<T: EvalexprFloat>(ui_state: &UiState, graph_state: &GraphState<T>) -> Self {
-		let plot_bounds = graph_state.prev_plot_bounds();
-		let first_x = plot_bounds.min()[0];
-		let last_x = plot_bounds.max()[0];
-		let first_y = plot_bounds.min()[1];
-		let last_y = plot_bounds.max()[1];
-
-		// let (first_x, last_x) = snap_range_to_grid(first_x, last_x, 10.0);
-		let plot_width = last_x - first_x;
-		let plot_height = last_y - first_y;
-
-		let mut points_to_draw = ui_state.app_config.resolution.max(1);
-		let mut step_size = plot_width / points_to_draw as f64;
-		while points_to_draw > 2 && first_x + step_size == first_x {
-			points_to_draw /= 2;
-			step_size = plot_width / points_to_draw as f64;
-		}
-
-		let mut points_to_draw_y = ui_state.app_config.resolution.max(1);
-		let mut step_size_y = plot_height / points_to_draw as f64;
-		while points_to_draw_y > 2 && first_y + step_size_y == first_y {
-			points_to_draw_y /= 2;
-			step_size_y = plot_height / points_to_draw_y as f64;
-		}
-		Self {
-			eps: T::EPSILON,
-			first_x,
-			last_x,
-			first_y,
-			last_y,
-			step_size,
-			step_size_y,
-			resolution: ui_state.app_config.resolution,
-			prev_plot_transform: graph_state.prev_plot_transform,
-			invert_axes: graph_state.current_graph_config.invert_axes,
-		}
-	}
-}
 pub fn schedule_create_plot_elements<T: EvalexprFloat>(
-	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut MultiDrawBufferScheduler,
-	selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>, plot_params: &PlotParams,
+	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut PlotElementsScheduler, selected_id: Option<Id>,
+	ctx: &Arc<evalexpr::HashMapContext<T>>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, processed_colors: &ProcessedColors<T>,
 ) {
 	let mut to_execute_async = vec![];
@@ -97,14 +44,14 @@ pub fn schedule_create_plot_elements<T: EvalexprFloat>(
 	multi_scheduler.schedule(to_execute_async);
 }
 fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
-	entry: &mut Entry<T>, to_execute_async: &mut Vec<Box<dyn FnOnce() -> ExecutionResult2 + Send>>,
+	entry: &mut Entry<T>, to_execute_async: &mut Vec<Box<dyn FnOnce() -> ExecutionResult + Send>>,
 	sorting_idx: u32, selected_id: Option<Id>, ctx: &Arc<evalexpr::HashMapContext<T>>,
 	plot_params: &PlotParams, tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 	processed_colors: &ProcessedColors<T>,
 ) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
-		entry.draw_buffer.clear();
+		entry.plot_elements.clear();
 		return;
 	}
 	match &mut entry.ty {
@@ -125,7 +72,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 		},
 		EntryType::Function { can_be_drawn, .. } => {
 			if !*can_be_drawn {
-				entry.draw_buffer.clear();
+				entry.plot_elements.clear();
 			} else {
 				to_execute_async.push({
 					let color = entry.color.clone();
@@ -198,7 +145,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			};
 			entry_create_plot_elements_sync(
 				entry.id, &entry.ty, &entry.name, color, sorting_idx, selected_id, ctx, plot_params,
-				tl_context, &mut entry.draw_buffer,
+				tl_context, &mut entry.plot_elements,
 			);
 		},
 	}
@@ -207,11 +154,11 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 	entry: &ClonedEntry<T>, sorting_idx: u32, ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>,
 	color: impl Fn(&mut Stack<T>, T, T, T) -> Result<Color32, String> + Sync,
-) -> ExecutionResult2 {
+) -> ExecutionResult {
 	// let color = entry.color();
 	let id = Id::new(entry.id);
 
-	let mut draw_buffer = DrawBuffer::empty();
+	let mut draw_buffer = PlotElements::empty();
 	match &entry.ty {
 		EntryType::Folder { .. }
 		| EntryType::Constant { .. }
@@ -252,7 +199,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 				if line.is_empty() {
 					return;
 				}
-				draw_buffer.lines.push(DrawLine2::new(
+				draw_buffer.lines.push(DrawLineEx::new(
 					sorting_idx,
 					id,
 					display_name.clone(),
@@ -372,14 +319,12 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 							} else {
 								if func.args[0].to_str() == "y" {
 									draw_simple_function::<T, { SimpleFunctionType::Y }>(
-										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-										color,
+										tl_context, ctx, plot_params, expr_func, &mut add_line, color,
 									)
 									.map_err(|e| (entry.id, e))?;
 								} else {
 									draw_simple_function::<T, { SimpleFunctionType::X }>(
-										tl_context, ctx, plot_params, entry.id, expr_func, &mut add_line,
-										color,
+										tl_context, ctx, plot_params, expr_func, &mut add_line, color,
 									)
 									.map_err(|e| (entry.id, e))?;
 								}
@@ -472,7 +417,7 @@ pub fn point_radius_outer(selected: bool) -> f32 { if selected { 12.5 } else { 7
 pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: Color32, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut DrawBuffer,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut PlotElements,
 ) {
 	draw_buffer.clear();
 	// println!("step_size: {deriv_step_x}");
@@ -644,7 +589,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 						line_buffer.push(line_buffer[0]);
 					}
 
-					draw_buffer.lines.push(DrawLine2::new(
+					draw_buffer.lines.push(DrawLineEx::new(
 						sorting_idx,
 						egui_id,
 						name.to_string(),
@@ -701,7 +646,7 @@ enum SimpleFunctionType {
 }
 fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, ctx: &HashMapContext<T>, plot_params: &PlotParams,
-	id: u64, func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<(PlotPoint, Color32)>),
+	func: &ExpressionFunction<T>, mut add_line: impl FnMut(Vec<(PlotPoint, Color32)>),
 	color: impl Fn(&mut Stack<T>, T, T, T) -> Result<Color32, String>,
 ) -> Result<(), String> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();

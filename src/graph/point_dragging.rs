@@ -1,24 +1,26 @@
-use eframe::egui::{Id, PointerButton};
+use eframe::egui::Id;
 use egui_plot::PlotResponse;
+
 use evalexpr::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack};
 
-use crate::draw_buffer::{self, PointInteractionType};
-use crate::entry::{DragPoint, Entry, EntryType, PlotParams, PointsType, f64_to_value};
-use crate::math::{minimize, solve_secant};
+use crate::graph::plot_elements::{self, PointInteractionType};
+use crate::entry::{DragPoint, Entry, EntryType, PointsType, f64_to_value};
+use crate::graph::PlotParams;
+use crate::math_utils::{minimize, solve_secant, to_string_with_scale};
 
 pub struct DragPointResult {
 	pub x:    f64,
 	pub y:    f64,
 	pub name: String,
 }
-pub fn point_dragging<T: EvalexprFloat>(
+pub fn drag_point<T: EvalexprFloat>(
 	entries: &mut [Entry<T>], ctx: &mut evalexpr::HashMapContext<T>, plot_res: &PlotResponse<()>,
-	dragging_point_i: &mut Option<draw_buffer::PointInteraction>,
-	hovered_point: Option<&(bool, draw_buffer::PointInteraction, f32)>, plot_params: &PlotParams,
+	dragging_point_i: &mut Option<plot_elements::PointInteraction>,
+	hovered_point: Option<&(bool, plot_elements::PointInteraction, f32)>, plot_params: &PlotParams,
 ) -> Option<DragPointResult> {
 	let mut result = None;
 
-	if let Some((is_draggable, hovered_point,_)) = &hovered_point {
+	if let Some((is_draggable, hovered_point, _)) = &hovered_point {
 		if *is_draggable && plot_res.response.is_pointer_button_down_on() && dragging_point_i.is_none() {
 			*dragging_point_i = Some(hovered_point.clone());
 		}
@@ -146,7 +148,7 @@ fn drag<T: EvalexprFloat>(
 
 	*value = T::from_f64(new_value);
 }
-pub fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
+fn get_entry_mut_by_id<T: EvalexprFloat>(entries: &mut [Entry<T>], id: Id) -> Option<&mut Entry<T>> {
 	for entry in entries.iter_mut() {
 		if Id::new(entry.id) == id {
 			return Some(entry);
@@ -184,34 +186,4 @@ fn find_constant_value<T: EvalexprFloat>(
 		}
 	}
 	None
-}
-pub fn decimal_places_for_scale<T: EvalexprFloat>(scale: f64) -> i32 {
-	if scale <= 0.0 {
-		return 2;
-	}
-
-	// order of magnitude
-	let log_scale = scale.log10();
-
-	let decimals = 4 - log_scale.ceil() as i32;
-
-	decimals.clamp(-2, T::HUMAN_DISPLAY_SIG_DIGITS as i32)
-}
-
-pub fn round_to_decimals<T: EvalexprFloat>(value: T, decimals: i32) -> T {
-	if decimals >= 0 {
-		let multiplier = T::from_f64(10_f64.powi(decimals));
-		(value * multiplier).round() / multiplier
-	} else {
-		// For negative decimals, round to nearest 10, 100, etc.
-		let divisor = T::from_f64(10_f64.powi(-decimals));
-		(value / divisor).round() * divisor
-	}
-}
-pub fn to_string_with_scale<T: EvalexprFloat>(value: T, scale: f64) -> String {
-	let prec = decimal_places_for_scale::<T>(scale);
-	let value = round_to_decimals::<T>(value, prec);
-
-	let prec_usize = prec.max(0) as usize;
-	format!("{:.prec$}", value, prec = prec_usize)
 }

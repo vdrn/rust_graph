@@ -1,4 +1,36 @@
 use egui_plot::PlotPoint;
+use evalexpr::EvalexprFloat;
+
+fn decimal_places_for_scale<T: EvalexprFloat>(scale: f64) -> i32 {
+	if scale <= 0.0 {
+		return 2;
+	}
+
+	// order of magnitude
+	let log_scale = scale.log10();
+
+	let decimals = 4 - log_scale.ceil() as i32;
+
+	decimals.clamp(-2, T::HUMAN_DISPLAY_SIG_DIGITS as i32)
+}
+
+fn round_to_decimals<T: EvalexprFloat>(value: T, decimals: i32) -> T {
+	if decimals >= 0 {
+		let multiplier = T::from_f64(10_f64.powi(decimals));
+		(value * multiplier).round() / multiplier
+	} else {
+		// For negative decimals, round to nearest 10, 100, etc.
+		let divisor = T::from_f64(10_f64.powi(-decimals));
+		(value / divisor).round() * divisor
+	}
+}
+pub fn to_string_with_scale<T: EvalexprFloat>(value: T, scale: f64) -> String {
+	let prec = decimal_places_for_scale::<T>(scale);
+	let value = round_to_decimals::<T>(value, prec);
+
+	let prec_usize = prec.max(0) as usize;
+	format!("{:.prec$}", value, prec = prec_usize)
+}
 
 pub fn zoom_in_x_on_nan_boundary(
 	a: (f64, f64), b: (f64, f64), eps: f64, mut eval: impl FnMut(f64) -> Option<f64>,
@@ -230,7 +262,9 @@ pub fn intersect_segs(
 	}
 }
 
-pub fn minimize(cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> Option<(f64, f64)>) -> Option<f64> {
+pub fn minimize(
+	cur_value: f64, mouse_pos: (f64, f64), eps: f64, mut f: impl FnMut(f64) -> Option<(f64, f64)>,
+) -> Option<f64> {
 	// Levenberg-Marquardt
 	// minimizing abs(f(val) - mouse_pos)^2
 

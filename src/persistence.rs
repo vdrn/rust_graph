@@ -3,16 +3,18 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use evalexpr::{EvalexprFloat, istr, istr_empty};
 use serde::{Deserialize, Serialize};
 
-use crate::app_ui::GraphConfig;
+use evalexpr::{EvalexprFloat, istr, istr_empty};
+
+use crate::color::EntryColor;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
-use crate::draw_buffer::DrawBuffer;
+use crate::graph::plot_elements::PlotElements;
 use crate::entry::{
-	ColorEntry, ColorEntryType, EntryColor, EquationType, Expr, FillAlpha, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
+	ColorEntry, ColorEntryType, EquationType, Expr, FillAlpha, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
-use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State, UiState};
+use crate::graph::graph_config::GraphConfig;
+use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State};
 
 pub fn default_true() -> bool { true }
 
@@ -338,14 +340,10 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 
 	let base64_decoded =
 		base64::engine::general_purpose::STANDARD.decode(without_prefix).map_err(|e| e.to_string())?;
-	// let base64_decoded = base64::decode(without_prefix).map_err(|e| e.to_string())?;
 	let entries_ser = bincode::serde::decode_from_slice(&base64_decoded, bincode::config::standard())
 		.map_err(|e| e.to_string())?
 		.0;
 	Ok(entries_from_ser(entries_ser, id_counter))
-
-	// let decoded = urlencoding::decode(without_prefix).map_err(|e| e.to_string())?;
-	// deserialize_from_json(decoded.as_bytes())
 }
 
 pub fn deserialize_graph_state<T: EvalexprFloat>(
@@ -387,7 +385,7 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 			id:          entry.id,
 			active:      entry.visible,
 			color:       entry.color,
-			draw_buffer: DrawBuffer::empty(),
+			plot_elements: PlotElements::empty(),
 			ty:          match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
@@ -410,7 +408,6 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					ty: FunctionType::Expression,
 
 					can_be_drawn: true,
-					// ty: if ranged { FunctionType::Ranged } else { FunctionType::X },
 					range_start: range_start.into_expr(false),
 					range_end: range_end.into_expr(false),
 					implicit_resolution: implicit_resolution
@@ -428,43 +425,34 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 						range_end: range_end.into_expr(false),
 					}
 				},
-				EntryTypeSerialized::Points { points_ty, style } => {
-					// let points = if points_ty.is_none() {
-					// 	Some(&points)
-					// } else if let Some(EntryPointTypeSerialized::Separate { points }) = &points_ty {
-					// 	Some(points)
-					// } else {
-					// 	None
-					// };
-					match points_ty {
-						EntryPointTypeSerialized::Separate { points } => {
-							let mut points_deserialized = Vec::new();
-							for point in points {
-								let point_deserialized = PointEntry {
-									x:    point.x.clone().into_expr(false),
-									y:    point.y.clone().into_expr(false),
-									drag: PointDrag {
-										drag_point:               None,
-										drag_type:                point.drag_type,
-										both_drag_dirs_available: true,
-									},
-									val:  None,
-								};
-								points_deserialized.push(point_deserialized);
-							}
-							EntryType::Points {
-								points_ty: PointsType::Separate(points_deserialized),
+				EntryTypeSerialized::Points { points_ty, style } => match points_ty {
+					EntryPointTypeSerialized::Separate { points } => {
+						let mut points_deserialized = Vec::new();
+						for point in points {
+							let point_deserialized = PointEntry {
+								x:    point.x.clone().into_expr(false),
+								y:    point.y.clone().into_expr(false),
+								drag: PointDrag {
+									drag_point:               None,
+									drag_type:                point.drag_type,
+									both_drag_dirs_available: true,
+								},
+								val:  None,
+							};
+							points_deserialized.push(point_deserialized);
+						}
+						EntryType::Points {
+							points_ty: PointsType::Separate(points_deserialized),
 
-								style:      PointStyleSerialized::into_point_style(style),
-								identifier: istr_empty(),
-							}
-						},
-						EntryPointTypeSerialized::SingleExpr { expr } => EntryType::Points {
-							points_ty:  PointsType::SingleExpr { expr: expr.into_expr(false), val: vec![] },
 							style:      PointStyleSerialized::into_point_style(style),
 							identifier: istr_empty(),
-						},
-					}
+						}
+					},
+					EntryPointTypeSerialized::SingleExpr { expr } => EntryType::Points {
+						points_ty:  PointsType::SingleExpr { expr: expr.into_expr(false), val: vec![] },
+						style:      PointStyleSerialized::into_point_style(style),
+						identifier: istr_empty(),
+					},
 				},
 				EntryTypeSerialized::Folder { entries } => {
 					let entries = deserialize_entries(entries);
@@ -481,98 +469,63 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 	}
 	result
 }
+
 pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(
 	name: String, reader: &[u8],
 ) -> Result<GraphState<T>, String> {
 	let graph_state: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
 	deserialize_graph_state(name, graph_state)
 }
-// pub fn deserialize_from_url<T: EvalexprFloat>(url: &str) -> Result<Vec<Entry<T>>, String> {
-// }
+
 #[cfg(target_arch = "wasm32")]
-pub fn save_file_wasm<T: EvalexprFloat>(ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame) {
+pub fn save_file_wasm<T: EvalexprFloat>(
+	ui_state: &mut UiState, state: &State<T>, frame: &mut eframe::Frame,
+) -> Result<(), String> {
 	let file = format!("{}.json", state.name);
 	let mut output = Vec::new();
 	if let Err(e) = serialize_to_json(&mut output, &state.entries, ui_state.graph_config.clone()) {
-		ui_state.serialization_error = Some(e.to_string());
-	} else {
-		ui_state.serialization_error = None;
-		ui_state.serialized_states.insert(file, String::from_utf8(output).unwrap());
-		if let Some(storage) = frame.storage_mut() {
-			storage.flush();
-		}
+		return Err(e.to_string());
 	}
+	ui_state.serialized_states.insert(file, String::from_utf8(output).unwrap());
+	if let Some(storage) = frame.storage_mut() {
+		storage.flush();
+	}
+	Ok(())
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_file_desktop<T: EvalexprFloat>(
-	save_path: PathBuf, ui_state: &mut UiState, state: &State<T>, _frame: &mut eframe::Frame,
-) {
+pub fn save_file_desktop<T: EvalexprFloat>(save_path: PathBuf, state: &State<T>) -> Result<(), String> {
 	if let Some(parent) = save_path.parent() {
 		// Recursively create all parent directories if they don't exist
 
 		if std::fs::create_dir_all(parent).is_err() {
-			ui_state.serialization_error = Some(format!("Could not create directory: {}", parent.display()));
-			return;
+			return Err(format!("Could not create directory: {}", parent.display()));
 		}
 	}
 	let Ok(mut file) = std::fs::File::create(&save_path) else {
-		ui_state.serialization_error = Some(format!("Could not create file: {}", save_path.display()));
-		return;
+		return Err(format!("Could not create file: {}", save_path.display()));
 	};
 	if let Err(e) = serialize_graph_state_to_json(&mut file, &state.graph_state) {
-		ui_state.serialization_error = Some(e.to_string());
-	} else {
-		ui_state.serialization_error = None;
-		// load_file_entries(&ui_state.cur_dir, &mut ui_state.serialized_states);
-	}
-}
-// pub fn load_file_entries(cur_dir: &str, ser_states: &mut BTreeMap<String, String>) {
-// 	ser_states.clear();
-// 	let Ok(entries) = std::fs::read_dir(PathBuf::from(cur_dir)) else {
-// 		// ui.label("No entries found");
-// 		return;
-// 	};
-// 	for entry in entries {
-// 		let Ok(entry) = entry else {
-// 			continue;
-// 		};
-// 		let file_name = entry.file_name();
-// 		let Some(file_name) = file_name.to_str() else {
-// 			continue;
-// 		};
-// 		if !file_name.ends_with(".json") {
-// 			continue;
-// 		}
-
-// 		ser_states.insert(file_name.to_string(), String::new());
-// 	}
-// }
-#[cfg(target_arch = "wasm32")]
-pub fn load_file_wasm<T: EvalexprFloat>(
-	ser_states: &BTreeMap<String, String>, file_name: &str, state: &mut State<T>, id_counter: &mut u64,
-) -> Result<(), String> {
-	if let Some(file) = ser_states.get(file_name) {
-		let (entries, default_graph_config) =
-			deserialize_graph_state_from_json::<T>(file.as_bytes(), id_counter)?;
-		state.entries = entries;
-		state.saved_graph_config = default_graph_config;
-
-		state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
-		state.clear_cache = true;
+		return Err(e.to_string());
 	}
 	Ok(())
 }
-// #[cfg(not(target_arch = "wasm32"))]
-// pub fn load_file<T: EvalexprFloat>(
-// 	cur_dir: &str, _ser_states: &BTreeMap<String, String>, file_name: &str,
-// ) -> Result<GraphState<T>, String> {
-// 	let Ok(file) = std::fs::read(PathBuf::from(cur_dir).join(file_name)) else {
-// 		return Err(format!("Could not open file: {}", file_name));
-// 	};
-// 	let name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
-// 	deserialize_graph_state_from_json::<T>(name, &file)
-// 		.map_err(|e| format!("Could not deserialize file: {}", e))
-// }
+
+#[cfg(target_arch = "wasm32")]
+pub fn load_file_wasm<T: EvalexprFloat>(
+	ser_states: &std::collections::BTreeMap<String, String>, file_name: &str,
+) -> Result<GraphState<T>, String> {
+	if let Some(file) = ser_states.get(file_name) {
+		let graph_state = deserialize_graph_state_from_json::<T>(
+			file_name.strip_suffix(".json").unwrap_or(file_name).to_string(),
+			file.as_bytes(),
+		)?;
+
+		Ok(graph_state)
+	} else {
+		Err(format!("Could not find file: {}", file_name))
+	}
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file_desktop<T: EvalexprFloat>(path: &Path) -> Result<GraphState<T>, String> {
 	let Ok(file) = std::fs::read(path) else {
