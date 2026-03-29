@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use crate::builtins::is_builtin;
 use crate::color::ProcessedColors;
 use crate::entry::{DragPoint, Entry, EntryType, EquationType, FunctionType, PointDragType, PointsType};
-use crate::graph::create_plot_elements::eval_point2;
+use crate::graph_ui::create_plot_elements::eval_2_points;
 use crate::scope;
 
 pub fn preprocess_ast<T: EvalexprFloat>(mut ast: Node<T>) -> Result<(Node<T>, EquationType), String> {
@@ -567,7 +567,7 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			match points_ty {
 				PointsType::Separate(points) => {
 					for p in points.iter_mut() {
-						match eval_point2(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
+						match eval_2_points(&mut stack, ctx, p.x.node.as_ref(), p.y.node.as_ref()) {
 							Ok(Some(v)) => {
 								p.val = Some(v);
 							},

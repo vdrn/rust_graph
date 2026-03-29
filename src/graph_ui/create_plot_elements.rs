@@ -9,19 +9,35 @@ use evalexpr::{EvalexprError, EvalexprFloat, ExpressionFunction, FlatNode, HashM
 use thread_local::ThreadLocal;
 
 use crate::color::{COLORS, EntryColor, NUM_COLORS, ProcessedColorExpr, ProcessedColors, value_to_color};
-use crate::entry::{ClonedEntry, DragPoint, Entry, EntryType, EquationType, PointsType, f64_to_value};
-use crate::graph::PlotParams;
-use crate::graph::plot_elements::{
-	DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, FillMesh, OtherPointType, PlotElements, PointInteraction, PointInteractionType
+use crate::entry::{ClonedEntry, DragPoint, Entry, EntryType, EquationType, PointsType};
+use crate::graph_ui::PlotParams;
+use crate::graph_ui::plot_elements::{
+	DrawMesh, DrawMeshType, DrawPoint, DrawPolygonGroup, DrawText, EguiPlotMesh, FillMesh, OtherPointType, PointInteraction, PointInteractionType, RawPlotElements
 };
-use crate::graph::plot_elements_scheduler::{ExecutionResult, PlotElementsScheduler};
-use crate::marching_squares::MeshBuilder;
+use crate::graph_ui::plot_elements_scheduler::{ExecutionResult, PlotElementsScheduler};
+use crate::marching_squares;
+use crate::marching_squares::{MarchingSquaresCache, MeshBuilder};
 use crate::math_utils::{
 	DiscontinuityDetector, aabb_segment_intersects_loose, pseudoangle, zoom_in_x_on_nan_boundary
 };
 use crate::plot_extensions::line::DrawLineEx;
 use crate::plot_extensions::text::TextPlotItem;
-use crate::{ThreadLocalContext, marching_squares, thread_local_get};
+use crate::utils::{f64_to_value, thread_local_get};
+
+#[repr(align(128))]
+pub struct ThreadLocalContext<T: EvalexprFloat> {
+	stack:                  RefCell<Stack<T>>,
+	marching_squares_cache: MarchingSquaresCache,
+}
+
+impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
+	fn default() -> Self {
+		Self {
+			stack:                  RefCell::new(Stack::<T>::with_capacity(128)),
+			marching_squares_cache: MarchingSquaresCache::default(),
+		}
+	}
+}
 
 pub fn schedule_create_plot_elements<T: EvalexprFloat>(
 	top_level_entries: &mut [Entry<T>], multi_scheduler: &mut PlotElementsScheduler, selected_id: Option<Id>,
@@ -51,7 +67,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 ) {
 	let visible = entry.active;
 	if !visible && !matches!(entry.ty, EntryType::Folder { .. }) {
-		entry.plot_elements.clear();
+		entry.raw_plot_elements.clear();
 		return;
 	}
 	match &mut entry.ty {
@@ -72,7 +88,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 		},
 		EntryType::Function { can_be_drawn, .. } => {
 			if !*can_be_drawn {
-				entry.plot_elements.clear();
+				entry.raw_plot_elements.clear();
 			} else {
 				to_execute_async.push({
 					let color = entry.color.clone();
@@ -145,7 +161,7 @@ fn schedule_entry_create_plot_elements<T: EvalexprFloat>(
 			};
 			entry_create_plot_elements_sync(
 				entry.id, &entry.ty, &entry.name, color, sorting_idx, selected_id, ctx, plot_params,
-				tl_context, &mut entry.plot_elements,
+				tl_context, &mut entry.raw_plot_elements,
 			);
 		},
 	}
@@ -158,7 +174,7 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 	// let color = entry.color();
 	let id = Id::new(entry.id);
 
-	let mut draw_buffer = PlotElements::empty();
+	let mut draw_buffer = RawPlotElements::empty();
 	match &entry.ty {
 		EntryType::Folder { .. }
 		| EntryType::Constant { .. }
@@ -275,12 +291,6 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 
 											if break_fill_mesh {
 												fm.reset_root_vertex();
-												// let mut draw_buffer = draw_buffer_c.inner.borrow_mut();
-												// draw_buffer.meshes.push(DrawMesh {
-												// 	sorting_index: sorting_idx,
-												// 	ty:            DrawMeshType::FillMesh(mem::take(fm)),
-												// });
-												// *fm = FillMesh::new(fill_color, *fill_rule);
 											}
 										}
 
@@ -414,10 +424,10 @@ pub fn entry_create_plot_elements_async<T: EvalexprFloat>(
 }
 
 pub fn point_radius_outer(selected: bool) -> f32 { if selected { 12.5 } else { 7.5 } }
-pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
+fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	id: u64, ty: &EntryType<T>, name: &str, color: Color32, sorting_idx: u32, selected_id: Option<Id>,
 	ctx: &evalexpr::HashMapContext<T>, plot_params: &PlotParams,
-	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut PlotElements,
+	tl_context: &Arc<ThreadLocal<ThreadLocalContext<T>>>, draw_buffer: &mut RawPlotElements,
 ) {
 	draw_buffer.clear();
 	// println!("step_size: {deriv_step_x}");
@@ -581,8 +591,6 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 				}
 			}
 
-			// let width = if selected { 3.5 } else { 1.0 };
-
 			if line_buffer.len() > 1 {
 				if style.show_lines {
 					if style.connect_first_and_last {
@@ -616,7 +624,7 @@ pub fn entry_create_plot_elements_sync<T: EvalexprFloat>(
 	}
 }
 
-pub fn eval_point2<T: EvalexprFloat>(
+pub fn eval_2_points<T: EvalexprFloat>(
 	stack: &mut Stack<T>, ctx: &evalexpr::HashMapContext<T>, px: Option<&FlatNode<T>>,
 	py: Option<&FlatNode<T>>,
 ) -> Result<Option<(T, T)>, String> {
@@ -666,15 +674,8 @@ fn draw_simple_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 		SimpleFunctionType::Y => plot_params.step_size_y,
 	};
 
-	// let mut prev_y = None;
 	let mut discontinuity_detector = DiscontinuityDetector::new(step_size, plot_params.eps);
 
-	// let graph_size = match TY {
-	// 	SimpleFunctionType::X => plot_params.last_y - plot_params.first_y,
-	// 	SimpleFunctionType::Y => plot_params.last_x - plot_params.first_x,
-	// };
-	// let mut prev_angle: Option<f64> = None;
-	// let mut prev_point: Option<PlotPoint> = None;
 	while sampling_arg <= last_sampling_arg {
 		match func.call(&mut stack, ctx, &[f64_to_value::<T>(sampling_arg)]) {
 			Ok(Value::Float(val)) => {
@@ -832,47 +833,6 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 ) -> Result<(), String> {
 	let mut stack = thread_local_get(tl_context).stack.borrow_mut();
 	let mut pp_buffer: Vec<(PlotPoint, Color32)> = Vec::with_capacity(plot_params.resolution);
-	#[inline(always)]
-	fn add_point(
-		pp_buffer: &mut Vec<(PlotPoint, Color32)>, p: (PlotPoint, Color32), plot_params: &PlotParams,
-		add_line: &mut impl FnMut(Vec<(PlotPoint, Color32)>, bool),
-	) {
-		if let Some((last, _)) = pp_buffer.last() {
-			let on_screen = aabb_segment_intersects_loose(
-				(plot_params.first_x, plot_params.first_y),
-				(plot_params.last_x, plot_params.last_y),
-				(last.x, last.y),
-				(p.0.x, p.0.y),
-			);
-			if !on_screen {
-				if pp_buffer.len() > 1 {
-					add_line(mem::take(pp_buffer), true);
-				} else {
-					pp_buffer.clear();
-				}
-			}
-		}
-		// if pp_buffer.len() > 1 {
-		// 	let last = pp_buffer[pp_buffer.len() - 1];
-		// 	let sec_last = pp_buffer[pp_buffer.len() - 2];
-
-		// 	let on_screen = aabb_segment_intersects_loose(
-		// 		(plot_params.first_x, plot_params.first_y),
-		// 		(plot_params.last_x, plot_params.last_y),
-		// 		(last.x, last.y),
-		// 		(sec_last.x, sec_last.y),
-		// 	);
-
-		// 	if !on_screen {
-		// 		let last = pp_buffer.pop().unwrap();
-		// 		pp_buffer.pop();
-		// 		add_line(mem::take(pp_buffer), true);
-		// 		pp_buffer.push(last);
-		// 		return;
-		// 	}
-		// }
-		pp_buffer.push(p);
-	}
 	let (start, end) = match eval_point(&mut stack, ctx, range_start, range_end) {
 		Ok(Some((start, end))) => (start, end),
 		Err(e) => {
@@ -963,7 +923,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 	let mut prev_point = match eval_point_at(&mut stack, start) {
 		Ok(Some((arg, p))) => {
 			let c = color(&mut stack, T::from_f64(p.x), T::from_f64(p.y), T::from_f64(start))?;
-			add_point(&mut pp_buffer, (p, c), plot_params, &mut add_line);
+			pp_buffer.push((p, c));
 			// println!("Start p {p:?}");
 			if is_float2 {
 				discontinuity_detector =
@@ -1025,23 +985,13 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 
 				let margin_x = plot_width * 0.5;
 				let margin_y = plot_height * 0.5;
-				// let margin_x = 0.0;
-				// let margin_y = 0.0;
+
 				let on_screen = aabb_segment_intersects_loose(
 					(plot_params.first_x - margin_x, plot_params.first_y - margin_y),
 					(plot_params.last_x + margin_x, plot_params.last_y + margin_y),
 					(prev_p.x, prev_p.y),
 					(curr_p.x, curr_p.y),
 				);
-				// // TODO this is bad, we should do segment intersection instead
-				// let on_screen = (prev_p.x >= plot_params.first_x - margin_x
-				// 	&& prev_p.x <= plot_params.last_x + margin_x
-				// 	&& prev_p.y >= plot_params.first_y - margin_y
-				// 	&& prev_p.y <= plot_params.last_y + margin_y)
-				// 	|| (curr_p.x >= plot_params.first_x - margin_x
-				// 		&& curr_p.x <= plot_params.last_x + margin_x
-				// 		&& curr_p.y >= plot_params.first_y - margin_y
-				// 		&& curr_p.y <= plot_params.last_y + margin_y);
 
 				cur_angle = Some(pseudoangle(dx, dy));
 				if on_screen {
@@ -1056,19 +1006,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 
 					// Adjust by curvature
 					let adjusted_curvature = if let Some(prev_angle) = prev_angle {
-						let curvature_factor = calculate_curvature_factor(prev_angle, cur_angle.unwrap());
-
-						// 					let segment_length = (dx.powi(2) + dy.powi(2)).sqrt();
-						// 					let length_scale = (max_segment_x.max(max_segment_y) /
-						// segment_length).clamp(0.01, 1.0);
-
-						// 					let adjusted_curvature = curvature_factor * length_scale.sqrt();
-						// if debug {
-						// 	println!("base subdivisions {subdivisions} curvature {curvature_factor}");
-						// }
-						curvature_factor
-
-						// curvature_factors.push(adjusted_curvature);
+						calculate_curvature_factor(prev_angle, cur_angle.unwrap())
 					} else {
 						// since we dont know how to calculate curvature, just use a conservative one
 						8.0
@@ -1095,14 +1033,6 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 							if debug {
 								println!("subdivission {j} curr_p {curr_p:?}");
 							}
-							// Ok(Some((_, p))) => pp_buffer.push(p),
-							// Ok(None) => {
-							// 	// NaN in the middle
-							// 	add_line(mem::take(&mut pp_buffer), true);
-							// },
-							// Err(e) => return Err((id, e)),
-							// };
-
 							if let Some((curr_arg, curr_p)) = curr_p {
 								// Check for discontinuity
 								if is_float2 {
@@ -1132,11 +1062,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 											T::from_f64(curr_p.y),
 											T::from_f64(curr_arg),
 										)?;
-										add_point(&mut pp_buffer, (curr_p, c), plot_params, &mut add_line);
-
-										// prev_arg = curr_arg;
-										// prev_angle = None;
-										// prev_point = curr_result.map(|(_, v)| v);
+										pp_buffer.push((curr_p, c));
 										continue;
 									}
 								} else {
@@ -1165,12 +1091,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 													T::from_f64(curr_arg),
 												)?;
 
-												add_point(
-													&mut pp_buffer,
-													(PlotPoint::new(left.0, left.1), c),
-													plot_params,
-													&mut add_line,
-												);
+												pp_buffer.push((PlotPoint::new(left.0, left.1), c));
 												add_line(mem::take(&mut pp_buffer), true);
 												let c = color(
 													&mut stack,
@@ -1179,12 +1100,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 													T::from_f64(curr_arg),
 												)?;
 
-												add_point(
-													&mut pp_buffer,
-													(PlotPoint::new(right.0, right.1), c),
-													plot_params,
-													&mut add_line,
-												);
+												pp_buffer.push((PlotPoint::new(right.0, right.1), c));
 											},
 											SimpleFunctionType::Y => {
 												let c = color(
@@ -1193,12 +1109,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 													T::from_f64(left.0),
 													T::from_f64(curr_arg),
 												)?;
-												add_point(
-													&mut pp_buffer,
-													(PlotPoint::new(left.1, left.0), c),
-													plot_params,
-													&mut add_line,
-												);
+												pp_buffer.push((PlotPoint::new(left.1, left.0), c));
 												add_line(mem::take(&mut pp_buffer), true);
 												let c = color(
 													&mut stack,
@@ -1206,17 +1117,9 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 													T::from_f64(right.0),
 													T::from_f64(curr_arg),
 												)?;
-												add_point(
-													&mut pp_buffer,
-													(PlotPoint::new(right.1, right.0), c),
-													plot_params,
-													&mut add_line,
-												);
+												pp_buffer.push((PlotPoint::new(right.1, right.0), c));
 											},
 										}
-										// prev_arg = curr_arg;
-										// prev_angle = None;
-										// prev_point = curr_result.map(|(_, v)| v);
 										continue;
 									}
 								}
@@ -1224,14 +1127,11 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 							if let Some((arg, p)) = curr_p {
 								let c =
 									color(&mut stack, T::from_f64(p.x), T::from_f64(p.y), T::from_f64(arg))?;
-								add_point(&mut pp_buffer, (p, c), plot_params, &mut add_line);
+								pp_buffer.push((p, c));
 							} else {
 								// NaN in the middle
 								add_line(mem::take(&mut pp_buffer), true);
 							};
-
-							// } else {
-							// }
 						}
 					}
 					// num_splits.push(subdivisions);
@@ -1240,7 +1140,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 				}
 				let c =
 					color(&mut stack, T::from_f64(curr_p.x), T::from_f64(curr_p.y), T::from_f64(curr_arg))?;
-				add_point(&mut pp_buffer, (curr_p, c), plot_params, &mut add_line);
+				pp_buffer.push((curr_p, c));
 			},
 			(Some(_), None) => {
 				// nan
@@ -1249,7 +1149,7 @@ fn draw_parametric_function<T: EvalexprFloat, const TY: SimpleFunctionType>(
 			(None, Some((curr_arg, p))) => {
 				// coming back from NaN
 				let c = color(&mut stack, T::from_f64(p.x), T::from_f64(p.y), T::from_f64(curr_arg))?;
-				add_point(&mut pp_buffer, (p, c), plot_params, &mut add_line);
+				pp_buffer.push((p, c));
 			},
 			(None, None) => {
 				// Still NaN, nothing to do
@@ -1329,9 +1229,7 @@ fn draw_implicit<T: EvalexprFloat>(
 
 	let bounds_diag = ((maxs.0 - mins.0).powi(2) + (maxs.1 - mins.1).powi(2)).sqrt();
 
-	//146_327
 	let eps = (T::EPSILON * bounds_diag * 100.0).max(T::EPSILON);
-	//: 146_327
 
 	let params = marching_squares::MarchingSquaresParams {
 		resolution,
@@ -1346,10 +1244,6 @@ fn draw_implicit<T: EvalexprFloat>(
 		params,
 		|cc: &mut RefMut<Stack<T>>, x, y| {
 			let value = eval_fn(cc, x, y);
-			// let value = match TY {
-			// 	SimpleFunctionType::X => func.call(&mut *cc, ctx, &[f64_to_value::<T>(x)]),
-			// 	SimpleFunctionType::Y => func.call(&mut *cc, ctx, &[f64_to_value::<T>(y)]),
-			// };
 			match value {
 				Ok(v) => match v {
 					Value::Float(v) => {
@@ -1388,8 +1282,6 @@ fn draw_implicit<T: EvalexprFloat>(
 		Ok(result) => result,
 		Err(e) => return Err((id, e)),
 	};
-	// let total_line = result.iter().map(|r| r.lines.len()).sum::<usize>();
-	// println!("total_lines: {total_line}");
 	for result in result {
 		for line in result.lines {
 			add_line(line);
@@ -1400,7 +1292,7 @@ fn draw_implicit<T: EvalexprFloat>(
 	Ok(())
 }
 
-pub fn gpu_position_from_point(plot_trans: &PlotTransform, invert_axes: [bool; 2], point: &PlotPoint) -> Pos2 {
+fn gpu_position_from_point(plot_trans: &PlotTransform, invert_axes: [bool; 2], point: &PlotPoint) -> Pos2 {
 	let x = remap(
 		point.x,
 		plot_trans.bounds().min()[0]..=plot_trans.bounds().max()[0],

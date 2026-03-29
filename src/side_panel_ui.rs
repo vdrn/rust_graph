@@ -1,14 +1,14 @@
 use eframe::egui::{self, Align, Button, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, Window};
 use eframe::epaint::Color32;
-use egui_plot::{HLine, PlotBounds, PlotUi, VLine};
 
 use evalexpr::{EvalexprFloat, Stack};
 
 use crate::builtins::{init_builtins, show_builtin_information};
 use crate::entry::{self, Entry, EntrySymbol, EntryType, prepare_entries};
+use crate::graph_ui::IdGenerator;
 use crate::persistence::deserialize_graph_state_from_json;
-use crate::widgets::{duplicate_entry_btn, remove_entry_btn};
-use crate::{GraphState, IdGenerator, State, UiState, load_graph_state, persistence, scope};
+use crate::utils::{duplicate_entry_btn, remove_entry_btn};
+use crate::{GraphState, State, UiState, load_graph_state, persistence, scope};
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -656,36 +656,3 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 	needs_recompilation
 }
 
-pub struct DebugInfo {
-	pub plot_bounds:  Option<PlotBounds>,
-	pub pause_redraw: bool,
-	pub draw:         bool,
-}
-impl DebugInfo {
-	pub fn new() -> Self { Self { plot_bounds: None, pause_redraw: false, draw: false } }
-	pub fn draw(&self, plot_ui: &mut PlotUi) {
-		let _bounds = plot_ui.plot_bounds();
-		if !self.draw {
-			return;
-		}
-		let Some(last_bounds) = self.plot_bounds else {
-			return;
-		};
-		let reso = 300;
-		let width = last_bounds.width();
-		let height = last_bounds.height();
-		let cgrid_w = width / reso as f64;
-		let cgrid_h = height / reso as f64;
-		for i in 0..=reso {
-			let x = last_bounds.min()[0] + cgrid_w * i as f64;
-			let y = last_bounds.min()[1] + cgrid_h * i as f64;
-			plot_ui.hline(HLine::new("", y).color(Color32::from_gray(150)));
-			plot_ui.vline(VLine::new("", x).color(Color32::from_gray(150)));
-
-			let x_mid = last_bounds.min()[0] + cgrid_w * i as f64 + cgrid_w * 0.5;
-			let y_mid = last_bounds.min()[1] + cgrid_h * i as f64 + cgrid_h * 0.5;
-			plot_ui.hline(HLine::new("", y_mid).width(0.6).color(Color32::from_gray(100)));
-			plot_ui.vline(VLine::new("", x_mid).width(0.6).color(Color32::from_gray(100)));
-		}
-	}
-}

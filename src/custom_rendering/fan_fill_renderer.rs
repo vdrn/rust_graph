@@ -44,8 +44,8 @@ struct StencilTexture {
 }
 
 impl FanFillRenderer {
-	pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
-		let wgpu_render_state = cc.wgpu_render_state.as_ref()?;
+	pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Self {
+		let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
 		let device = &wgpu_render_state.device;
 
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -228,7 +228,7 @@ impl FanFillRenderer {
 			index_buffer_capacity: 1024,
 		}));
 
-		Some(Self { texture_pool: Vec::new(), current_texture_index: 0, stencil_texture: None })
+		Self { texture_pool: Vec::new(), current_texture_index: 0, stencil_texture: None }
 	}
 
 	pub fn reset_textures(&mut self) { self.current_texture_index = 0; }

@@ -7,7 +7,7 @@ use evalexpr::{EvalexprFloat, ExpressionFunction, FlatNode, HashMapContext, IStr
 
 use crate::color::{EntryColor, NUM_COLORS};
 use crate::custom_rendering::fan_fill_renderer::FillRule;
-use crate::graph::plot_elements::PlotElements;
+use crate::graph_ui::plot_elements::RawPlotElements;
 
 mod entry_processing;
 mod entry_ui;
@@ -20,22 +20,17 @@ pub const MAX_IMPLICIT_RESOLUTION: usize = 500;
 pub const MIN_IMPLICIT_RESOLUTION: usize = 10;
 
 pub struct Entry<T: EvalexprFloat> {
-	pub id:          u64,
-	pub name:        String,
-	pub active:      bool,
-	pub color:       EntryColor,
-	pub ty:          EntryType<T>,
-	pub plot_elements: PlotElements,
+	pub id:                u64,
+	pub name:              String,
+	pub active:            bool,
+	pub color:             EntryColor,
+	pub ty:                EntryType<T>,
+	pub raw_plot_elements: RawPlotElements,
 }
 pub struct ClonedEntry<T: EvalexprFloat> {
 	pub id: u64,
-	// pub color: C,
 	pub ty: EntryType<T>,
 }
-
-// impl<T: EvalexprFloat, C:Fn(T,T,T)->Result<Color32,String>> ClonedEntry<T,C> {
-// 	fn color(&self) -> Color32 { COLORS[self.color % NUM_COLORS] }
-// }
 
 impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -52,16 +47,17 @@ impl<T: EvalexprFloat + core::fmt::Debug> core::fmt::Debug for Entry<T> {
 impl<T: EvalexprFloat + Clone> Clone for Entry<T> {
 	fn clone(&self) -> Self {
 		Self {
-			id:          self.id,
-			name:        self.name.clone(),
-			active:      self.active,
-			color:       self.color.clone(),
-			ty:          self.ty.clone(),
-			plot_elements: PlotElements::empty(),
+			id:                self.id,
+			name:              self.name.clone(),
+			active:            self.active,
+			color:             self.color.clone(),
+			ty:                self.ty.clone(),
+			raw_plot_elements: RawPlotElements::empty(),
 		}
 	}
 }
 impl<T: EvalexprFloat> core::hash::Hash for Entry<T> {
+	// Used for drag and drop
 	fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
 }
 
@@ -133,8 +129,6 @@ impl<T: EvalexprFloat> Expr<T> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FunctionType {
-	// ExpressionX,
-	// ExpressionY,
 	Expression,
 	WithCustomParams,
 }
@@ -416,7 +410,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
-			plot_elements: PlotElements::empty(),
+			raw_plot_elements: RawPlotElements::empty(),
 			ty: EntryType::Function {
 				identifier:   istr_empty(),
 				can_be_drawn: true,
@@ -440,7 +434,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: false,
 			name: String::new(),
-			plot_elements: PlotElements::empty(),
+			raw_plot_elements: RawPlotElements::empty(),
 			ty: EntryType::Constant {
 				istr_name:   istr_empty(),
 				value:       T::ZERO,
@@ -457,7 +451,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
-			plot_elements: PlotElements::empty(),
+			raw_plot_elements: RawPlotElements::empty(),
 			ty: EntryType::Points {
 				identifier: istr_empty(),
 				points_ty:  PointsType::Separate(vec![PointEntry::default()]),
@@ -471,7 +465,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: EntryColor::CustomColor(id),
 			active: true,
 			name: String::new(),
-			plot_elements: PlotElements::empty(),
+			raw_plot_elements: RawPlotElements::empty(),
 			ty: EntryType::Color(ColorEntry { expr: Expr::from_text(""), ty: ColorEntryType::default() }),
 		}
 	}
@@ -481,7 +475,7 @@ impl<T: EvalexprFloat> Entry<T> {
 			color: EntryColor::DefaultColor(id as usize % NUM_COLORS),
 			active: true,
 			name: String::new(),
-			plot_elements: PlotElements::empty(),
+			raw_plot_elements: RawPlotElements::empty(),
 			ty: EntryType::Folder { entries: Vec::new() },
 		}
 	}
@@ -549,10 +543,6 @@ pub enum PointsType<T: EvalexprFloat> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ConstantType {
-	// LoopForwardAndBackward { start: f64, end: f64, forward: bool },
-	// LoopForward { start: f64, end: f64 },
-	// PlayOnce { start: f64, end: f64 },
-	// PlayIndefinitely { start: f64 },
 	LoopForwardAndBackward { forward: bool },
 	LoopForward,
 	PlayOnce,
@@ -610,7 +600,6 @@ impl ConstantType {
 
 pub static RESERVED_NAMES: [&str; 2] = ["x", "y"];
 
-pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::from_f64(x)) }
 // pub fn f64_to_float<T: EvalexprFloat>(x: f64) -> T { T::f64_to_float(x) }
 
 #[derive(Clone, Debug)]

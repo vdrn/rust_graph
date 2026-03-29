@@ -15,7 +15,7 @@ use crate::entry::entry_processing::preprocess_ast;
 use crate::entry::{
 	ColorEntryType, ConstantType, DragPoint, Entry, EntryColor, EntryType, EquationType, Expr, FillAlpha, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, LineStyleType, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointEntry, PointsType, RESERVED_NAMES
 };
-use crate::widgets::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
+use crate::utils::{duplicate_entry_btn, full_width_slider, remove_entry_btn};
 
 pub struct EditEntryResult {
 	pub needs_recompilation: bool,

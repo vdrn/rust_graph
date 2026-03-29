@@ -9,12 +9,13 @@ use evalexpr::{EvalexprFloat, istr, istr_empty};
 
 use crate::color::EntryColor;
 use crate::custom_rendering::fan_fill_renderer::FillRule;
-use crate::graph::plot_elements::PlotElements;
 use crate::entry::{
 	ColorEntry, ColorEntryType, EquationType, Expr, FillAlpha, FunctionType, LabelConfig, LabelPosition, LabelSize, LineStyleConfig, MAX_IMPLICIT_RESOLUTION, MIN_IMPLICIT_RESOLUTION, PointDrag, PointDragType, PointStyle, PointsType, preprocess_ast
 };
-use crate::graph::graph_config::GraphConfig;
-use crate::{ConstantType, Entry, EntryType, GraphState, IdGenerator, PointEntry, State};
+use crate::graph_ui::IdGenerator;
+use crate::graph_ui::graph_config::GraphConfig;
+use crate::graph_ui::plot_elements::RawPlotElements;
+use crate::{ConstantType, Entry, EntryType, GraphState, PointEntry, State};
 
 pub fn default_true() -> bool { true }
 
@@ -304,9 +305,9 @@ pub fn serialize_graph_state<T: EvalexprFloat>(graph_state: &GraphState<T>) -> S
 }
 pub fn serialize_graph_state_to_json<T: EvalexprFloat>(
 	writer: impl Write, graph_state: &GraphState<T>,
-) -> std::io::Result<()> {
+) -> Result<(), String> {
 	let ser = serialize_graph_state(graph_state);
-	serde_json::to_writer(writer, &ser)?;
+	serde_json::to_writer(writer, &ser).map_err(|e| e.to_string())?;
 	Ok(())
 }
 pub fn serialize_to_url<T: EvalexprFloat>(graph_state: &GraphState<T>) -> Result<String, String> {
@@ -382,11 +383,11 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 	let mut result = Vec::new();
 	for entry in entries {
 		let entry_deserialized = Entry {
-			id:          entry.id,
-			active:      entry.visible,
-			color:       entry.color,
-			plot_elements: PlotElements::empty(),
-			ty:          match entry.ty {
+			id:            entry.id,
+			active:        entry.visible,
+			color:         entry.color,
+			raw_plot_elements: RawPlotElements::empty(),
+			ty:            match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
 					ranged,
@@ -462,7 +463,7 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					EntryType::Color(ColorEntry { expr: expr.into_expr(false), ty })
 				},
 			},
-			name:        entry.name,
+			name:          entry.name,
 		};
 
 		result.push(entry_deserialized);
@@ -496,7 +497,6 @@ pub fn save_file_wasm<T: EvalexprFloat>(
 pub fn save_file_desktop<T: EvalexprFloat>(save_path: PathBuf, state: &State<T>) -> Result<(), String> {
 	if let Some(parent) = save_path.parent() {
 		// Recursively create all parent directories if they don't exist
-
 		if std::fs::create_dir_all(parent).is_err() {
 			return Err(format!("Could not create directory: {}", parent.display()));
 		}
@@ -504,10 +504,7 @@ pub fn save_file_desktop<T: EvalexprFloat>(save_path: PathBuf, state: &State<T>)
 	let Ok(mut file) = std::fs::File::create(&save_path) else {
 		return Err(format!("Could not create file: {}", save_path.display()));
 	};
-	if let Err(e) = serialize_graph_state_to_json(&mut file, &state.graph_state) {
-		return Err(e.to_string());
-	}
-	Ok(())
+	serialize_graph_state_to_json(&mut file, &state.graph_state)
 }
 
 #[cfg(target_arch = "wasm32")]

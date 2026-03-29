@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use eframe::egui::{self, RichText};
 use evalexpr::{EvalexprError, EvalexprFloat, EvalexprResult, IStr, IStrSet, Value, istr};
 
-use crate::entry::f64_to_value;
+use crate::utils::f64_to_value;
 
 const BUILTIN_VARIABLE_NAMES: &[&str] = &["x", "y", "z"];
 

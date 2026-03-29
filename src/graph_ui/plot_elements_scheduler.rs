@@ -3,7 +3,7 @@ use std::{sync::mpsc, time::Instant};
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::graph::plot_elements::PlotElements;
+use crate::graph_ui::plot_elements::RawPlotElements;
 
 struct ScheduledWork {
 	work:      Vec<Box<dyn FnOnce() -> ExecutionResult + Send>>,
@@ -14,7 +14,7 @@ struct FinishedWork {
 	timestamp: Instant,
 	result:    Vec<ExecutionResult>,
 }
-pub type ExecutionResult = Result<(u64, PlotElements), (u64, String)>;
+pub type ExecutionResult = Result<(u64, RawPlotElements), (u64, String)>;
 pub struct PlotElementsScheduler {
 	scheduled:   bool,
 	deferred:    Option<ScheduledWork>,

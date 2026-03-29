@@ -2,7 +2,7 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::env;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -11,35 +11,35 @@ use eframe::egui::{self, Id, Visuals};
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
 use eframe::{App, CreationContext};
-use egui_plot::PlotBounds;
-use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, HashMapContext, Stack};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use thread_local::ThreadLocal;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use evalexpr::{DefaultNumericTypes, EvalexprFloat, F32NumericTypes, HashMapContext};
+
 mod builtins;
 mod color;
 mod custom_rendering;
 mod entry;
-mod graph;
+mod graph_ui;
 mod marching_squares;
 mod math_utils;
 mod persistence;
 mod plot_extensions;
-mod side_panel;
-mod widgets;
+mod side_panel_ui;
+mod utils;
 
 use color::ProcessedColors;
 use custom_rendering::fan_fill_renderer::FanFillRenderer;
 use custom_rendering::mesh_renderer::init_mesh_renderer;
 use entry::{ConstantType, Entry, EntryType, PointEntry};
-use graph::plot_elements::{PlotElementsRC,  ProcessedShapes};
-use graph::graph_config::GraphConfig;
-use graph::graph_ui;
-use marching_squares::MarchingSquaresCache;
-use side_panel::DebugInfo;
+use graph_ui::create_plot_elements::ThreadLocalContext;
+use graph_ui::graph_config::GraphConfig;
+use graph_ui::plot_elements::{PlotElementsRC, ProcessedPlotElements};
+use graph_ui::plot_elements_scheduler::PlotElementsScheduler;
+use graph_ui::{DebugInfo, graph_ui};
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 macro_rules! scope {
@@ -53,10 +53,10 @@ macro_rules! scope {
 }
 pub(crate) use scope;
 
-use crate::graph::plot_elements_scheduler::PlotElementsScheduler;
+use crate::graph_ui::GraphState;
 
-pub const DEFAULT_RESOLUTION: usize = 500;
-
+const DATA_KEY: &str = "data";
+const CONF_KEY: &str = "conf";
 static EXAMPLES_DIR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
 
 #[cfg(target_arch = "wasm32")]
@@ -108,63 +108,6 @@ pub fn wasm_main() -> () {
 	});
 }
 
-const DATA_KEY: &str = "data";
-const CONF_KEY: &str = "conf";
-
-#[repr(align(128))]
-struct ThreadLocalContext<T: EvalexprFloat> {
-	stack:                  RefCell<Stack<T>>,
-	marching_squares_cache: MarchingSquaresCache,
-}
-
-impl<T: EvalexprFloat> Default for ThreadLocalContext<T> {
-	fn default() -> Self {
-		Self {
-			stack:                  RefCell::new(Stack::<T>::with_capacity(128)),
-			marching_squares_cache: MarchingSquaresCache::default(),
-		}
-	}
-}
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct IdGenerator {
-	next_id: u64,
-}
-impl IdGenerator {
-	fn next(&mut self) -> u64 {
-		self.next_id += 1;
-		self.next_id
-	}
-	pub fn new(start_id: u64) -> Self { Self { next_id: start_id } }
-}
-
-struct GraphState<T: EvalexprFloat> {
-	pub entries:              Vec<Entry<T>>,
-	pub saved_graph_config:   GraphConfig,
-	pub current_graph_config: GraphConfig,
-	pub name:                 String,
-	pub id_gen:               IdGenerator,
-	pub prev_plot_transform:  Option<egui_plot::PlotTransform>,
-}
-impl<T: EvalexprFloat> GraphState<T> {
-	pub fn new(default_graph_config: GraphConfig) -> Self {
-		let mut id_generator = IdGenerator::default();
-		let first_id = id_generator.next();
-		Self {
-			entries:              vec![Entry::new_function(first_id, "sin(x)")],
-			saved_graph_config:   default_graph_config.clone(),
-			current_graph_config: default_graph_config,
-			name:                 String::new(),
-			id_gen:               id_generator,
-			prev_plot_transform:  None,
-		}
-	}
-	pub fn prev_plot_bounds(&self) -> PlotBounds {
-		self.prev_plot_transform
-			.as_ref()
-			.map(|t| *t.bounds())
-			.unwrap_or_else(|| PlotBounds::from_min_max([-2.0, -2.0], [2.0, 2.0]))
-	}
-}
 struct State<T: EvalexprFloat> {
 	graph_state:          GraphState<T>,
 	ctx:                  evalexpr::HashMapContext<T>,
@@ -230,7 +173,7 @@ struct UiState {
 
 	// UI: Graph interactions
 	selected_plot_line:   Option<(Id, bool)>,
-	dragging_point_i:     Option<graph::plot_elements::PointInteraction>,
+	dragging_point_i:     Option<graph_ui::plot_elements::PointInteraction>,
 	plot_mouese_pos:      Option<egui::Pos2>,
 	showing_custom_label: bool,
 
@@ -245,15 +188,15 @@ struct UiState {
 	clear_cache:            bool,
 
 	// Drawing
-	processed_shapes:            ProcessedShapes,
+	processed_shapes:            ProcessedPlotElements,
 	draw_buffers:                Box<ThreadLocal<PlotElementsRC>>,
-	fan_fill_renderer:           Option<FanFillRenderer>,
+	fan_fill_renderer:           FanFillRenderer,
 	multi_draw_buffer_scheduler: PlotElementsScheduler,
 
 	// Misc
 	debug_info: DebugInfo,
 }
-// #[derive(Clone, Debug)]
+
 pub struct Application {
 	state_f64:        State<DefaultNumericTypes>,
 	state_f32:        State<F32NumericTypes>,
@@ -265,7 +208,7 @@ pub struct Application {
 }
 
 #[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
-pub fn run_puffin_server() -> puffin_http::Server {
+fn run_puffin_server() -> puffin_http::Server {
 	let server_addr = format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT);
 	let puffin_server = puffin_http::Server::new(&server_addr).unwrap();
 	println!("Run this to view profiling data:  puffin_viewer {server_addr}");
@@ -277,58 +220,56 @@ pub fn run_puffin_server() -> puffin_http::Server {
 impl Application {
 	#[allow(unused_mut)]
 	pub fn new(cc: &CreationContext) -> Self {
-		let mut serialized_states = BTreeMap::default();
-		let mut serialization_error = None;
-
 		let conf: AppConfig = cc
 			.storage
 			.and_then(|s| s.get_string(CONF_KEY).and_then(|d| serde_json::from_str(&d).ok()))
 			.unwrap_or_default();
-
-		let mut graph_state_s = GraphState::new(conf.default_graph_config.clone());
-		let mut graph_state_d = GraphState::new(conf.default_graph_config.clone());
-
 		if !conf.fullscreen {
 			cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 		}
 
 		init_mesh_renderer(cc);
 
-		#[rustfmt::skip]
-		cfg_if::cfg_if! {
-      if #[cfg(target_arch = "wasm32")] {
-        let cur_dir = String::new();
-        // 	let error: Option<String> = web::get_data_from_url(&mut data);
-        if let Some(storage) = cc.storage{
-          if let Some(data) = storage.get_string(DATA_KEY) {
-            serialized_states = serde_json::from_str(&data).unwrap();
-          }
-        }
+		let mut serialized_states = BTreeMap::default();
+		let mut serialization_error = None;
+		let mut graph_state_s = GraphState::new(conf.default_graph_config.clone());
+		let mut graph_state_d = GraphState::new(conf.default_graph_config.clone());
+		let cur_dir;
+		#[cfg(target_arch = "wasm32")]
+		{
+			cur_dir = String::new();
+			// 	let error: Option<String> = web::get_data_from_url(&mut data);
+			if let Some(storage) = cc.storage {
+				if let Some(data) = storage.get_string(DATA_KEY) {
+					serialized_states = serde_json::from_str(&data).unwrap();
+				}
+			}
 
-        match persistence::deserialize_from_url::<F32NumericTypes>(&mut next_id) {
-          Ok((data, bounds))=>{
-            entries_s = data;
-            default_graph_config_s = bounds;
+			match persistence::deserialize_from_url::<F32NumericTypes>(&mut next_id) {
+				Ok((data, bounds)) => {
+					entries_s = data;
+					default_graph_config_s = bounds;
+				},
+				Err(e) => {
+					serialization_error = Some(e);
+				},
+			}
+			match persistence::deserialize_from_url::<DefaultNumericTypes>(&mut next_id) {
+				Ok((data, bounds)) => {
+					entries_d = data;
+					default_graph_config_d = bounds;
+				},
+				Err(e) => {
+					serialization_error = Some(e);
+				},
+			}
+		}
 
-          },
-          Err(e)=>{
-            serialization_error = Some(e);
-          }
-        }
-        match persistence::deserialize_from_url::<DefaultNumericTypes>(&mut next_id) {
-          Ok((data,bounds))=>{
-            entries_d = data;
-            default_graph_config_d = bounds;
-          },
-          Err(e)=>{
-            serialization_error = Some(e);
-          }
-        }
-      } else {
-        let cur_dir = env::home_dir()
-          .and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
-          .unwrap_or_default();
-      }
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			cur_dir = env::home_dir()
+				.and_then(|d| d.join("rust_graphs").to_str().map(|s| s.to_string()))
+				.unwrap_or_default();
 		}
 
 		Self {
@@ -350,11 +291,13 @@ impl Application {
 						Arc::new(|p| p.extension().unwrap_or_default() == "json"),
 					)
 					.default_file_filter("Rust Graph JSON file"),
+				#[cfg(target_arch = "wasm32")]
+				file_to_remove: None,
 
 				debug_info: DebugInfo::new(),
 				multi_draw_buffer_scheduler: PlotElementsScheduler::new(),
 				force_process_elements: true,
-				processed_shapes: ProcessedShapes::new(),
+				processed_shapes: ProcessedPlotElements::new(),
 				fan_fill_renderer: FanFillRenderer::new(cc),
 				app_config: conf,
 				scheduled_url_update: false,
@@ -374,8 +317,6 @@ impl Application {
 				dragging_point_i: None,
 				plot_mouese_pos: None,
 				permalink_string: String::new(),
-				#[cfg(target_arch = "wasm32")]
-				file_to_remove: None,
 				draw_buffers: Box::new(ThreadLocal::new()),
 				showing_help: false,
 				showing_settings: false,
@@ -403,32 +344,33 @@ impl App for Application {
 
 		let use_f32 = self.ui.app_config.use_f32;
 
-		egui::CentralPanel::default().show(ctx, |ui| {
-			if use_f32 {
-				let changed = side_panel::side_panel(&mut self.state_f32, &mut self.ui, ctx);
-				graph_ui(ui, &mut self.state_f32, &mut self.ui, frame, changed);
-			} else {
-				let changed = side_panel::side_panel(&mut self.state_f64, &mut self.ui, ctx);
-				graph_ui(ui, &mut self.state_f64, &mut self.ui, frame, changed);
-			}
-		});
+		if use_f32 {
+			let changed = side_panel_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx);
+			graph_ui(ctx, &mut self.state_f32, &mut self.ui, frame, changed);
+		} else {
+			let changed = side_panel_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx);
+			graph_ui(ctx, &mut self.state_f64, &mut self.ui, frame, changed);
+		}
 		if use_f32 != self.ui.app_config.use_f32 {
-			let mut output = Vec::with_capacity(1024);
 			if use_f32 {
-				let name = self.state_f32.graph_state.name.clone();
-				if persistence::serialize_graph_state_to_json(&mut output, &self.state_f32.graph_state).is_ok()
-				{
-					let new_graph_state =
-						persistence::deserialize_graph_state_from_json(name, &output).unwrap();
-					load_graph_state(&mut self.ui, &mut self.state_f64, Ok(new_graph_state));
+				// convert f32 graph to f64
+				match self.state_f32.graph_state.convert_float_type() {
+					Ok(converted_graph_state) => {
+						load_graph_state(&mut self.ui, &mut self.state_f64, Ok(converted_graph_state));
+					},
+					Err(e) => {
+						self.ui.serialization_error = Some(e);
+					},
 				}
 			} else {
-				let name = self.state_f64.graph_state.name.clone();
-				if persistence::serialize_graph_state_to_json(&mut output, &self.state_f64.graph_state).is_ok()
-				{
-					let new_graph_state =
-						persistence::deserialize_graph_state_from_json(name, &output).unwrap();
-					load_graph_state(&mut self.ui, &mut self.state_f32, Ok(new_graph_state));
+				// convert f64 graph to f32
+				match self.state_f64.graph_state.convert_float_type() {
+					Ok(converted_graph_state) => {
+						load_graph_state(&mut self.ui, &mut self.state_f32, Ok(converted_graph_state));
+					},
+					Err(e) => {
+						self.ui.serialization_error = Some(e);
+					},
 				}
 			}
 		}
@@ -451,23 +393,6 @@ impl App for Application {
 	fn persist_egui_memory(&self) -> bool { true }
 
 	fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
-}
-
-#[cold]
-fn cold() {}
-pub fn unlikely(x: bool) -> bool {
-	if x {
-		cold()
-	}
-	x
-}
-pub fn thread_local_get<T: Send + Default>(tl: &ThreadLocal<T>) -> &T {
-	if let Some(t) = tl.get() {
-		t
-	} else {
-		cold();
-		tl.get_or_default()
-	}
 }
 
 fn load_graph_state<T: EvalexprFloat>(

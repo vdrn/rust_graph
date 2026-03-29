@@ -3,10 +3,11 @@ use egui_plot::PlotResponse;
 
 use evalexpr::{EvalexprFloat, FlatNode, HashMapContext, IStr, Stack};
 
-use crate::graph::plot_elements::{self, PointInteractionType};
-use crate::entry::{DragPoint, Entry, EntryType, PointsType, f64_to_value};
-use crate::graph::PlotParams;
+use crate::entry::{DragPoint, Entry, EntryType, PointsType};
+use crate::graph_ui::PlotParams;
+use crate::graph_ui::plot_elements::{self, PointInteractionType};
 use crate::math_utils::{minimize, solve_secant, to_string_with_scale};
+use crate::utils::f64_to_value;
 
 pub struct DragPointResult {
 	pub x:    f64,

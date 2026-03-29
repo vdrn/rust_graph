@@ -1,35 +1,26 @@
 use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::ptr;
-use std::sync::{Mutex };
+use std::sync::Mutex;
 
 use eframe::egui::{self, Color32, Id, Mesh, Shape, Stroke};
-use eframe::egui_wgpu;
+use eframe::egui_wgpu::{self, RenderState};
 use egui_plot::{PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotPoints, Points};
 use thread_local::ThreadLocal;
 
 use evalexpr::EvalexprFloat;
 
-use crate::custom_rendering::fan_fill_renderer::{FillRule, TriangleFanVertex};
+use crate::custom_rendering::fan_fill_renderer::{FanFillRenderer, FillRule, TriangleFanVertex};
 use crate::custom_rendering::mesh_renderer::MeshCallback;
 use crate::entry::{Entry, EntryType};
-use crate::graph::PlotParams;
+use crate::graph_ui::PlotParams;
 use crate::marching_squares::MeshBuilder;
 use crate::math_utils::{closest_point_on_segment, dist_sq, intersect_segs};
 use crate::plot_extensions::line;
 use crate::plot_extensions::line::DrawLineEx;
 use crate::plot_extensions::text::TextPlotItem;
-use crate::thread_local_get;
+use crate::utils::thread_local_get;
 
-pub struct ProcessedShapes {
-	tesselator: line::Tessellator,
-
-	pub lines:         Vec<ProcessedShape>,
-	pub draw_points:   Vec<DrawPoint>,
-	pub draw_polygons: Vec<DrawPolygonGroup>,
-	pub draw_texts:    Vec<DrawText>,
-	pub draw_meshes:   Vec<DrawMesh>,
-}
 #[derive(Clone)]
 pub struct ProcessedShape {
 	pub shapes:      Arc<Mesh>,
@@ -41,37 +32,34 @@ pub struct ProcessedShape {
 }
 impl PlotItem for ProcessedShape {
 	fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
-		// shapes.push(Shape::mesh(self.shapes.clone()));
 		if !self.shapes.vertices.is_empty() {
 			let rect = transform.frame();
 			let callback = MeshCallback::new(self.shapes.clone(), *rect);
 			shapes.push(Shape::Callback(egui_wgpu::Callback::new_paint_callback(*rect, callback)));
 		}
 	}
-
 	fn initialize(&mut self, _x_range: core::ops::RangeInclusive<f64>) {}
-
 	fn color(&self) -> Color32 { self.color }
-
 	fn geometry(&self) -> PlotGeometry<'_> { PlotGeometry::None }
-
 	fn bounds(&self) -> egui_plot::PlotBounds { self.bounds }
-
 	fn base(&self) -> &egui_plot::PlotItemBase { &self.base }
-
 	fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase { &mut self.base }
 	fn id(&self) -> Id { self.id }
 	fn allow_hover(&self) -> bool { self.allow_hover }
 }
-impl ProcessedShapes {
+
+pub struct ProcessedPlotElements {
+	tesselator: line::Tessellator,
+
+	pub lines:         Vec<ProcessedShape>,
+	pub draw_points:   Vec<DrawPoint>,
+	pub draw_polygons: Vec<DrawPolygonGroup>,
+	pub draw_texts:    Vec<DrawText>,
+	pub draw_meshes:   Vec<DrawMesh>,
+}
+impl ProcessedPlotElements {
 	pub fn new() -> Self {
 		Self {
-			// tesselator:           eframe::epaint::Tessellator::new(
-			// 	1.0,
-			// 	TessellationOptions::default(),
-			// 	[12, 12],
-			// 	vec![],
-			// ),
 			tesselator:    line::Tessellator::new(1.0),
 			lines:         Vec::with_capacity(16),
 			draw_points:   Vec::with_capacity(16),
@@ -80,10 +68,12 @@ impl ProcessedShapes {
 			draw_meshes:   Vec::with_capacity(16),
 		}
 	}
-	pub fn process<T: EvalexprFloat>(
-		&mut self, ui: &eframe::egui::Ui, entries: &mut [Entry<T>], plot_params: &PlotParams,
-		selected_plot_line: Option<Id>,
+	pub fn collect_and_process_draw_buffers<T: EvalexprFloat>(
+		&mut self, ui: &eframe::egui::Ui, render_state: &RenderState, fan_fill_renderer: &mut FanFillRenderer,
+		entries: &mut [Entry<T>], plot_params: &PlotParams, selected_plot_line: Option<Id>,
 	) {
+		fan_fill_renderer.reset_textures();
+
 		let ppp = ui.pixels_per_point();
 		self.tesselator.set_pixels_per_point(ppp);
 
@@ -95,7 +85,7 @@ impl ProcessedShapes {
 
 		// let mut result = Vec::new();
 		if let Some(transform) = plot_params.prev_plot_transform {
-			let mut clone_draw_buffer = |draw_buffer: &mut PlotElements| {
+			let mut clone_draw_buffer = |draw_buffer: &mut RawPlotElements| {
 				let mut bounds = PlotBounds::NOTHING;
 				let mut name = None;
 				let mut allow_hover = false;
@@ -134,8 +124,25 @@ impl ProcessedShapes {
 						base,
 					});
 				}
+
+				let draw_frame = transform.frame();
+				let size = draw_frame.size();
 				for mesh in draw_buffer.meshes.iter() {
-					self.draw_meshes.push(mesh.clone());
+					let mut mesh = mesh.clone();
+					match &mut mesh.ty {
+						DrawMeshType::EguiPlotMesh(_) => {
+							self.draw_meshes.push(mesh);
+						},
+						DrawMeshType::FillMesh(fill_mesh) => {
+							if fill_mesh.vertices.len() > 2 {
+								fill_mesh.texture_id = Some(fan_fill_renderer.paint_curve_fill(
+									render_state, &fill_mesh.vertices, &fill_mesh.indices, fill_mesh.color,
+									fill_mesh.fill_rule, size.x, size.y,
+								));
+								self.draw_meshes.push(mesh);
+							}
+						},
+					}
 				}
 				for polygon in draw_buffer.polygons.iter() {
 					self.draw_polygons.push(polygon.clone());
@@ -157,11 +164,11 @@ impl ProcessedShapes {
 			for entry in entries.iter_mut() {
 				if let EntryType::Folder { entries } = &mut entry.ty {
 					for entry in entries.iter_mut() {
-						let draw_buffer = &mut entry.plot_elements;
+						let draw_buffer = &mut entry.raw_plot_elements;
 						clone_draw_buffer(draw_buffer);
 					}
 				} else {
-					let draw_buffer = &mut entry.plot_elements;
+					let draw_buffer = &mut entry.raw_plot_elements;
 					clone_draw_buffer(draw_buffer);
 				}
 			}
@@ -171,13 +178,13 @@ impl ProcessedShapes {
 
 #[repr(align(128))]
 pub struct PlotElementsRC {
-	pub inner: RefCell<PlotElements>,
+	pub inner: RefCell<RawPlotElements>,
 }
 impl Default for PlotElementsRC {
-	fn default() -> Self { Self { inner: RefCell::new(PlotElements::default()) } }
+	fn default() -> Self { Self { inner: RefCell::new(RawPlotElements::default()) } }
 }
 
-pub struct PlotElements {
+pub struct RawPlotElements {
 	pub lines:    Vec<DrawLineEx>,
 	pub points:   Vec<DrawPoint>,
 	pub polygons: Vec<DrawPolygonGroup>,
@@ -187,9 +194,9 @@ pub struct PlotElements {
 #[allow(clippy::non_send_fields_in_send_ty)]
 /// SAFETY: Line/Points/Polygon are not Send/Sync because of `ExplicitGenerator` callbacks.
 /// We dont use those so we're fine.
-unsafe impl Send for PlotElements {}
+unsafe impl Send for RawPlotElements {}
 
-impl Default for PlotElements {
+impl Default for RawPlotElements {
 	fn default() -> Self {
 		Self {
 			lines:    Vec::with_capacity(32),
@@ -200,7 +207,7 @@ impl Default for PlotElements {
 		}
 	}
 }
-impl PlotElements {
+impl RawPlotElements {
 	pub fn empty() -> Self {
 		Self {
 			lines:    Vec::new(),
@@ -219,19 +226,15 @@ impl PlotElements {
 	}
 }
 
-pub struct ProcessPlotElementsResult {
+pub struct SpecialPointsResult {
 	pub closest_point_to_mouse_on_selected: Option<((f64, f64), f64)>,
 	pub hovered_id:                         Option<Id>,
-	// pub draw_lines:             Vec<DrawLine>,
 	pub draw_points:                        Vec<DrawPoint>,
-	// pub draw_polygons:          Vec<DrawPolygonGroup>,
-	// pub draw_texts:             Vec<DrawText>,
-	// pub draw_meshes:            Vec<DrawMesh>,
 }
-pub fn process_plot_elements<T: EvalexprFloat>(
+pub fn process_special_points<T: EvalexprFloat>(
 	entries: &[Entry<T>], selected_plot_line: Option<(Id, bool)>, mouse_pos_in_graph: Option<(f64, f64)>,
 	plot_params: &PlotParams, draw_buffers: &mut ThreadLocal<PlotElementsRC>,
-) -> ProcessPlotElementsResult {
+) -> SpecialPointsResult {
 	let mut draw_points = vec![];
 
 	let selected_entry = selected_plot_line.and_then(|(selected_fline_id, show_closest_point_to_mouse)| {
@@ -250,15 +253,7 @@ pub fn process_plot_elements<T: EvalexprFloat>(
 		})
 	});
 
-	// let mut hovered_point: Option<Id> = None;
 	let mut hovered_line: Option<(Id, f64)> = None;
-
-	// let mut hover=|p1:PlotPoint,p2:PlotPoint|{
-	//   if let Some(mouse_pos)= mouse_pos_in_graph{
-
-	//   }
-
-	// };
 
 	let closest_point_to_mouse_for_selected: Mutex<Option<((f64, f64), f64)>> = Mutex::new(None);
 
@@ -283,7 +278,7 @@ pub fn process_plot_elements<T: EvalexprFloat>(
 		if let Some((selected_entry, show_closest_point_to_mouse)) = selected_entry
 			&& ptr::eq(entry, selected_entry)
 		{
-			let plot_elements = &selected_entry.plot_elements;
+			let plot_elements = &selected_entry.raw_plot_elements;
 			for line in plot_elements.lines.iter() {
 				let plot_points = line.points();
 				let pt_radius = line.width + 2.5;
@@ -401,7 +396,7 @@ pub fn process_plot_elements<T: EvalexprFloat>(
 				}
 			}
 		} else {
-			let draw_buffer = &entry.plot_elements;
+			let draw_buffer = &entry.raw_plot_elements;
 			for fline in draw_buffer.lines.iter() {
 				// draw_lines.par_iter().for_each(|fline| {
 				let plot_points = fline.points();
@@ -414,7 +409,7 @@ pub fn process_plot_elements<T: EvalexprFloat>(
 				for plot_seg in plot_points.windows(2) {
 					hover((plot_seg[0].0.x, plot_seg[0].0.y), (plot_seg[1].0.x, plot_seg[1].0.y));
 
-					if let Some(selected_draw_buffer) = selected_entry.map(|(s, _)| &s.plot_elements) {
+					if let Some(selected_draw_buffer) = selected_entry.map(|(s, _)| &s.raw_plot_elements) {
 						for selected_line in selected_draw_buffer.lines.iter() {
 							let sel_points = selected_line.points();
 							let pt_radius = selected_line.width + 2.5;
@@ -504,7 +499,7 @@ pub fn process_plot_elements<T: EvalexprFloat>(
 		None
 	};
 
-	ProcessPlotElementsResult {
+	SpecialPointsResult {
 		closest_point_to_mouse_on_selected: closest_point_to_mouse_for_selected,
 		draw_points,
 		hovered_id,
@@ -560,26 +555,22 @@ pub struct EguiPlotMesh {
 }
 impl PlotItem for EguiPlotMesh {
 	fn shapes(&self, _ui: &eframe::egui::Ui, transform: &egui_plot::PlotTransform, shapes: &mut Vec<Shape>) {
-		for vertex in self.mesh.borrow_mut().vertices.iter_mut() {
+		let input_mesh = &mut *self.mesh.borrow_mut();
+		for vertex in input_mesh.vertices.iter_mut() {
 			vertex.pos =
 				transform.position_from_point(&PlotPoint::new(vertex.pos.x as f64, vertex.pos.y as f64));
 		}
-		let mesh = core::mem::take(&mut *self.mesh.borrow_mut());
+		let mesh = core::mem::take(input_mesh);
 		let mesh = Mesh { vertices: mesh.vertices, indices: mesh.indices, ..Default::default() };
 
 		shapes.push(Shape::mesh(mesh));
 	}
 
 	fn initialize(&mut self, _x_range: core::ops::RangeInclusive<f64>) {}
-
 	fn color(&self) -> Color32 { self.color }
-
 	fn geometry(&self) -> PlotGeometry<'_> { PlotGeometry::None }
-
 	fn bounds(&self) -> egui_plot::PlotBounds { self.bounds }
-
 	fn base(&self) -> &egui_plot::PlotItemBase { &self.plot_item_base }
-
 	fn base_mut(&mut self) -> &mut egui_plot::PlotItemBase { &mut self.plot_item_base }
 }
 #[derive(Clone, Debug)]
@@ -695,4 +686,3 @@ pub struct DrawText {
 impl DrawText {
 	pub fn new(text: TextPlotItem) -> Self { Self { text } }
 }
-
