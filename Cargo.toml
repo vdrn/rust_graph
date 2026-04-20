@@ -34,15 +34,14 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
-eframe = { version = "0.33",default-features=false, features=[
+eframe = { version = "0.33",features=[
     "accesskit",
     "default_fonts",
     "wayland",
     "web_screen_reader",
     "x11",
 "persistence", "wgpu"] }
-# profiling = {version="1.0", features=["profile-with-puffin"]}
-wgpu = { version = "*", features = [ "webgpu", "webgl"] }
+wgpu = { version = "*", features = [ "webgpu", "webgl", "vulkan", "metal", "dx12", "gles", "wgsl", ] } # profiling = {version="1.0", features=["profile-with-puffin"]}
 bytemuck = "1"
 cfg-if = "1"
 egui_plot="0.34"
