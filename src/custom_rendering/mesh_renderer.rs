@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
-use send_wrapper::SendWrapper;
 use core::cell::RefCell;
 use core::num::NonZeroU64;
+use send_wrapper::SendWrapper;
 
 use eframe::egui::{self, Mesh, Rect};
 use eframe::egui_wgpu::wgpu::util::DeviceExt as _;
@@ -111,7 +111,7 @@ pub fn init_mesh_renderer(cc: &eframe::CreationContext) -> Option<()> {
 			index_capacity:  0,
 			vertex_count:    0,
 			index_count:     0,
-      index_scratch:   Vec::with_capacity(1024),
+			index_scratch:   Vec::with_capacity(1024),
 		}),
 	}));
 
@@ -123,12 +123,12 @@ struct BufferState {
 	vertex_capacity: usize,
 	vertex_count:    usize,
 
-	index_buffer:    Option<wgpu::Buffer>,
-	index_capacity:  usize,
-	index_count:     usize,
+	index_buffer:   Option<wgpu::Buffer>,
+	index_capacity: usize,
+	index_count:    usize,
 
-  /// used for offseting current mesh indices
-  index_scratch:   Vec<u32>,
+	/// used for offseting current mesh indices
+	index_scratch: Vec<u32>,
 }
 
 struct MeshRenderResources {
@@ -153,9 +153,8 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		egui_encoder: &mut wgpu::CommandEncoder, resources: &mut egui_wgpu::CallbackResources,
 	) -> Vec<wgpu::CommandBuffer> {
 		let mesh_resources: &mut SendWrapper<MeshRenderResources> = resources.get_mut().unwrap();
-    let mesh_resources: &mut MeshRenderResources = mesh_resources;
-    let state = &mut mesh_resources.state.borrow_mut();
-
+		let mesh_resources: &mut MeshRenderResources = mesh_resources;
+		let state = &mut mesh_resources.state.borrow_mut();
 
 		if state.index_count == 0 {
 			// uniform is always be the same within one frame, so we only need to update it the first time.
@@ -221,7 +220,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 			state.index_capacity = new_capacity;
 		}
 
-		// write vertices 
+		// write vertices
 		let vertex_offset = (state.vertex_count * size_of::<egui::epaint::Vertex>()) as u64;
 		queue.write_buffer(
 			state.vertex_buffer.as_ref().unwrap(),
@@ -231,10 +230,10 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 
 		// we have to adjust indices by the current vertex offset
 		let base_vertex = state.vertex_count as u32;
-    state.index_scratch.clear();
-    for idx in self.mesh.indices.iter() {
-      state.index_scratch.push(*idx + base_vertex);
-    }
+		state.index_scratch.clear();
+		for idx in self.mesh.indices.iter() {
+			state.index_scratch.push(*idx + base_vertex);
+		}
 		let index_offset = (state.index_count * size_of::<u32>()) as u64;
 		queue.write_buffer(
 			state.index_buffer.as_ref().unwrap(),
@@ -253,7 +252,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		callback_resources: &egui_wgpu::CallbackResources,
 	) {
 		let mesh_resources: &SendWrapper<MeshRenderResources> = callback_resources.get().unwrap();
-    let mesh_resources :&MeshRenderResources = mesh_resources;
+		let mesh_resources: &MeshRenderResources = mesh_resources;
 		let state = &mut mesh_resources.state.borrow_mut();
 
 		// we draw everything in the first pain callback
@@ -270,7 +269,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 		render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 		render_pass.draw_indexed(0..(state.index_count as u32), 0, 0..1);
 
-    // reset counts back to 0, so we only draw in the first callback
+		// reset counts back to 0, so we only draw in the first callback
 		state.vertex_count = 0;
 		state.index_count = 0;
 	}

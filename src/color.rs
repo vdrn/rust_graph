@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::entry::ColorEntryType;
 
-
 pub struct ProcessedColors<T: EvalexprFloat> {
 	pub colors: Vec<(u64, ProcessedColor<T>)>,
 }

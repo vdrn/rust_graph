@@ -1,5 +1,6 @@
 use core::time::Duration;
-use std::{sync::mpsc, time::Instant};
+use std::sync::mpsc;
+use std::time::Instant;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -16,9 +17,9 @@ struct FinishedWork {
 }
 pub type ExecutionResult = Result<(u64, RawPlotElements), (u64, String)>;
 pub struct PlotElementsScheduler {
-	scheduled:   bool,
-	deferred:    Option<ScheduledWork>,
-	average:     (Duration, usize),
+	scheduled:       bool,
+	deferred:        Option<ScheduledWork>,
+	average:         (Duration, usize),
 	latest_received: Option<Instant>,
 
 	sx: mpsc::SyncSender<FinishedWork>,

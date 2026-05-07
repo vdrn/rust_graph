@@ -1019,8 +1019,8 @@ impl MeshBuilder {
       let v3 = self.new_vert(v3);
 			self.vertices.extend_from_slice(&[v3, v2]);
 			self.indices.extend([
-        base+1, base + 3, base+2 ,
-        base+1, base +2, base 
+        base+1, base + 3, base+2,
+        base+1, base +2, base
       ]);
 		} else {
 			let base = self.vertices.len() as u32 ;

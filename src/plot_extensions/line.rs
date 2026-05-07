@@ -27,16 +27,11 @@ pub struct Tessellator {
 impl Tessellator {
 	pub fn new(pixels_per_point: f32) -> Self {
 		let mut new = Self { feathering: 1.0 };
-    new.set_pixels_per_point(pixels_per_point);
-    new
-
+		new.set_pixels_per_point(pixels_per_point);
+		new
 	}
-  pub fn set_pixels_per_point(&mut self, pixels_per_point: f32) {
-    self.feathering = 1.0 / pixels_per_point;
-  }
-	pub fn tessalate_line(
-		&self, line: &DrawLineEx, transform: &PlotTransform, out: &mut Mesh,
-	) -> PlotBounds {
+	pub fn set_pixels_per_point(&mut self, pixels_per_point: f32) { self.feathering = 1.0 / pixels_per_point; }
+	pub fn tessalate_line(&self, line: &DrawLineEx, transform: &PlotTransform, out: &mut Mesh) -> PlotBounds {
 		let mut bounds = PlotBounds::NOTHING;
 		match line.series.len() {
 			0 => {},
@@ -309,7 +304,7 @@ impl Tessellator {
 			}
 		}
 	}
-	fn tesselate_circle( pos: Pos2, radius: f32, color: Color32, out: &mut Mesh) {
+	fn tesselate_circle(pos: Pos2, radius: f32, color: Color32, out: &mut Mesh) {
 		use precomputed_vertices::*;
 		if radius <= 0.0 {
 			return;

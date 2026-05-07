@@ -55,6 +55,17 @@ pub(crate) use scope;
 
 use crate::graph_ui::GraphState;
 
+#[derive(Clone, PartialEq)]
+enum PendingAction {
+	New,
+	Open,
+	Close,
+}
+
+fn has_unsaved_changes(ui_state: &UiState) -> bool {
+	ui_state.initial_permalink_string.as_ref() != Some(&ui_state.permalink_string)
+}
+
 const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 static EXAMPLES_DIR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
@@ -152,10 +163,11 @@ struct UiState {
 	app_config: AppConfig,
 
 	// UI
-	showing_help:     bool,
-	showing_settings: bool,
-	showing_open:     bool,
-	showing_save:     bool,
+	showing_help:        bool,
+	showing_settings:    bool,
+	showing_open:        bool,
+	showing_save:        bool,
+	showing_save_prompt: bool,
 
 	// UI - Persistance
 	serialized_states: BTreeMap<String, String>,
@@ -182,6 +194,12 @@ struct UiState {
 	scheduled_url_update: bool,
 	last_url_update:      f64,
 
+	// File state
+	current_file_path:          Option<String>,
+	initial_permalink_string:   Option<String>,
+	pending_action:             Option<PendingAction>,
+	perform_pending_after_save: bool,
+
 	// cross frame signals
 	reset_graph:            bool,
 	force_process_elements: bool,
@@ -195,6 +213,18 @@ struct UiState {
 
 	// Misc
 	debug_info: DebugInfo,
+}
+impl UiState {
+	pub fn quit(&mut self, ctx: &egui::Context) {
+		if crate::has_unsaved_changes(self) {
+			use crate::PendingAction;
+
+			self.showing_save_prompt = true;
+			self.pending_action = Some(PendingAction::Close);
+		} else {
+			ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+		}
+	}
 }
 
 pub struct Application {
@@ -317,11 +347,16 @@ impl Application {
 				dragging_point_i: None,
 				plot_mouese_pos: None,
 				permalink_string: String::new(),
+				current_file_path: None,
+				initial_permalink_string: None,
+				pending_action: None,
+				perform_pending_after_save: false,
 				draw_buffers: Box::new(ThreadLocal::new()),
 				showing_help: false,
 				showing_settings: false,
 				showing_open: false,
 				showing_save: false,
+				showing_save_prompt: false,
 			},
 		}
 	}
@@ -345,18 +380,24 @@ impl App for Application {
 		let use_f32 = self.ui.app_config.use_f32;
 
 		if use_f32 {
-			let changed = side_panel_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx);
+			let changed = side_panel_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
 			graph_ui(ctx, &mut self.state_f32, &mut self.ui, frame, changed);
 		} else {
-			let changed = side_panel_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx);
+			let changed = side_panel_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
 			graph_ui(ctx, &mut self.state_f64, &mut self.ui, frame, changed);
 		}
 		if use_f32 != self.ui.app_config.use_f32 {
+			let current_file_path = self.ui.current_file_path.clone();
 			if use_f32 {
 				// convert f32 graph to f64
 				match self.state_f32.graph_state.convert_float_type() {
 					Ok(converted_graph_state) => {
-						load_graph_state(&mut self.ui, &mut self.state_f64, Ok(converted_graph_state));
+						load_graph_state(
+							&mut self.ui,
+							&mut self.state_f64,
+							Ok(converted_graph_state),
+							current_file_path,
+						);
 					},
 					Err(e) => {
 						self.ui.serialization_error = Some(e);
@@ -366,7 +407,12 @@ impl App for Application {
 				// convert f64 graph to f32
 				match self.state_f64.graph_state.convert_float_type() {
 					Ok(converted_graph_state) => {
-						load_graph_state(&mut self.ui, &mut self.state_f32, Ok(converted_graph_state));
+						load_graph_state(
+							&mut self.ui,
+							&mut self.state_f32,
+							Ok(converted_graph_state),
+							current_file_path,
+						);
 					},
 					Err(e) => {
 						self.ui.serialization_error = Some(e);
@@ -375,7 +421,7 @@ impl App for Application {
 			}
 		}
 		if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-			ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+			self.ui.quit(ctx);
 		}
 	}
 
@@ -397,6 +443,7 @@ impl App for Application {
 
 fn load_graph_state<T: EvalexprFloat>(
 	ui_state: &mut UiState, state: &mut State<T>, graph_state: Result<GraphState<T>, String>,
+	file_path: Option<String>,
 ) {
 	match graph_state {
 		Ok(graph_state) => {
@@ -405,6 +452,8 @@ fn load_graph_state<T: EvalexprFloat>(
 			ui_state.clear_cache = true;
 			ui_state.reset_graph = true;
 			ui_state.multi_draw_buffer_scheduler = PlotElementsScheduler::new();
+			ui_state.current_file_path = file_path;
+			ui_state.initial_permalink_string = None; // will be set when permalink is updated
 		},
 		Err(e) => {
 			ui_state.serialization_error = Some(e);

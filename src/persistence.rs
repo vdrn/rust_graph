@@ -26,6 +26,8 @@ pub struct StateSerialized {
 	pub graph_config: GraphConfig,
 	#[serde(default)]
 	pub id_generator: IdGenerator,
+	#[serde(default)]
+	pub name:         String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -299,6 +301,7 @@ pub fn serialize_graph_state<T: EvalexprFloat>(graph_state: &GraphState<T>) -> S
 		entries:      serialize_entries(&graph_state.entries),
 		graph_config: graph_state.current_graph_config.clone(),
 		id_generator: graph_state.id_gen.clone(),
+		name:         graph_state.name.clone(),
 	};
 
 	state_serialized
@@ -347,9 +350,7 @@ pub fn deserialize_from_url<T: EvalexprFloat>(
 	Ok(entries_from_ser(entries_ser, id_counter))
 }
 
-pub fn deserialize_graph_state<T: EvalexprFloat>(
-	name: String, ser: StateSerialized,
-) -> Result<GraphState<T>, String> {
+pub fn deserialize_graph_state<T: EvalexprFloat>(ser: StateSerialized) -> Result<GraphState<T>, String> {
 	let entries = deserialize_entries::<T>(ser.entries);
 	let mut unique_ids = FxHashSet::default();
 	let mut max_id = 0;
@@ -374,7 +375,7 @@ pub fn deserialize_graph_state<T: EvalexprFloat>(
 		entries,
 		saved_graph_config: ser.graph_config.clone(),
 		current_graph_config: ser.graph_config,
-		name,
+		name: ser.name,
 		id_gen: IdGenerator::new(max_id),
 		prev_plot_transform: None,
 	})
@@ -383,11 +384,11 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 	let mut result = Vec::new();
 	for entry in entries {
 		let entry_deserialized = Entry {
-			id:            entry.id,
-			active:        entry.visible,
-			color:         entry.color,
+			id:                entry.id,
+			active:            entry.visible,
+			color:             entry.color,
 			raw_plot_elements: RawPlotElements::empty(),
-			ty:            match entry.ty {
+			ty:                match entry.ty {
 				EntryTypeSerialized::Function {
 					func,
 					ranged,
@@ -463,7 +464,7 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 					EntryType::Color(ColorEntry { expr: expr.into_expr(false), ty })
 				},
 			},
-			name:          entry.name,
+			name:              entry.name,
 		};
 
 		result.push(entry_deserialized);
@@ -471,11 +472,9 @@ pub fn deserialize_entries<T: EvalexprFloat>(entries: Vec<EntrySerialized>) -> V
 	result
 }
 
-pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(
-	name: String, reader: &[u8],
-) -> Result<GraphState<T>, String> {
+pub fn deserialize_graph_state_from_json<T: EvalexprFloat>(reader: &[u8]) -> Result<GraphState<T>, String> {
 	let graph_state: StateSerialized = serde_json::from_slice(reader).map_err(|e| e.to_string())?;
-	deserialize_graph_state(name, graph_state)
+	deserialize_graph_state(graph_state)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -512,11 +511,10 @@ pub fn load_file_wasm<T: EvalexprFloat>(
 	ser_states: &std::collections::BTreeMap<String, String>, file_name: &str,
 ) -> Result<GraphState<T>, String> {
 	if let Some(file) = ser_states.get(file_name) {
-		let graph_state = deserialize_graph_state_from_json::<T>(
-			file_name.strip_suffix(".json").unwrap_or(file_name).to_string(),
-			file.as_bytes(),
-		)?;
-
+		let mut graph_state = deserialize_graph_state_from_json::<T>(file.as_bytes())?;
+		if graph_state.name.is_empty() {
+			graph_state.name = file_name.strip_suffix(".json").unwrap_or(file_name).to_string();
+		}
 		Ok(graph_state)
 	} else {
 		Err(format!("Could not find file: {}", file_name))
@@ -528,9 +526,11 @@ pub fn load_file_desktop<T: EvalexprFloat>(path: &Path) -> Result<GraphState<T>,
 	let Ok(file) = std::fs::read(path) else {
 		return Err(format!("Could not open file: {}", path.display()));
 	};
-	let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-		return Err(format!("Could not open file: {}", path.display()));
-	};
-	deserialize_graph_state_from_json::<T>(name.to_string(), &file)
-		.map_err(|e| format!("Could not deserialize file: {}", e))
+	let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+	let mut graph_state = deserialize_graph_state_from_json::<T>(&file)
+		.map_err(|e| format!("Could not deserialize file: {}", e))?;
+	if graph_state.name.is_empty() {
+		graph_state.name = name;
+	}
+	Ok(graph_state)
 }

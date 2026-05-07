@@ -1,4 +1,6 @@
-use eframe::egui::{self, Align, Button, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, Window};
+use eframe::egui::{
+	self, Align, Button, Id, Modal, RichText, ScrollArea, SidePanel, Slider, Stroke, TextEdit, Window
+};
 use eframe::epaint::Color32;
 
 use evalexpr::{EvalexprFloat, Stack};
@@ -9,6 +11,32 @@ use crate::graph_ui::IdGenerator;
 use crate::persistence::deserialize_graph_state_from_json;
 use crate::utils::{duplicate_entry_btn, remove_entry_btn};
 use crate::{GraphState, State, UiState, load_graph_state, persistence, scope};
+
+fn perform_pending_action<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiState, state: &mut State<T>) {
+	if let Some(action) = ui_state.pending_action.take() {
+		match action {
+			crate::PendingAction::New => {
+				load_graph_state(
+					ui_state,
+					state,
+					Ok(GraphState::new(ui_state.app_config.default_graph_config.clone())),
+					None,
+				);
+			},
+			crate::PendingAction::Open => {
+				ui_state.showing_open = true;
+				#[cfg(not(target_arch = "wasm32"))]
+				{
+					ui_state.file_dialog.pick_file();
+				}
+			},
+			crate::PendingAction::Close => {
+				ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+			},
+		}
+	}
+	ui_state.showing_save_prompt = false;
+}
 
 fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 	if let Some(parsing_error) = ui_state.parsing_errors.get(&entry_id) {
@@ -23,14 +51,14 @@ fn display_entry_errors(ui: &mut egui::Ui, ui_state: &UiState, entry_id: u64) {
 }
 
 pub fn side_panel<T: EvalexprFloat>(
-	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context,
+	state: &mut State<T>, ui_state: &mut UiState, ctx: &egui::Context, frame: &mut eframe::Frame,
 ) -> bool {
 	scope!("side_panel");
 	let changed = SidePanel::left("left_panel")
 		.default_width(200.0)
 		.show(ctx, |ui| {
 			egui::containers::menu::MenuBar::new().ui(ui, |ui| {
-				menu_bar_items(ui, ui_state, state);
+				menu_bar_items(ui, ui_state, state, frame);
 			});
 
 			// Graph entries
@@ -275,7 +303,10 @@ pub fn side_panel<T: EvalexprFloat>(
 								let mut permalink_string = String::with_capacity(output.len() + 1);
 								permalink_string.push('#');
 								permalink_string.push_str(&output);
-								ui_state.permalink_string = permalink_string;
+								ui_state.permalink_string = permalink_string.clone();
+								if ui_state.initial_permalink_string.is_none() {
+									ui_state.initial_permalink_string = Some(permalink_string);
+								}
 								ui_state.scheduled_url_update = true;
 							},
 							Err(e) => {
@@ -339,26 +370,63 @@ pub fn side_panel<T: EvalexprFloat>(
 	// ui_state.eval_errors.clear();
 	changed
 }
-pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiState, state: &mut State<T>) {
+pub fn menu_bar_items<T: EvalexprFloat>(
+	ui: &mut egui::Ui, ui_state: &mut UiState, state: &mut State<T>, _frame: &mut eframe::Frame,
+) {
 	// File
 	ui.menu_button("📂 File", |ui| {
 		// New
 		if ui.button("New").clicked() {
-			load_graph_state(
-				ui_state,
-				state,
-				Ok(GraphState::new(ui_state.app_config.default_graph_config.clone())),
-			);
-		}
-		if ui.button("Open").clicked() {
-			ui_state.showing_open = true;
-
-			#[cfg(not(target_arch = "wasm32"))]
-			{
-				ui_state.file_dialog.pick_file();
+			if crate::has_unsaved_changes(ui_state) {
+				ui_state.showing_save_prompt = true;
+				ui_state.pending_action = Some(crate::PendingAction::New);
+			} else {
+				load_graph_state(
+					ui_state,
+					state,
+					Ok(GraphState::new(ui_state.app_config.default_graph_config.clone())),
+					None,
+				);
 			}
 		}
-		if ui.button("Save").clicked() {
+		if ui.button("Open").clicked() {
+			if crate::has_unsaved_changes(ui_state) {
+				ui_state.showing_save_prompt = true;
+				ui_state.pending_action = Some(crate::PendingAction::Open);
+			} else {
+				ui_state.showing_open = true;
+
+				#[cfg(not(target_arch = "wasm32"))]
+				{
+					ui_state.file_dialog.pick_file();
+				}
+			}
+		}
+		if ui.add_enabled(ui_state.current_file_path.is_some(), egui::Button::new("Save")).clicked() {
+			if let Some(file_path) = &ui_state.current_file_path {
+				#[cfg(not(target_arch = "wasm32"))]
+				{
+					let path = std::path::PathBuf::from(file_path);
+					if let Err(e) = crate::persistence::save_file_desktop(path, state) {
+						ui_state.serialization_error = Some(e);
+					} else {
+						ui_state.serialization_error = None;
+						// update initial_permalink_string to current
+						ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+					}
+				}
+				#[cfg(target_arch = "wasm32")]
+				{
+					if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, frame) {
+						ui_state.serialization_error = Some(e);
+					} else {
+						ui_state.serialization_error = None;
+						ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+					}
+				}
+			}
+		}
+		if ui.button("Save as").clicked() {
 			ui_state.showing_save = true;
 			#[cfg(not(target_arch = "wasm32"))]
 			{
@@ -372,7 +440,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 		{
 			ui.separator();
 			if ui.button("Exit").clicked() {
-				ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+				ui_state.quit(ui.ctx());
 			}
 		}
 	});
@@ -399,7 +467,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 								let graph_state_res =
 									crate::persistence::load_file_wasm(&ui_state.serialized_states, file_name);
 
-								load_graph_state(ui_state, state, graph_state_res);
+								load_graph_state(ui_state, state, graph_state_res, Some(file_name.clone()));
 								ui.close();
 								// todo: hack for borrow checker, fix later
 								break;
@@ -456,7 +524,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 			// Check if the user picked a file.
 			if let Some(path) = ui_state.file_dialog.take_picked() {
 				let graph_state_res = crate::persistence::load_file_desktop(&path);
-				load_graph_state(ui_state, state, graph_state_res);
+				load_graph_state(ui_state, state, graph_state_res, Some(path.to_string_lossy().to_string()));
 
 				ui_state.showing_open = false;
 			}
@@ -484,6 +552,12 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 							ui_state.serialization_error = Some(e);
 						} else {
 							ui_state.serialization_error = None;
+							ui_state.current_file_path = Some(format!("{}.json", state.graph_state.name));
+							ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+							if ui_state.perform_pending_after_save {
+								ui_state.perform_pending_after_save = false;
+								perform_pending_action(ui, ui_state, state);
+							}
 						}
 						ui.close();
 					}
@@ -496,6 +570,10 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 
 			if save_modal.should_close() {
 				ui_state.showing_save = false;
+				if ui_state.perform_pending_after_save {
+					ui_state.perform_pending_after_save = false;
+					perform_pending_action(ui, ui_state, state);
+				}
 			}
 		}
 		// Save on Desktop
@@ -511,15 +589,85 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 					&& let Some(file_name) = path.file_name()
 					&& !file_name.is_empty()
 				{
-					if let Err(e) = crate::persistence::save_file_desktop(path, state) {
+					if let Err(e) = crate::persistence::save_file_desktop(path.clone(), state) {
 						ui_state.serialization_error = Some(e);
 					} else {
 						ui_state.serialization_error = None;
+						ui_state.current_file_path = Some(path.to_string_lossy().to_string());
+						ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+						if ui_state.perform_pending_after_save {
+							ui_state.perform_pending_after_save = false;
+							perform_pending_action(ui, ui_state, state);
+						}
 					}
 				} else {
 					ui_state.serialization_error = Some("Please provide a valid name".to_string());
 				}
 			}
+		}
+	}
+
+	if ui_state.showing_save_prompt {
+		let save_prompt = Modal::new(Id::new("Save Prompt")).show(ui.ctx(), |ui| {
+			ui.set_width(400.0);
+			ui.heading("Unsaved Changes");
+			ui.label("You have unsaved changes. Do you want to save them?");
+
+			ui.horizontal(|ui| {
+				if ui.button("Save").clicked() {
+					if ui_state.current_file_path.is_some() {
+						// Save directly
+						let file_path = ui_state.current_file_path.as_ref().unwrap();
+						#[cfg(not(target_arch = "wasm32"))]
+						{
+							let path = std::path::PathBuf::from(file_path);
+							if let Err(e) = crate::persistence::save_file_desktop(path, state) {
+								ui_state.serialization_error = Some(e);
+							} else {
+								ui_state.serialization_error = None;
+								ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+								perform_pending_action(ui, ui_state, state);
+								ui_state.pending_action = None;
+							}
+						}
+						#[cfg(target_arch = "wasm32")]
+						{
+							if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, frame) {
+								ui_state.serialization_error = Some(e);
+							} else {
+								ui_state.serialization_error = None;
+								ui_state.initial_permalink_string = Some(ui_state.permalink_string.clone());
+								perform_pending_action(ui, ui_state, state);
+								ui_state.pending_action = None;
+							}
+						}
+					} else {
+						// Open save dialog
+						ui_state.showing_save = true;
+						ui_state.perform_pending_after_save = true;
+
+						#[cfg(not(target_arch = "wasm32"))]
+						{
+							ui_state.file_dialog.config_mut().default_file_name =
+								format!("{}.json", state.graph_state.name);
+
+							ui_state.file_dialog.save_file();
+						}
+					}
+					ui.close();
+				}
+				if ui.button("Don't Save").clicked() {
+					perform_pending_action(ui, ui_state, state);
+					ui_state.pending_action = None;
+				}
+				if ui.button("Cancel").clicked() {
+					ui_state.pending_action = None;
+					ui.close();
+				}
+			});
+		});
+		if save_prompt.should_close() {
+			ui_state.showing_save_prompt = false;
 		}
 	}
 
@@ -529,12 +677,15 @@ pub fn menu_bar_items<T: EvalexprFloat>(ui: &mut egui::Ui, ui_state: &mut UiStat
 			if let Some(entry_file) = entry.as_file() {
 				if let Some(entry_name) = entry_file.path().file_stem().and_then(|s| s.to_str()) {
 					if ui.button(entry_name).clicked() {
-						let graph_state_res = deserialize_graph_state_from_json::<T>(
-							entry_name.to_string(),
-							entry_file.contents(),
-						)
-						.map_err(|e| format!("Could not deserialize file: {}", e));
-						load_graph_state(ui_state, state, graph_state_res);
+						let mut graph_state_res =
+							deserialize_graph_state_from_json::<T>(entry_file.contents())
+								.map_err(|e| format!("Could not deserialize file: {}", e));
+						if let Ok(ref mut gs) = graph_state_res {
+							if gs.name.is_empty() {
+								gs.name = entry_name.to_string();
+							}
+						}
+						load_graph_state(ui_state, state, graph_state_res, None);
 					}
 				}
 			}
@@ -655,4 +806,3 @@ fn add_new_entry_btn<T: EvalexprFloat>(
 
 	needs_recompilation
 }
-

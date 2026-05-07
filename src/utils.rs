@@ -1,5 +1,5 @@
-use thread_local::ThreadLocal;
 use eframe::egui::{Area, DragValue, Frame, Id, Slider, SliderClamping, Ui, Widget};
+use thread_local::ThreadLocal;
 
 use evalexpr::{EvalexprFloat, Value};
 
@@ -21,7 +21,6 @@ pub fn thread_local_get<T: Send + Default>(tl: &ThreadLocal<T>) -> &T {
 }
 
 pub fn f64_to_value<T: EvalexprFloat>(x: f64) -> Value<T> { Value::<T>::Float(T::from_f64(x)) }
-
 
 pub fn duplicate_entry_btn(ui: &mut Ui, text: &str) -> bool {
 	ui.button("🗐").on_hover_text(format!("Duplicate {text}")).clicked()

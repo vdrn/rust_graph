@@ -67,7 +67,9 @@ impl<T: EvalexprFloat> GraphState<T> {
 		// TODO: very inefficient converting to json and back
 		let mut ser_output = Vec::with_capacity(1024);
 		persistence::serialize_graph_state_to_json(&mut ser_output, self)?;
-		persistence::deserialize_graph_state_from_json(name, &ser_output)
+		let mut graph_state = persistence::deserialize_graph_state_from_json(&ser_output)?;
+		graph_state.name = name; // ensure name is preserved
+		Ok(graph_state)
 	}
 }
 

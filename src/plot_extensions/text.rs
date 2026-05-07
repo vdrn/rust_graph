@@ -1,6 +1,7 @@
 use core::ops::RangeInclusive;
 
-use eframe::{egui::{Align2, Color32, Id, Shape, Stroke, StrokeKind, TextStyle, TextWrapMode, Ui, WidgetText}, epaint::TextShape};
+use eframe::egui::{Align2, Color32, Id, Shape, Stroke, StrokeKind, TextStyle, TextWrapMode, Ui, WidgetText};
+use eframe::epaint::TextShape;
 use egui_plot::{PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotTransform};
 
 /// Text inside the plot.
@@ -99,12 +100,8 @@ impl PlotItem for TextPlotItem {
 		let color =
 			if self.color == Color32::TRANSPARENT { ui.style().visuals.text_color() } else { self.color };
 
-		let galley = self.text.clone().into_galley(
-			ui,
-			Some(TextWrapMode::Extend),
-			f32::INFINITY,
-			TextStyle::Small,
-		);
+		let galley =
+			self.text.clone().into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Small);
 
 		let pos = transform.position_from_point(&self.position);
 		let rect = self.anchor.anchor_size(pos, galley.size());

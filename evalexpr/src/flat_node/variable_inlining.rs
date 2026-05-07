@@ -1008,13 +1008,17 @@ pub fn setup_jump_offsets<F: EvalexprFloat>(node: &mut FlatNode<F>) {
 	for i in 0..node.ops.len() {
 		match &node.ops[i] {
 			FlatOperator::JumpIfFalse { id, .. } | FlatOperator::Jump { id, .. } => {
-				let pos = node.ops[i..]
+				let Some( pos) = node.ops[i..]
 					.iter()
 					.position(|op| match op {
 						FlatOperator::Label { id: other_id } => id == other_id,
 						_ => false,
-					})
-					.unwrap();
+					})else{
+            println!("No label {id} found for jump at {i}");
+            println!("{node:?}");
+            panic!()
+
+          };
 				match &mut node.ops[i] {
 					FlatOperator::JumpIfFalse { offset, .. } | FlatOperator::Jump { offset, .. } => {
 						*offset = Some(NonZeroU32::new(pos as u32).unwrap());
