@@ -2,6 +2,7 @@ struct Locals {
     screen_size: vec2<f32>,
     rect_min: vec2<f32>,
     rect_size: vec2<f32>,
+    padding: vec2<f32>,
 }
 
 @group(0) @binding(0)

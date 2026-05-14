@@ -68,14 +68,14 @@ impl FanFillRenderer {
 		});
 
 		let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-			label:                Some("fan_pipeline_layout"),
-			bind_group_layouts:   &[&bind_group_layout],
-			push_constant_ranges: &[],
+			label:              Some("fan_pipeline_layout"),
+			bind_group_layouts: &[Some(&bind_group_layout)],
+			immediate_size:     0,
 		});
 		let mut stencil_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-			label:         Some("stencil_pipeline"),
-			layout:        Some(&pipeline_layout),
-			vertex:        wgpu::VertexState {
+			label:          Some("stencil_pipeline"),
+			layout:         Some(&pipeline_layout),
+			vertex:         wgpu::VertexState {
 				module:              &shader,
 				entry_point:         Some("vs_main"),
 				buffers:             &[wgpu::VertexBufferLayout {
@@ -89,12 +89,12 @@ impl FanFillRenderer {
 				}],
 				compilation_options: wgpu::PipelineCompilationOptions::default(),
 			},
-			fragment:      None, // No color output in stencil pass
-			primitive:     wgpu::PrimitiveState::default(),
-			depth_stencil: Some(wgpu::DepthStencilState {
+			fragment:       None, // No color output in stencil pass
+			primitive:      wgpu::PrimitiveState::default(),
+			depth_stencil:  Some(wgpu::DepthStencilState {
 				format:              wgpu::TextureFormat::Stencil8,
-				depth_write_enabled: false,
-				depth_compare:       wgpu::CompareFunction::Always,
+				depth_write_enabled: Some(false),
+				depth_compare:       Some(wgpu::CompareFunction::Always),
 				stencil:             wgpu::StencilState {
 					front:      wgpu::StencilFaceState {
 						compare:       wgpu::CompareFunction::Always,
@@ -113,16 +113,16 @@ impl FanFillRenderer {
 				},
 				bias:                wgpu::DepthBiasState::default(),
 			}),
-			multisample:   wgpu::MultisampleState::default(),
-			multiview:     None,
-			cache:         None,
+			multisample:    wgpu::MultisampleState::default(),
+			multiview_mask: None,
+			cache:          None,
 		};
 		let even_odd_stencil_pipeline = device.create_render_pipeline(&stencil_pipeline_descriptor);
 
 		stencil_pipeline_descriptor.depth_stencil = Some(wgpu::DepthStencilState {
 			format:              wgpu::TextureFormat::Stencil8,
-			depth_write_enabled: false,
-			depth_compare:       wgpu::CompareFunction::Always,
+			depth_write_enabled: Some(false),
+			depth_compare:       Some(wgpu::CompareFunction::Always),
 			stencil:             wgpu::StencilState {
 				front:      wgpu::StencilFaceState {
 					compare:       wgpu::CompareFunction::Always,
@@ -144,15 +144,15 @@ impl FanFillRenderer {
 		let non_zero_stencil_pipeline = device.create_render_pipeline(&stencil_pipeline_descriptor);
 
 		let color_pipeline_descriptor = wgpu::RenderPipelineDescriptor {
-			label:         Some("color_pipeline"),
-			layout:        Some(&pipeline_layout),
-			vertex:        wgpu::VertexState {
+			label:          Some("color_pipeline"),
+			layout:         Some(&pipeline_layout),
+			vertex:         wgpu::VertexState {
 				module:              &shader,
 				entry_point:         Some("vs_quad"),
 				buffers:             &[],
 				compilation_options: wgpu::PipelineCompilationOptions::default(),
 			},
-			fragment:      Some(wgpu::FragmentState {
+			fragment:       Some(wgpu::FragmentState {
 				module:              &shader,
 				entry_point:         Some("fs_quad"),
 				targets:             &[Some(wgpu::ColorTargetState {
@@ -162,11 +162,11 @@ impl FanFillRenderer {
 				})],
 				compilation_options: wgpu::PipelineCompilationOptions::default(),
 			}),
-			primitive:     wgpu::PrimitiveState::default(),
-			depth_stencil: Some(wgpu::DepthStencilState {
+			primitive:      wgpu::PrimitiveState::default(),
+			depth_stencil:  Some(wgpu::DepthStencilState {
 				format:              wgpu::TextureFormat::Stencil8,
-				depth_write_enabled: false,
-				depth_compare:       wgpu::CompareFunction::Always,
+				depth_write_enabled: Some(false),
+				depth_compare:       Some(wgpu::CompareFunction::Always),
 				stencil:             wgpu::StencilState {
 					front:      wgpu::StencilFaceState {
 						compare:       wgpu::CompareFunction::NotEqual,
@@ -185,9 +185,9 @@ impl FanFillRenderer {
 				},
 				bias:                wgpu::DepthBiasState::default(),
 			}),
-			multisample:   wgpu::MultisampleState::default(),
-			multiview:     None,
-			cache:         None,
+			multisample:    wgpu::MultisampleState::default(),
+			multiview_mask: None,
+			cache:          None,
 		};
 		let color_pipeline = device.create_render_pipeline(&color_pipeline_descriptor);
 
@@ -399,6 +399,7 @@ impl FanFillRenderer {
 				}),
 				timestamp_writes:         None,
 				occlusion_query_set:      None,
+				multiview_mask:           None,
 			});
 
 			match fill_rule {
@@ -439,6 +440,7 @@ impl FanFillRenderer {
 				}),
 				timestamp_writes:         None,
 				occlusion_query_set:      None,
+				multiview_mask:           None,
 			});
 
 			color_pass.set_pipeline(&resources.color_pipeline);

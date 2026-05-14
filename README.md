@@ -1,7 +1,6 @@
 # Rust Graph
 Desmos-like graphing calculator with support for f32 numbers.
 
-
 ## Use it online
 
 [Web Demo](https://rust-graph.netlify.app/)
@@ -18,6 +17,7 @@ Then run:
 ```bash
 cargo install --git https://github.com/vdrn/rust_graph
 ```
+
 
 
 

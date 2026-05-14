@@ -24,22 +24,23 @@ pub fn init_mesh_renderer(cc: &eframe::CreationContext) -> Option<()> {
 			ty:         wgpu::BindingType::Buffer {
 				ty:                 wgpu::BufferBindingType::Uniform,
 				has_dynamic_offset: false,
-				min_binding_size:   NonZeroU64::new(24), // screen_size + rect(x, y, width, height)
+				min_binding_size:   NonZeroU64::new(32), /* screen_size + rect(x, y, width, height) + 8
+				                                          * byte padding */
 			},
 			count:      None,
 		}],
 	});
 
 	let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-		label:                Some("mesh_renderer"),
-		bind_group_layouts:   &[&bind_group_layout],
-		push_constant_ranges: &[],
+		label:              Some("mesh_renderer"),
+		bind_group_layouts: &[Some(&bind_group_layout)],
+		immediate_size:     0,
 	});
 
 	let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-		label:         Some("mesh_renderer"),
-		layout:        Some(&pipeline_layout),
-		vertex:        wgpu::VertexState {
+		label:          Some("mesh_renderer"),
+		layout:         Some(&pipeline_layout),
+		vertex:         wgpu::VertexState {
 			module:              &shader,
 			entry_point:         None,
 			buffers:             &[wgpu::VertexBufferLayout {
@@ -68,7 +69,7 @@ pub fn init_mesh_renderer(cc: &eframe::CreationContext) -> Option<()> {
 			}],
 			compilation_options: wgpu::PipelineCompilationOptions::default(),
 		},
-		fragment:      Some(wgpu::FragmentState {
+		fragment:       Some(wgpu::FragmentState {
 			module:              &shader,
 			entry_point:         Some("fs_main"),
 			targets:             &[Some(wgpu::ColorTargetState {
@@ -78,19 +79,19 @@ pub fn init_mesh_renderer(cc: &eframe::CreationContext) -> Option<()> {
 			})],
 			compilation_options: wgpu::PipelineCompilationOptions::default(),
 		}),
-		primitive:     wgpu::PrimitiveState {
+		primitive:      wgpu::PrimitiveState {
 			topology: wgpu::PrimitiveTopology::TriangleList,
 			..Default::default()
 		},
-		depth_stencil: None,
-		multisample:   wgpu::MultisampleState::default(),
-		multiview:     None,
-		cache:         None,
+		depth_stencil:  None,
+		multisample:    wgpu::MultisampleState::default(),
+		multiview_mask: None,
+		cache:          None,
 	});
 
 	let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
 		label:    Some("mesh_renderer_uniform"),
-		contents: bytemuck::cast_slice(&[0.0_f32; 6]),
+		contents: bytemuck::cast_slice(&[0.0_f32; 8]),
 		usage:    wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
 	});
 
@@ -165,6 +166,8 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
 				self.frame.min.y,
 				self.frame.width(),
 				self.frame.height(),
+				0.0,
+				0.0,
 			];
 			queue.write_buffer(&mesh_resources.uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
 		}

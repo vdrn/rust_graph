@@ -1,6 +1,6 @@
 use core::time::Duration;
 use std::sync::mpsc;
-use std::time::Instant;
+use web_time::Instant;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 

@@ -549,12 +549,12 @@ fn inline_and_fold_entry<T: EvalexprFloat>(
 			let Some(node) = &func.node else {
 				return Ok(());
 			};
-			println!("node: {identifier}: {:#?}", node);
+			// println!("node: {identifier}: {:#?}", node);
 			let inlined_node = evalexpr::optimize_flat_node(node, ctx).map_err(|e| e.to_string())?;
-			println!("inlined node {identifier}: {:#?}", inlined_node);
+			// println!("inlined node {identifier}: {:#?}", inlined_node);
 			let expr_function = ExpressionFunction::new(inlined_node, &func.args, &mut Some(ctx))
 				.map_err(|e| e.to_string())?;
-			println!("expr_func node: {identifier} {:#?}", expr_function);
+			// println!("expr_func node: {identifier} {:#?}", expr_function);
 
 			if identifier.to_str() != "" && func.equation_type == EquationType::None {
 				ctx.set_expression_function(*identifier, expr_function.clone());

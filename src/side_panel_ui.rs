@@ -417,7 +417,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(
 				}
 				#[cfg(target_arch = "wasm32")]
 				{
-					if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, frame) {
+					if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, _frame) {
 						ui_state.serialization_error = Some(e);
 					} else {
 						ui_state.serialization_error = None;
@@ -460,7 +460,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(
 				ui.separator();
 
 				ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-					Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
+					egui::Grid::new("files").num_columns(3).striped(true).show(ui, |ui| {
 						for file_name in ui_state.serialized_states.keys() {
 							ui.label(file_name);
 							if ui.button("Open").clicked() {
@@ -548,7 +548,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(
 				ui.horizontal(|ui| {
 					if ui.add_enabled(!state.graph_state.name.trim().is_empty(), Button::new("Save")).clicked()
 					{
-						if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, frame) {
+						if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, _frame) {
 							ui_state.serialization_error = Some(e);
 						} else {
 							ui_state.serialization_error = None;
@@ -632,7 +632,7 @@ pub fn menu_bar_items<T: EvalexprFloat>(
 						}
 						#[cfg(target_arch = "wasm32")]
 						{
-							if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, frame) {
+							if let Err(e) = crate::persistence::save_file_wasm(ui_state, state, _frame) {
 								ui_state.serialization_error = Some(e);
 							} else {
 								ui_state.serialization_error = None;

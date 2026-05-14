@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::env;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Id, Visuals};
 #[cfg(target_arch = "wasm32")]
@@ -70,8 +70,8 @@ const DATA_KEY: &str = "data";
 const CONF_KEY: &str = "conf";
 static EXAMPLES_DIR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
 
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
+#[cfg(target_arch = "wasm32")]
 pub fn wasm_main() -> () {
 	use eframe::egui_wgpu::wgpu::Backends;
 	use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
@@ -81,8 +81,9 @@ pub fn wasm_main() -> () {
 
 	web_options.wgpu_options = WgpuConfiguration {
 		wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
-			instance_descriptor: wgpu::InstanceDescriptor { backends: Backends::GL, ..Default::default() },
-			..Default::default()
+			instance_descriptor: eframe::wgpu::InstanceDescriptor { backends: Backends::GL, ..eframe::wgpu::InstanceDescriptor::new_without_display_handle() },
+
+      ..WgpuSetupCreateNew::without_display_handle()
 		}),
 		..Default::default()
 	};
@@ -275,19 +276,21 @@ impl Application {
 				}
 			}
 
-			match persistence::deserialize_from_url::<F32NumericTypes>(&mut next_id) {
-				Ok((data, bounds)) => {
-					entries_s = data;
-					default_graph_config_s = bounds;
+			match persistence::deserialize_from_url::<F32NumericTypes>() {
+				Ok(data) => {
+					if let Some(data) = data {
+						graph_state_s = data;
+					}
 				},
 				Err(e) => {
 					serialization_error = Some(e);
 				},
 			}
-			match persistence::deserialize_from_url::<DefaultNumericTypes>(&mut next_id) {
-				Ok((data, bounds)) => {
-					entries_d = data;
-					default_graph_config_d = bounds;
+			match persistence::deserialize_from_url::<DefaultNumericTypes>() {
+				Ok(data) => {
+					if let Some(data) = data {
+						graph_state_d = data;
+					}
 				},
 				Err(e) => {
 					serialization_error = Some(e);
@@ -318,7 +321,7 @@ impl Application {
 					.allow_path_edit_to_save_file_without_extension(false)
 					.add_file_filter(
 						"Rust Graph JSON file",
-						Arc::new(|p| p.extension().unwrap_or_default() == "json"),
+						egui_file_dialog::Filter::new(|p:&Path| p.extension().unwrap_or_default() == "json"),
 					)
 					.default_file_filter("Rust Graph JSON file"),
 				#[cfg(target_arch = "wasm32")]
@@ -362,7 +365,7 @@ impl Application {
 	}
 }
 impl App for Application {
-	fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 		{
 			self.ui.full_frame_scope.take();
@@ -371,20 +374,20 @@ impl App for Application {
 		}
 
 		if self.ui.app_config.dark_mode {
-			ctx.set_visuals(Visuals::dark());
+			ui.set_visuals(Visuals::dark());
 		} else {
-			ctx.set_visuals(Visuals::light());
+			ui.set_visuals(Visuals::light());
 		}
-		ctx.set_pixels_per_point(self.ui.app_config.ui_scale);
+		ui.set_pixels_per_point(self.ui.app_config.ui_scale);
 
 		let use_f32 = self.ui.app_config.use_f32;
 
 		if use_f32 {
-			let changed = side_panel_ui::side_panel(&mut self.state_f32, &mut self.ui, ctx, frame);
-			graph_ui(ctx, &mut self.state_f32, &mut self.ui, frame, changed);
+			let changed = side_panel_ui::side_panel(&mut self.state_f32, &mut self.ui, ui, frame);
+			graph_ui(ui, &mut self.state_f32, &mut self.ui, frame, changed);
 		} else {
-			let changed = side_panel_ui::side_panel(&mut self.state_f64, &mut self.ui, ctx, frame);
-			graph_ui(ctx, &mut self.state_f64, &mut self.ui, frame, changed);
+			let changed = side_panel_ui::side_panel(&mut self.state_f64, &mut self.ui, ui, frame);
+			graph_ui(ui, &mut self.state_f64, &mut self.ui, frame, changed);
 		}
 		if use_f32 != self.ui.app_config.use_f32 {
 			let current_file_path = self.ui.current_file_path.clone();
@@ -420,8 +423,8 @@ impl App for Application {
 				}
 			}
 		}
-		if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-			self.ui.quit(ctx);
+		if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+			self.ui.quit(ui);
 		}
 	}
 

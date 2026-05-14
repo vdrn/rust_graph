@@ -1,6 +1,6 @@
 [package]
 name = "rust_graph"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 authors = ["Vedran Maric <valinion@gmail.com>"]
 description = "Graphing calculator with f32 support."
@@ -34,21 +34,21 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
-eframe = { version = "0.33",features=[
+eframe = { version = "0.34",features=[
     "accesskit",
     "default_fonts",
     "wayland",
     "web_screen_reader",
     "x11",
 "persistence", "wgpu"] }
-wgpu = { version = "*", features = [ "webgpu", "webgl", "vulkan", "metal", "dx12", "gles", "wgsl", ] } # profiling = {version="1.0", features=["profile-with-puffin"]}
+wgpu = { version = "29", features = [ "webgpu", "webgl", "vulkan", "metal", "gles", "wgsl", ] }
 bytemuck = "1"
 cfg-if = "1"
-egui_plot="0.34"
+egui_plot="0.35"
 send_wrapper = "0.6"
-egui-file-dialog ="0.12"
+egui-file-dialog ="0.13"
 # enum-map="2.7"
-
+web-time = "1"
 # egui_extras={version = "0.33", features=["syntect"]}
 # syntect = { version = "5.3", default-features = false, features = ["default-fancy"]}
 evalexpr = { path = "evalexpr" }
@@ -56,7 +56,7 @@ evalexpr = { path = "evalexpr" }
 rustc-hash = "2"
 serde = { version = "1" }
 serde_json = "1"
-egui_dnd="0.14"
+egui_dnd="0.15"
 bincode={version="2", features=["serde"]}
 base64="0.22"
 arrayvec = "0.7"
@@ -75,8 +75,8 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # puffin_http = { path = "../../contrib/puffin/puffin_http" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-puffin = { version = "0.19", optional = true }
-puffin_http = { version = "0.16", optional = true }
+puffin = { version = "0.20", optional = true }
+puffin_http = { version = "0.17", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"

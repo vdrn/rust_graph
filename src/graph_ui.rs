@@ -231,7 +231,6 @@ pub fn graph_ui<T: evalexpr::EvalexprFloat>(
 
 		if ui_state.reset_graph {
 			force_create_elements = true;
-			ui_state.reset_graph = false;
 			state.graph_state.current_graph_config = state.graph_state.saved_graph_config.clone();
 		}
 
@@ -260,6 +259,10 @@ pub fn graph_ui<T: evalexpr::EvalexprFloat>(
 			.clamp_grid(graph_conf.clamp_grid)
 			.grid_spacing(graph_conf.grid_spacing.0..=graph_conf.grid_spacing.1);
 
+		if ui_state.reset_graph {
+			plot = plot.reset();
+			ui_state.reset_graph = false;
+		}
 		plot = plot
 			.default_x_bounds(calcd_bounds.min()[0], calcd_bounds.max()[0])
 			.default_y_bounds(calcd_bounds.min()[1], calcd_bounds.max()[1]);
