@@ -1,7 +1,10 @@
+use core::sync::atomic::Ordering;
+
 use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
 use crate::error::expect_function_argument_amount;
+use crate::flat_node::compile::LABEL_ID;
 use crate::flat_node::subexpression_elemination::{get_arg_ranges, get_n_previous_exprs, range_as_const};
 use crate::flat_node::{AdditionalArgs, ClosureNode, FlatOperator, MapOp};
 use crate::math::integrate;
@@ -297,14 +300,37 @@ fn inline_function<F: EvalexprFloat>(
 		node.num_local_var_ops += arg_range.len() as u32;
 	}
 
+  // We need to update label ids when inlining functions.
+  // Even though label ids are globally unique, if a function inlines multiple calls to a same
+  // funtion, they should not have same label ids!
+	// (old_label_id, new_label_id)
+	let mut labels = SmallVec::<[(u64, u64); 8]>::new();
 	// update references to params and vars in the function being inlined
+	// also collect all labels, that will need to be updated
 	func_expr.iter_mut_top_level_ops(&mut |op| {
 		if let FlatOperator::ReadParam { inverse_index } = op {
 			let idx = shift_read_arg + (new_num_args as u32 - *inverse_index);
 			*op = FlatOperator::ReadLocalVar { idx };
 		} else if let FlatOperator::ReadLocalVar { idx } = op {
 			*idx += shift_read_var;
+		} else if let FlatOperator::Label { id } = op {
+			let new_label_id =
+				labels.iter().find(|(old_id, _)| old_id == id).map(|(_, new_id)| *new_id).unwrap_or_else(
+					|| {
+						let new_label_id = LABEL_ID.fetch_add(1, Ordering::Relaxed);
+						labels.push((*id, new_label_id));
+						new_label_id
+					},
+				);
+			*id = new_label_id;
 		}
+	});
+
+	func_expr.iter_mut_top_level_ops(&mut |op| match op {
+		FlatOperator::Jump { id, .. } | FlatOperator::JumpIfFalse { id, .. } => {
+			*id = labels.iter().find(|(old_id, _)| old_id == id).map(|(_, new_id)| *new_id).unwrap();
+		},
+		_ => {},
 	});
 
 	// move additional closure args to parent functions local vars, and replace their inverse indices

@@ -33,6 +33,8 @@ fn extract_two_nodes<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprRe
 	Ok([a, b])
 }
 
+pub(crate) static LABEL_ID: AtomicU64 = AtomicU64::new(0);
+
 fn into_u32<F: EvalexprFloat>(value: usize) -> EvalexprResult<u32, F> {
 	value
 		.try_into()
@@ -608,7 +610,6 @@ fn compile_special_function<F: EvalexprFloat>(
 			Ok(CompileNativeResult::Compiled)
 		},
 		"if" | "If" => {
-			static LABEL_ID: AtomicU64 = AtomicU64::new(0);
 
 			match node.children.len() {
 				2 => {

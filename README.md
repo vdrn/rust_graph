@@ -20,6 +20,4 @@ cargo install --git https://github.com/vdrn/rust_graph
 ```
 
 
-## Screenshot
-![Screenshot](./assets/Screenshot.png)
 

@@ -79,7 +79,7 @@ pub fn eval_flat_node_mut<F: EvalexprFloat>(
 
 /// Stack type
 #[derive(Default)]
-pub struct Stack<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize = 512> {
+pub struct Stack<T: EvalexprFloat, const MAX_FUNCTION_NESTING: usize = 64> {
 	stack:               Vec<Value<T>>,
 	function_nesting:    usize,
 	pub(crate) num_args: usize,
