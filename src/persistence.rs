@@ -313,6 +313,12 @@ pub fn serialize_graph_state_to_json<T: EvalexprFloat>(
 	serde_json::to_writer(writer, &ser).map_err(|e| e.to_string())?;
 	Ok(())
 }
+pub fn serialize_graph_state_to_json_string<T: EvalexprFloat>(
+	graph_state: &GraphState<T>,
+) -> Result<String, String> {
+	let ser = serialize_graph_state(graph_state);
+	serde_json::to_string(&ser).map_err(|e| e.to_string())
+}
 pub fn serialize_to_url<T: EvalexprFloat>(graph_state: &GraphState<T>) -> Result<String, String> {
 	let ser = serialize_graph_state(graph_state);
 	let bincoded =
@@ -322,8 +328,7 @@ pub fn serialize_to_url<T: EvalexprFloat>(graph_state: &GraphState<T>) -> Result
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn deserialize_from_url<T: EvalexprFloat>(
-) -> Result<Option<GraphState<T>>, String> {
+pub fn deserialize_from_url<T: EvalexprFloat>() -> Result<Option<GraphState<T>>, String> {
 	let href = web_sys::window()
 		.expect("Couldn't get window")
 		.document()

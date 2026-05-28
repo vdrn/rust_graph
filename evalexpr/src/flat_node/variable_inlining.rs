@@ -413,6 +413,9 @@ pub fn inline_variables_and_fold<F: EvalexprFloat>(
 			FlatOperator::Floor => {
 				fold_unary_op(&mut new_ops, source_op, eval::floor)?;
 			},
+			FlatOperator::Trunc => {
+				fold_unary_op(&mut new_ops, source_op, eval::trunc)?;
+			},
 			FlatOperator::Round => {
 				fold_unary_op(&mut new_ops, source_op, eval::round)?;
 			},

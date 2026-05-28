@@ -154,6 +154,10 @@ pub trait EvalexprFloat:
 	/// Compute the largest integer less than or equal to `self`.
 	fn floor(&self) -> Self;
 
+
+  ///  `self` rounded towards zero.
+  fn trunc(&self) -> Self;
+
 	/// Returns the nearest integer to `self`. If a value is half-way between two integers, round away from
 	/// `0.0`.
 	fn round(&self) -> Self;

@@ -431,6 +431,7 @@ fn num_args<F: EvalexprFloat>(op: &FlatOperator<F>) -> usize {
 		| FlatOperator::Cbrt
 		| FlatOperator::Abs
 		| FlatOperator::Floor
+		| FlatOperator::Trunc
 		| FlatOperator::Round
 		| FlatOperator::Ceil
 		| FlatOperator::Ln

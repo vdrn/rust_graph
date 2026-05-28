@@ -584,6 +584,10 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				let x = stack.pop_unchecked();
 				stack.push(floor(x)?);
 			},
+			FlatOperator::Trunc => {
+				let x = stack.pop_unchecked();
+				stack.push(trunc(x)?);
+			},
 			FlatOperator::Round => {
 				let x = stack.pop_unchecked();
 				stack.push(round(x)?);
@@ -1274,6 +1278,9 @@ pub fn abs<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, F> {
 }
 pub fn floor<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, F> {
 	math_unary(value, "floor", |v| v.floor())
+}
+pub fn trunc<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, F> {
+	math_unary(value, "trunc", |v| v.trunc())
 }
 pub fn round<F: EvalexprFloat>(value: Value<F>) -> EvalexprResult<Value<F>, F> {
 	math_unary(value, "round", |v| v.round())

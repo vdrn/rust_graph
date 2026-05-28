@@ -102,6 +102,7 @@ impl EvalexprFloat for f64 {
 	fn hypot(&self, other: &Self) -> Self { (*self).hypot(*other) }
 
 	fn floor(&self) -> Self { (*self).floor() }
+  fn trunc(&self) -> Self { (*self).trunc() }
 
 	fn round(&self) -> Self { (*self).round() }
 

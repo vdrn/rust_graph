@@ -185,6 +185,8 @@ pub enum FlatOperator<F: EvalexprFloat> {
 	Floor,
 	Round,
 	Ceil,
+  Trunc,
+
 	Ln,
 	Log, // 2 params
 	Log2,

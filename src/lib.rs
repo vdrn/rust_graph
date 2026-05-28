@@ -2,10 +2,14 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::panic::AssertUnwindSafe;
+use std::backtrace::Backtrace;
 #[cfg(not(target_arch = "wasm32"))]
 use std::env;
+use std::panic::catch_unwind;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use eframe::egui::{self, Id, Visuals};
 #[cfg(target_arch = "wasm32")]
@@ -54,6 +58,7 @@ macro_rules! scope {
 pub(crate) use scope;
 
 use crate::graph_ui::GraphState;
+use crate::persistence::{serialize_graph_state_to_json, serialize_graph_state_to_json_string};
 
 #[derive(Clone, PartialEq)]
 enum PendingAction {
@@ -81,9 +86,12 @@ pub fn wasm_main() -> () {
 
 	web_options.wgpu_options = WgpuConfiguration {
 		wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
-			instance_descriptor: eframe::wgpu::InstanceDescriptor { backends: Backends::GL, ..eframe::wgpu::InstanceDescriptor::new_without_display_handle() },
+			instance_descriptor: eframe::wgpu::InstanceDescriptor {
+				backends: Backends::GL,
+				..eframe::wgpu::InstanceDescriptor::new_without_display_handle()
+			},
 
-      ..WgpuSetupCreateNew::without_display_handle()
+			..WgpuSetupCreateNew::without_display_handle()
 		}),
 		..Default::default()
 	};
@@ -161,6 +169,7 @@ impl Default for AppConfig {
 }
 
 struct UiState {
+	crashed:    Option<String>,
 	app_config: AppConfig,
 
 	// UI
@@ -248,9 +257,19 @@ fn run_puffin_server() -> puffin_http::Server {
 
 	puffin_server
 }
+static BACKTRACE: Mutex<Option<(String, Backtrace)>> = Mutex::new(None);
 impl Application {
 	#[allow(unused_mut)]
 	pub fn new(cc: &CreationContext) -> Self {
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			std::panic::set_hook(Box::new(|info| {
+				let reason = info.payload_as_str().map(|s| s.to_string()).unwrap_or_default();
+
+				let mut backtrace = BACKTRACE.lock().unwrap();
+				*backtrace = Some((reason, Backtrace::force_capture()));
+			}));
+		}
 		let conf: AppConfig = cc
 			.storage
 			.and_then(|s| s.get_string(CONF_KEY).and_then(|d| serde_json::from_str(&d).ok()))
@@ -313,6 +332,7 @@ impl Application {
 			state_f32: State::new(graph_state_s),
 			state_f64: State::new(graph_state_d),
 			ui: UiState {
+				crashed: None,
 				#[cfg(not(target_arch = "wasm32"))]
 				file_dialog: egui_file_dialog::FileDialog::new()
 					.initial_directory(PathBuf::from(&cur_dir))
@@ -321,7 +341,7 @@ impl Application {
 					.allow_path_edit_to_save_file_without_extension(false)
 					.add_file_filter(
 						"Rust Graph JSON file",
-						egui_file_dialog::Filter::new(|p:&Path| p.extension().unwrap_or_default() == "json"),
+						egui_file_dialog::Filter::new(|p: &Path| p.extension().unwrap_or_default() == "json"),
 					)
 					.default_file_filter("Rust Graph JSON file"),
 				#[cfg(target_arch = "wasm32")]
@@ -363,9 +383,7 @@ impl Application {
 			},
 		}
 	}
-}
-impl App for Application {
-	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+	fn update(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		#[cfg(all(feature = "puffin", not(target_arch = "wasm32")))]
 		{
 			self.ui.full_frame_scope.take();
@@ -425,6 +443,71 @@ impl App for Application {
 		}
 		if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
 			self.ui.quit(ui);
+		}
+	}
+}
+impl App for Application {
+	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+		if let Some(report) = self.ui.crashed.take() {
+			ui.label(report);
+			return;
+		}
+		let result = catch_unwind(AssertUnwindSafe(|| self.update(ui, frame)));
+		match result {
+			Ok(_) => {},
+			Err(e) => {
+				let serialized_state = if self.ui.app_config.use_f32 {
+					serialize_graph_state_to_json_string(&self.state_f32.graph_state)
+				} else {
+					serialize_graph_state_to_json_string(&self.state_f64.graph_state)
+				};
+				let serialized_state = serialized_state.unwrap_or_else(|e| e);
+				let mut backtrace = String::new();
+				let mut reason = String::new();
+				if let Some((r, bt)) = BACKTRACE.lock().unwrap().take() {
+					(reason, backtrace) = (r, bt.to_string());
+				}
+
+				let report = format!(
+					"==== Crash reason ====\n{reason}\n{e:?}\n==== Backtrace ====:\n{backtrace}\n===== State \
+					 at the moment of crash =====\n{serialized_state}",
+				);
+
+				eprintln!("{}", report);
+
+				#[cfg(not(target_arch = "wasm32"))]
+				{
+					use std::io::Write;
+					use std::time::SystemTime;
+
+					let filename = format!(
+						"_rust_graph_crash_report_{}.json",
+						SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+					);
+					let file_path = directories::ProjectDirs::from("com", "RustGraph", "RustGraph")
+						.map(|d| PathBuf::from(d.data_dir().join(&filename)))
+						.unwrap_or_else(|| PathBuf::from(filename));
+
+					if let Some(parent) = file_path.parent() {
+						if let Err(e) = std::fs::create_dir_all(parent) {
+							eprintln!("Could not create directory: {}\n{e}", parent.display());
+						}
+					}
+					match std::fs::File::create(&file_path) {
+						Ok(mut file) => {
+							if let Err(e) = file.write_all(report.as_bytes()) {
+								eprintln!("Could not write to file: {}\n{e}", file_path.display());
+							}
+						},
+						Err(e) => {
+							eprintln!("Could not create file: {}\n{e}", file_path.display());
+						},
+					}
+				}
+
+				self.ui.crashed = Some(report);
+				ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+			},
 		}
 	}
 

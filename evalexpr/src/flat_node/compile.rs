@@ -784,6 +784,10 @@ fn compile_operator_function<NumericTypes: EvalexprFloat>(
 			expect_function_argument_amount(arg_num, 1)?;
 			Some(FlatOperator::Floor)
 		},
+		"trunc" => {
+			expect_function_argument_amount(arg_num, 1)?;
+			Some(FlatOperator::Trunc)
+		},
 		"round" => {
 			expect_function_argument_amount(arg_num, 1)?;
 			Some(FlatOperator::Round)
