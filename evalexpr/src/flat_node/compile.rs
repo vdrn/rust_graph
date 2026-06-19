@@ -21,14 +21,14 @@ pub fn compile_to_flat<F: EvalexprFloat>(node: Node<F>) -> EvalexprResult<FlatNo
 /// Helper function to extract exactly two child nodes
 fn extract_two_nodes<F: EvalexprFloat>(mut children: Vec<Node<F>>) -> EvalexprResult<[Node<F>; 2], F> {
 	expect_operator_argument_amount(children.len(), 2)?;
-	let mut b = children.pop().unwrap();
-	let mut a = children.pop().unwrap();
-	if b.operator() == &Operator::RootNode && b.children.len() == 1 {
-		b = b.children.pop().unwrap();
-	}
-	if a.operator() == &Operator::RootNode && a.children.len() == 1 {
-		a = a.children.pop().unwrap();
-	}
+	let b = children.pop().unwrap();
+	let a = children.pop().unwrap();
+	// if b.operator() == &Operator::RootNode && b.children.len() == 1 {
+	// 	b = b.children.pop().unwrap();
+	// }
+	// if a.operator() == &Operator::RootNode && a.children.len() == 1 {
+	// 	a = a.children.pop().unwrap();
+	// }
 
 	Ok([a, b])
 }
