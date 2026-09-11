@@ -87,6 +87,7 @@ pub fn inline_functions<F: EvalexprFloat>(
 							let lower = bounds[1].as_float()?;
 
 							stack.push(Value::Empty);
+
 							stack.num_args = stack.len();
 							let result = integrate::integrate(
 								lower,

@@ -88,6 +88,7 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 		let mut fp = zero;
 		let mut fm = zero;
 
+		let len_i = data.r[i].len();
 		let mut j = 0;
 		loop {
 			let x = data.r[i][j] * d;
@@ -112,7 +113,10 @@ pub fn tanh_sinh<F: EvalexprFloat>(
 			p = p + q;
 			j += 1;
 
-			if q.abs() <= eps * p.abs() || j >= M[i] {
+			// if q.abs() <= eps * p.abs() || j >= M[i] {
+			// 	break;
+			// }
+			if q.abs() <= eps * p.abs() || j >= len_i {
 				break;
 			}
 		}
