@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use eframe::egui::{self, RichText};
 use evalexpr::{EvalexprError, EvalexprFloat, EvalexprResult, IStr, IStrSet, Value, istr};
+use hexf::hexf32;
 
 use crate::utils::f64_to_value;
 
@@ -237,9 +238,7 @@ pub fn init_builtins<T: EvalexprFloat>(ctx: &mut evalexpr::HashMapContext<T>) {
 			Ok(value)
 		}),
 	);
-	// };
 }
-
 static BUILTINS: LazyLock<(IStrSet, IStrSet, IStrSet)> = LazyLock::new(|| {
 	let mut variables = IStrSet::default();
 	let mut constants = IStrSet::default();

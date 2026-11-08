@@ -352,7 +352,9 @@ fn entry_type_ui<T: EvalexprFloat>(
 								}
 							}
 						});
-						ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
+						if *parametric {
+							ui.label("Parametric fns can return 1 or 2 values: f(x)->y  or f(t)->(x,y)");
+						}
 					} else if func.equation_type != EquationType::None {
 						*parametric = false;
 					}

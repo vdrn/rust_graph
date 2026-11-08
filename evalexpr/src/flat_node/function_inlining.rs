@@ -83,8 +83,8 @@ pub fn inline_functions<F: EvalexprFloat>(
 							}
 						}
 						if can_fold {
-							let upper = bounds[0].as_float()?;
-							let lower = bounds[1].as_float()?;
+							let lower = bounds[0].as_float()?;
+							let upper = bounds[1].as_float()?;
 
 							stack.push(Value::Empty);
 

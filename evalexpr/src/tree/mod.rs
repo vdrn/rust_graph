@@ -511,55 +511,6 @@ fn collapse_all_sequences<NumericTypes: EvalexprFloat>(
 	Ok(())
 }
 
-// fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
-// 	root: &mut Node<NumericTypes>, mut postfix_op: Node<NumericTypes>, after_rbrace: bool,
-// ) -> EvalexprResult<(), NumericTypes> {
-// 	// println!(
-// 	//     "Inserting postfix root {:?} postfix op {:?}, after_rbrace = {after_rbrace}",
-// 	// root, postfix_op,
-// 	// );
-// 	// find rightmost position based on precedence
-// 	if root.operator() == &Operator::RootNode {
-// 		if let Some(child) = root.children.last_mut() {
-// 			insert_postfix_operator(child, postfix_op, after_rbrace)
-// 		} else {
-// 			// println!("postfix appeand to leaf 0");
-// 			Err(EvalexprError::AppendedToLeafNode)
-// 		}
-// 	} else if root.operator().is_sequence() && after_rbrace {
-// 		// if we just closed a brace and we're at a sequence operator,
-// 		// wrap the entire sequence
-// 		let old_root = std::mem::replace(root, postfix_op);
-// 		root.children.push(old_root);
-// 		Ok(())
-// 	} else if root.operator().is_leaf() {
-// 		// wrap the leaf
-// 		let old_root = std::mem::replace(root, postfix_op);
-// 		root.children.push(old_root);
-// 		Ok(())
-// 	} else if root.operator().precedence() < postfix_op.operator().precedence() {
-// 		// cur oper has lower precedence, so bind to the right operand
-// 		if let Some(last_child) = root.children.last_mut() {
-// 			// if last child is a RootNode and we just had rbrace, wrap it entirely
-// 			if after_rbrace && last_child.operator() == &Operator::RootNode {
-// 				let nested_root = root.children.pop().unwrap();
-// 				postfix_op.children.push(nested_root);
-// 				root.children.push(postfix_op);
-// 				Ok(())
-// 			} else {
-// 				insert_postfix_operator(last_child, postfix_op, false)
-// 			}
-// 		} else {
-// 			// println!("postfix appeand to leaf 1");
-// 			Err(EvalexprError::AppendedToLeafNode)
-// 		}
-// 	} else {
-// 		// current op has higher or equal precedence, wrap it
-// 		let old_root = std::mem::replace(root, postfix_op);
-// 		root.children.push(old_root);
-// 		Ok(())
-// 	}
-// }
 fn insert_postfix_operator<NumericTypes: EvalexprFloat>(
 	root: &mut Node<NumericTypes>, postfix_op: Node<NumericTypes>, after_rbrace: bool,
 ) -> EvalexprResult<(), NumericTypes> {

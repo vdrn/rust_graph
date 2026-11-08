@@ -788,8 +788,8 @@ fn eval_priv_inner<F: EvalexprFloat>(
 				},
 			},
 			FlatOperator::Integral(int) => {
-				let upper = stack.pop_unchecked().as_float()?;
 				let lower = stack.pop_unchecked().as_float()?;
+				let upper = stack.pop_unchecked().as_float()?;
 				let result = match int.as_ref() {
 					ClosureNode::Unprepared { .. } => {
 						return Err(EvalexprError::CustomMessage(
